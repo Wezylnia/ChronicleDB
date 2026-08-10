@@ -2,7 +2,7 @@
 
 ChronicleDB is an experimental embedded, persistent, versioned key-value storage engine for .NET 10. It is designed around MVCC, snapshot isolation, crash recovery, persistent history, time-travel reads, copy-on-write branching, safe reclamation, and replaceable concurrent indexes.
 
-This repository currently contains the architecture baseline plus the first owned-key, commit-sequence, MVCC-visibility, and synchronized-index primitives. Durable engine behavior will be implemented in the staged order defined by the project plans.
+The repository currently contains the architecture baseline, owned-key/MVCC/index primitives, and the v0.1 append-only persistent key-value foundation. Transactions, WAL-backed atomicity, recovery, and maintenance are implemented in the staged order defined by the project plans.
 
 ## Start here
 
@@ -10,6 +10,7 @@ This repository currently contains the architecture baseline plus the first owne
 - [Architecture](ARCHITECTURE.md)
 - [Architecture decisions](docs/adr/README.md)
 - [Reference repository review](docs/architecture/reference-repository-review.md)
+- [v0.1 storage format](docs/architecture/STORAGE_FORMAT.md)
 
 The detailed v0.5, v1.0, and v1.5 working plans are intentionally kept in the local, git-ignored `private-docs/` directory.
 
