@@ -1,7 +1,8 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\ChronicleDB\ChronicleDB.csproj" />
+    <ProjectReference Include="..\..\src\Persistence\ChronicleDB.Storage\ChronicleDB.Storage.csproj" />
     <ProjectReference Include="..\..\tests\Correctness\ChronicleDB.ReferenceModel\ChronicleDB.ReferenceModel.csproj" />
   </ItemGroup>
 
