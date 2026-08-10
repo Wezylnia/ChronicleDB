@@ -5,7 +5,7 @@
 
 ## Context
 
-ChronicleDB is expected to grow to roughly 50,000 lines while spanning transactional semantics, persistent formats, recovery, historical roots, maintenance, native memory, and experimental concurrent indexes. A single project would make forbidden dependencies invisible. One project per feature would create high fan-out and assembly ceremony without stronger ownership.
+ChronicleDB is expected to grow while spanning transactional semantics, persistent formats, recovery, historical roots, maintenance, native memory, and experimental concurrent indexes. A single project would make forbidden dependencies invisible. One project per feature would create high fan-out and assembly ceremony without stronger ownership.
 
 ## Decision
 
