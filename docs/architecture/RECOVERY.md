@@ -1,4 +1,4 @@
-# v0.6 recovery
+# v0.7 recovery
 
 Opening a ChronicleDB database is a recovery operation. Application work is not exposed until storage metadata, WAL, current physical state, committed version history, persistent snapshot metadata, and the generalized history-root registry have all been validated and reconstructed.
 
@@ -16,9 +16,11 @@ Opening a ChronicleDB database is a recovery operation. Application work is not 
 10. on the one-time path where WAL was not previously initialized, persist one synthetic bootstrap transaction for physical keys not represented in WAL; if WAL was already initialized, such out-of-band keys are corruption;
 11. open/scan persistent snapshot metadata and recover an incomplete framed tail only;
 12. open/scan the history-root registry and recover an incomplete framed tail only;
-13. reconcile snapshot roots into the generalized registry after an interrupted v0.6 publication;
-14. validate root boundaries against retained/current history;
-15. expose the database as `Open`.
+13. open/scan `chronicle.branches`, resolve incomplete branch-creation intents, validate ancestry, and reconcile branch-base roots;
+14. validate and reconstruct every active branch-local committed prefix and its branch snapshots;
+15. reconcile Main and branch snapshot roots into the generalized registry;
+16. validate all root boundaries and branch/history ownership against recovered histories;
+17. expose the database as `Open`.
 
 ## WAL commit compatibility
 
@@ -51,3 +53,10 @@ The durable root protocol publishes only complete Active or Deleted outcomes. Th
 ## Checkpoint policy
 
 v0.5 does **not** truncate historical WAL through a checkpoint. The WAL is currently the durable input used to reconstruct retained MVCC chains; truncating it without first persisting equivalent historical versions would violate time travel and snapshot stability. Recovery time is benchmarked and recorded. A later checkpoint design must preserve retained history before it can become an optimization.
+
+
+## v0.7 branch reopen baseline
+
+An active v0.7 branch is reconstructed from its branch metadata plus branch-private append store. The latest `AdvanceSequence` record identifies the local commit sequence and exact `DataLengthAfterCommit`. A local file shorter than that boundary is corruption. A longer/torn tail is reduced to the published prefix only when its first untrusted byte is not inside that committed prefix; corruption within the published prefix is fatal. Every retained local version envelope must then match a published transaction descriptor and complete mutation index set, and the in-memory MVCC chains are replayed by local commit sequence.
+
+This committed-prefix protocol gives v0.7 deterministic reopen semantics and supports fault-boundary testing, but it is intentionally **not** described as the independent branch WAL protocol. v0.8 adds logically independent branch WAL streams, branch-specific replay, creation/deletion crash matrices, and the final branch durability claim.

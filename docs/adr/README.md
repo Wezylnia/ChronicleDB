@@ -15,5 +15,6 @@ ADRs record decisions that are expensive to reverse or that affect correctness, 
 | [0009](0009-v05-persistent-snapshots.md) | v0.5 persistent snapshots and conservative retention | Accepted |
 | [0010](0010-v05-persistence-lifecycle-hardening.md) | v0.5 persistence lifecycle and framing hardening | Accepted |
 | [0011](0011-v06-generalized-history-roots.md) | v0.6 generalized durable history roots | Accepted |
+| [0012](0012-v07-core-branch-architecture.md) | v0.7 core branch architecture | Accepted |
 
 Use a new ADR when changing the project graph, persistent formats, commit/durability semantics, memory ownership, public lifetime rules, or baseline/optimized implementation strategy.

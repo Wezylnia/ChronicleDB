@@ -1,4 +1,4 @@
-# v0.5 correctness invariants
+# v0.7 correctness invariants
 
 These invariants are the release contract. Performance work may change implementation mechanisms but may not weaken them.
 
@@ -51,3 +51,20 @@ These invariants are the release contract. Performance work may change implement
 **Monotonic capabilities.** Once durable metadata says a critical persistence subsystem was initialized, its file cannot disappear and be silently recreated as empty history.
 
 **No out-of-band adoption.** After WAL initialization, physical current keys without WAL-backed logical history are corruption, not implicit new database state.
+
+
+## Branch histories
+
+**Branch base stability.** Once a branch is active, parent fallback always resolves against the immutable parent boundary selected at creation; later parent commits never move that boundary.
+
+**History-domain isolation.** A committed branch-local transaction publishes versions only in that branch history. Main and sibling histories are not mutated and do not directly participate in branch-local write conflicts.
+
+**Branch tombstone correctness.** A visible local tombstone terminates lookup as absent. It must never be interpreted as a missing local version that falls back to inherited parent data.
+
+**Branch sequence locality.** Branch commit sequences are unique and monotonically increasing within that branch `HistoryId`; equal numeric sequences in different histories are unrelated.
+
+**Branch-base retention.** Every active branch has an independent `BranchBase` root that protects its parent history at the fixed base sequence, regardless of the lifecycle of a source snapshot.
+
+**Branch historical stability.** A branch historical view or persistent branch snapshot resolves the same local boundary and inherited parent base regardless of later writes in Main, siblings, or the branch.
+
+**Committed-prefix integrity (v0.7).** Branch-local physical bytes are considered committed only through the latest durably published branch metadata prefix. Extra append bytes are orphan state and may be truncated; missing bytes inside a published prefix are corruption. This is a v0.7 baseline and is superseded by the independent branch WAL protocol in v0.8.

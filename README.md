@@ -1,10 +1,10 @@
 # ChronicleDB
 
-ChronicleDB is an experimental embedded, persistent, versioned key-value storage engine for .NET 10. The v0.6 baseline extends the v0.5 correctness-first engine with generalized durable history roots and explainable retention queries while preserving snapshot semantics.
+ChronicleDB is an experimental embedded, persistent, versioned key-value storage engine for .NET 10. The v0.7 baseline builds on generalized durable history roots and introduces correctness-first copy-on-write/shared-state database branches with independent history domains, fixed parent bases, branch-local MVCC, historical reads, and persistent branch snapshots.
 
-The current release deliberately does **not** implement branching, latch-free indexing, epoch-based reclamation, native-memory hot paths, aggressive historical garbage collection, group commit, or SQL. Those belong to later release lines after the v0.5 semantics are treated as fixed.
+The current release deliberately does **not** claim the independent branch WAL/recovery protocol, branch deletion lifecycle, garbage collection/compaction, latch-free indexing, epoch-based reclamation, native-memory hot paths, group commit, or SQL. Those remain staged for v0.8+ and v1.5.
 
-## v0.5 guarantees
+## v0.7 guarantees
 
 - binary keys use full structural identity and engine-owned bytes;
 - acknowledged durable commits have a recoverable WAL decision before publication;
@@ -17,6 +17,11 @@ The current release deliberately does **not** implement branching, latch-free in
 - snapshot deletion removes the named root but v0.5 conservatively keeps historical versions;
 - persistent snapshots are represented as generalized history roots and survive restart through `chronicle.history-roots`;
 - interrupted root publication is reconciled deterministically during open;
+- branch creation is metadata-oriented: inherited state remains shared through a fixed historical base rather than being copied;
+- Main and each branch use distinct history domains and local commit-sequence namespaces;
+- branch reads distinguish local values, local tombstones, and parent fallback through one resolver;
+- branch snapshots and branch-local historical reads remain stable while Main, siblings, and the branch continue evolving;
+- nested branching is correctness-first and bounded to 16 levels;
 - complete persistent corruption is rejected rather than silently repaired;
 - only proven crash tails are truncated or rebuilt.
 
@@ -35,6 +40,8 @@ The current release deliberately does **not** implement branching, latch-free in
 - [Recovery](docs/architecture/RECOVERY.md)
 - [Persistent snapshots and time travel](docs/architecture/SNAPSHOTS.md)
 - [History roots and retention](docs/architecture/HISTORY_ROOTS.md)
+- [Branch semantics](docs/architecture/BRANCHING.md)
+- [Branch storage](docs/architecture/BRANCH_STORAGE.md)
 - [Correctness invariants](docs/architecture/INVARIANTS.md)
 - [Crash harness](docs/architecture/CRASH_HARNESS.md)
 - [Testing methodology](docs/TESTING.md)

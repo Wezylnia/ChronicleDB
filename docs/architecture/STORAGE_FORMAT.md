@@ -1,4 +1,4 @@
-# v0.6 storage format
+# v0.7 storage format
 
 This document describes the byte-level persistent storage owned by `ChronicleDB.Storage`. WAL framing is documented separately.
 
@@ -10,6 +10,9 @@ This document describes the byte-level persistent storage owned by `ChronicleDB.
 | `chronicle.data` | `N * 16,384` bytes except an untrusted crash tail during recovery | append-only record/overflow pages |
 | `chronicle.snapshots` | 64-byte header + framed lifecycle records | persistent named snapshot roots |
 | `chronicle.history-roots` | 64-byte header + fixed 120-byte lifecycle records | generalized retained history-root registry |
+| `chronicle.branches` | 64-byte header + variable framed lifecycle/commit-prefix records | branch identity, ancestry, activation, local committed prefix |
+| `branches/<BranchId>/chronicle.data` | page-aligned append-only branch-private version records | branch-local MVCC history |
+| `branches/<BranchId>/chronicle.snapshots` | framed lifecycle records | persistent snapshots inside one branch |
 
 `chronicle.wal` is owned by `ChronicleDB.Wal`.
 
@@ -28,13 +31,13 @@ All encoded lengths are validated before allocation/slicing/file access.
 
 ## Database metadata journal
 
-Each `chronicle.meta` slot is 64 bytes. v1.2 slots use:
+Each `chronicle.meta` slot is 64 bytes. v1.3 slots use:
 
 | Offset | Size | Field |
 | ---: | ---: | --- |
 | 0 | 8 | `CHDBv001` |
 | 8 | 2 | major `1` |
-| 10 | 2 | minor `2` |
+| 10 | 2 | minor `3` |
 | 12 | 4 | slot size `64` |
 | 16 | 16 | database GUID |
 | 32 | 4 | page size |
@@ -44,7 +47,7 @@ Each `chronicle.meta` slot is 64 bytes. v1.2 slots use:
 | 52 | 8 | strictly increasing metadata generation |
 | 60 | 4 | CRC32C of bytes `0..59` |
 
-Capability flags record that WAL, persistent snapshot metadata, and the generalized history-root registry have been durably initialized. Once a flag is present, a later generation may not remove it. This prevents accidental deletion of a critical persistence file from being mistaken for a first-time upgrade.
+Capability flags record that WAL, persistent snapshot metadata, the generalized history-root registry, and the branch metadata journal have been durably initialized. Once a flag is present, a later generation may not remove it. This prevents accidental deletion of a critical persistence file from being mistaken for a first-time upgrade.
 
 Legacy v1.0 single-slot headers remain readable only with zero flags/reserved bytes. Their in-memory generation is zero; the first capability update appends a v1.1 generation.
 
@@ -87,7 +90,9 @@ Complete checksummed structures are never silently discarded. Automatic repair i
 - partial final database-metadata generation;
 - incomplete final WAL/snapshot frame after validated framing;
 - incomplete final history-root frame after validated framing;
-- data append regions whose recovery base is proven by a durable WAL Commit, plus the narrow legacy partial-final-page rule.
+- incomplete final branch-metadata frame after validated redundant length framing;
+- Main data append regions whose recovery base is proven by a durable WAL Commit, plus the narrow legacy partial-final-page rule;
+- branch-local append bytes beyond the latest durably published v0.7 branch committed-prefix descriptor.
 ### Faulted low-level store instances
 
 A `PersistentKeyValueStore` instance is not reusable after an operation may have modified
@@ -97,3 +102,10 @@ the first page write does not fault the instance because persistence was not tou
 This mirrors the WAL and snapshot-metadata lifetime rule and prevents callers of the
 low-level storage API from continuing with an in-memory index whose physical append
 outcome is uncertain.
+
+
+## v0.7 branch metadata and local versions
+
+`chronicle.branches` begins with a checksummed `CHBRN001` header bound to the Main database and Main history identities. Variable records contain redundant header/footer lengths, CRC32C, contiguous event sequence, `BranchId`, child/parent `HistoryId`, base root and parent boundary, local storage identity, local commit sequence, transaction identity, mutation count, committed data length, branch depth, creation time, and UTF-8 name. Complete corrupt frames are fatal; only an incomplete final frame may be truncated.
+
+Each activated branch owns a separate branch-local page store under `branches/<BranchId>/`. Physical keys identify individual local versions rather than logical user keys. The stored `BVR1` envelope carries full user-key bytes, branch/history/transaction identity, local commit sequence, mutation index/count, tombstone state, value bytes, and CRC32C. The parent dataset is not copied into this store. `AdvanceSequence` metadata records define the authoritative page-aligned committed prefix used by v0.7 reopen.

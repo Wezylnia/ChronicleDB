@@ -59,3 +59,10 @@ The v0.6 physical engine remains conservative: deleting a root does not reclaim 
 ## Dependency direction
 
 History defines root meaning and lifecycle semantics. Storage persists primitive root fields without referencing the History assembly. `ChronicleDB` composes both layers and is the only place that maps storage records to semantic roots.
+
+
+## v0.7 branch-base interpretation
+
+A `BranchBase` root is owned by the child branch history but protects a boundary in its **parent** history. Therefore `HistoryRoot.HistoryId` identifies the root owner, while `ProtectedHistoryId` is the parent for `BranchBase` and the owner history for snapshot roots. Retention queries filter and compute floors against `ProtectedHistoryId`; confusing ownership with protected history would make branch-aware GC unsound.
+
+An activated branch owns its base root independently of any source named snapshot. Deleting that source snapshot removes only the snapshot's retention requirement; the branch-base root continues protecting the inherited parent boundary. Nested branches form the same immediate-parent dependency chain.
