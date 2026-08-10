@@ -1,0 +1,29 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Foundation\ChronicleDB.Core\ChronicleDB.Core.csproj" />
+    <ProjectReference Include="..\..\..\src\Semantics\ChronicleDB.Mvcc\ChronicleDB.Mvcc.csproj" />
+    <ProjectReference Include="..\..\..\src\Semantics\ChronicleDB.History\ChronicleDB.History.csproj" />
+    <ProjectReference Include="..\..\..\src\Indexing\ChronicleDB.Indexing.Baseline\ChronicleDB.Indexing.Baseline.csproj" />
+    <ProjectReference Include="..\..\..\src\Engine\ChronicleDB.Transactions\ChronicleDB.Transactions.csproj" />
+  </ItemGroup>
+
+</Project>

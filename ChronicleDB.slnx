@@ -1,0 +1,53 @@
+<Solution>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/ChronicleDB.Benchmarks/ChronicleDB.Benchmarks.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/ChronicleDB/ChronicleDB.csproj" />
+  </Folder>
+  <Folder Name="/src/Engine/">
+    <Project Path="src/Engine/ChronicleDB.Maintenance/ChronicleDB.Maintenance.csproj" />
+    <Project Path="src/Engine/ChronicleDB.Recovery/ChronicleDB.Recovery.csproj" />
+    <Project Path="src/Engine/ChronicleDB.Transactions/ChronicleDB.Transactions.csproj" />
+  </Folder>
+  <Folder Name="/src/Foundation/">
+    <Project Path="src/Foundation/ChronicleDB.Core/ChronicleDB.Core.csproj" />
+  </Folder>
+  <Folder Name="/src/Indexing/">
+    <Project Path="src/Indexing/ChronicleDB.Indexing.Abstractions/ChronicleDB.Indexing.Abstractions.csproj" />
+    <Project Path="src/Indexing/ChronicleDB.Indexing.Baseline/ChronicleDB.Indexing.Baseline.csproj" />
+  </Folder>
+  <Folder Name="/src/Observability/">
+    <Project Path="src/Observability/ChronicleDB.Diagnostics/ChronicleDB.Diagnostics.csproj" />
+  </Folder>
+  <Folder Name="/src/Persistence/">
+    <Project Path="src/Persistence/ChronicleDB.Storage/ChronicleDB.Storage.csproj" />
+    <Project Path="src/Persistence/ChronicleDB.Wal/ChronicleDB.Wal.csproj" />
+  </Folder>
+  <Folder Name="/src/Semantics/">
+    <Project Path="src/Semantics/ChronicleDB.History/ChronicleDB.History.csproj" />
+    <Project Path="src/Semantics/ChronicleDB.Mvcc/ChronicleDB.Mvcc.csproj" />
+  </Folder>
+  <Folder Name="/tests/" />
+  <Folder Name="/tests/Architecture/">
+    <Project Path="tests/Architecture/ChronicleDB.ArchitectureTests/ChronicleDB.ArchitectureTests.csproj" />
+  </Folder>
+  <Folder Name="/tests/Correctness/">
+    <Project Path="tests/Correctness/ChronicleDB.CorrectnessTests/ChronicleDB.CorrectnessTests.csproj" />
+    <Project Path="tests/Correctness/ChronicleDB.ReferenceModel/ChronicleDB.ReferenceModel.csproj" />
+  </Folder>
+  <Folder Name="/tests/Persistence/">
+    <Project Path="tests/Persistence/ChronicleDB.PersistenceTests/ChronicleDB.PersistenceTests.csproj" />
+  </Folder>
+  <Folder Name="/tests/Recovery/">
+    <Project Path="tests/Recovery/ChronicleDB.RecoveryTests/ChronicleDB.RecoveryTests.csproj" />
+  </Folder>
+  <Folder Name="/tests/Unit/">
+    <Project Path="tests/Unit/ChronicleDB.UnitTests/ChronicleDB.UnitTests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/ChronicleDB.CrashHarness/ChronicleDB.CrashHarness.csproj" />
+    <Project Path="tools/ChronicleDB.Inspector/ChronicleDB.Inspector.csproj" />
+    <Project Path="tools/ChronicleDB.WorkloadRunner/ChronicleDB.WorkloadRunner.csproj" />
+  </Folder>
+</Solution>

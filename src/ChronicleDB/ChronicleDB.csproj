@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Foundation\ChronicleDB.Core\ChronicleDB.Core.csproj" />
+    <ProjectReference Include="..\Observability\ChronicleDB.Diagnostics\ChronicleDB.Diagnostics.csproj" />
+    <ProjectReference Include="..\Semantics\ChronicleDB.Mvcc\ChronicleDB.Mvcc.csproj" />
+    <ProjectReference Include="..\Semantics\ChronicleDB.History\ChronicleDB.History.csproj" />
+    <ProjectReference Include="..\Persistence\ChronicleDB.Storage\ChronicleDB.Storage.csproj" />
+    <ProjectReference Include="..\Persistence\ChronicleDB.Wal\ChronicleDB.Wal.csproj" />
+    <ProjectReference Include="..\Indexing\ChronicleDB.Indexing.Abstractions\ChronicleDB.Indexing.Abstractions.csproj" />
+    <ProjectReference Include="..\Indexing\ChronicleDB.Indexing.Baseline\ChronicleDB.Indexing.Baseline.csproj" />
+    <ProjectReference Include="..\Engine\ChronicleDB.Transactions\ChronicleDB.Transactions.csproj" />
+    <ProjectReference Include="..\Engine\ChronicleDB.Recovery\ChronicleDB.Recovery.csproj" />
+    <ProjectReference Include="..\Engine\ChronicleDB.Maintenance\ChronicleDB.Maintenance.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>true</IsPackable>
+    <PackageId>ChronicleDB</PackageId>
+    <Description>Embedded, versioned key-value storage engine for .NET.</Description>
+  </PropertyGroup>
+
+</Project>
