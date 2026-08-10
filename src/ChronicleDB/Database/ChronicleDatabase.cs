@@ -3,6 +3,7 @@ using ChronicleDB.Recovery;
 using ChronicleDB.Storage;
 using ChronicleDB.Storage.Files;
 using ChronicleDB.Transactions;
+using ChronicleDB.Transactions.Faults;
 using ChronicleDB.Wal;
 using ChronicleDB.Wal.Files;
 using ChronicleDB.Wal.Records;
@@ -17,12 +18,17 @@ public sealed class ChronicleDatabase : IDisposable
     private readonly PersistentKeyValueStore _store;
     private readonly WalLog _wal;
     private readonly object _gate = new();
+    private readonly ITransactionFaultInjector? _faultInjector;
     private bool _disposed;
 
-    private ChronicleDatabase(PersistentKeyValueStore store, WalLog wal)
+    private ChronicleDatabase(
+        PersistentKeyValueStore store,
+        WalLog wal,
+        ITransactionFaultInjector? faultInjector)
     {
         _store = store;
         _wal = wal;
+        _faultInjector = faultInjector;
     }
 
     public Guid DatabaseId => _store.DatabaseId;
@@ -31,7 +37,8 @@ public sealed class ChronicleDatabase : IDisposable
 
     public static ChronicleDatabase Open(
         string directory,
-        StorageOptions? options = null)
+        StorageOptions? options = null,
+        ITransactionFaultInjector? faultInjector = null)
     {
         var store = PersistentKeyValueStore.Open(directory, options);
         WalLog? wal = null;
@@ -39,7 +46,7 @@ public sealed class ChronicleDatabase : IDisposable
         {
             wal = WalLog.Open(directory);
             WalRecovery.Reconcile(store, wal);
-            return new ChronicleDatabase(store, wal);
+            return new ChronicleDatabase(store, wal, faultInjector);
         }
         catch
         {
@@ -135,6 +142,7 @@ public sealed class ChronicleDatabase : IDisposable
             ThrowIfDisposed();
             transaction.Prepare();
             var writes = transaction.GetWriteSet();
+            _faultInjector?.Hit(TransactionFaultPoint.BeforeWalAppend);
             _wal.Append(WalRecordType.Begin, transaction.TransactionId, []);
             var mutations = new List<StorageMutation>(writes.Count);
             foreach (var write in writes)
@@ -153,9 +161,15 @@ public sealed class ChronicleDatabase : IDisposable
 
             transaction.MarkCommitting();
             _wal.Append(WalRecordType.Commit, transaction.TransactionId, []);
+            _faultInjector?.Hit(TransactionFaultPoint.AfterWalAppend);
+            _faultInjector?.Hit(TransactionFaultPoint.BeforeWalFlush);
             _wal.Flush();
+            _faultInjector?.Hit(TransactionFaultPoint.AfterWalFlush);
+            _faultInjector?.Hit(TransactionFaultPoint.BeforePhysicalPublication);
             _store.ApplyBatch(mutations);
+            _faultInjector?.Hit(TransactionFaultPoint.AfterPhysicalPublication);
             transaction.MarkCommitted();
+            _faultInjector?.Hit(TransactionFaultPoint.BeforeAcknowledgement);
         }
     }
 

@@ -15,6 +15,7 @@ The repository currently contains the architecture baseline, owned-key/MVCC/inde
 - [v0.2 transaction state](docs/architecture/TRANSACTION_STATE.md)
 - [v0.2 transaction commit](docs/architecture/TRANSACTION_COMMIT.md)
 - [v0.2 recovery](docs/architecture/RECOVERY.md)
+- [v0.2 crash harness](docs/architecture/CRASH_HARNESS.md)
 
 The detailed v0.5, v1.0, and v1.5 working plans are intentionally kept in the local, git-ignored `private-docs/` directory.
 

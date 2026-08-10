@@ -105,6 +105,25 @@ public sealed class WalRecoveryTests
         Assert.Throws<ChronicleDB.Wal.Errors.WalCorruptionException>(() => ChronicleDatabase.Open(directory.Path));
     }
 
+    [Fact]
+    public void ReusedTransactionIdIsRejected()
+    {
+        using var directory = new StorageTestDirectory();
+        using (var store = PersistentKeyValueStore.Open(directory.Path))
+        {
+        }
+
+        var transactionId = TransactionId.New();
+        using (var wal = WalLog.Open(directory.Path))
+        {
+            wal.Append(WalRecordType.Begin, transactionId, []);
+            wal.Append(WalRecordType.Commit, transactionId, []);
+            wal.Append(WalRecordType.Begin, transactionId, []);
+        }
+
+        Assert.Throws<ChronicleDB.Wal.Errors.WalCorruptionException>(() => ChronicleDatabase.Open(directory.Path));
+    }
+
     private static void AppendCommittedPut(WalLog wal, ChronicleDB.Core.Keys.BinaryKey key, ReadOnlySpan<byte> value)
     {
         var transactionId = TransactionId.New();
