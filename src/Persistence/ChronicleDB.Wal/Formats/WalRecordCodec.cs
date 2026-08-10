@@ -12,9 +12,10 @@ internal static class WalRecordCodec
     // its key and length fields. Keep the record envelope slightly larger so
     // every otherwise-valid 64 MiB value + 64 KiB key can be represented.
     public const int MaxPayloadSize = 65 * 1024 * 1024;
-    private const byte CurrentVersion = 1;
+    private const byte LegacyVersion = 1;
+    private const byte CurrentVersion = 2;
     private const ushort HeaderLength = HeaderSize;
-    private const uint Crc32CAlgorithm = 1;
+    private const uint LegacyCrc32CAlgorithm = 1;
 
     private static ReadOnlySpan<byte> Magic => "CWL1"u8;
 
@@ -37,6 +38,7 @@ internal static class WalRecordCodec
             throw new WalLimitException("WAL payload exceeds the maximum supported size.");
         }
 
+        var payloadLength = checked((uint)record.Payload.Length);
         var totalLength = checked(HeaderSize + record.Payload.Length);
         var buffer = new byte[totalLength];
         Magic.CopyTo(buffer);
@@ -46,8 +48,12 @@ internal static class WalRecordCodec
         BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(8, 2), HeaderLength);
         BinaryPrimitives.WriteUInt64LittleEndian(buffer.AsSpan(12, 8), record.Lsn);
         record.TransactionId.Value.TryWriteBytes(buffer.AsSpan(20, 16));
-        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(36, 4), checked((uint)record.Payload.Length));
-        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(40, 4), Crc32CAlgorithm);
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(36, 4), payloadLength);
+        // v2 uses the former checksum-algorithm slot as an independently readable
+        // complement of payload length. The checksum algorithm is fixed by record
+        // version, allowing the scanner to distinguish an internally inconsistent
+        // complete header from a legitimate crash-truncated payload.
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(40, 4), ~payloadLength);
         record.Payload.Span.CopyTo(buffer.AsSpan(HeaderSize));
         BinaryPrimitives.WriteUInt32LittleEndian(
             buffer.AsSpan(44, 4),
@@ -62,11 +68,7 @@ internal static class WalRecordCodec
             throw new WalCorruptionException("WAL record is shorter than its header.");
         }
 
-        if (!bytes[..4].SequenceEqual(Magic))
-        {
-            throw new WalFormatException("WAL record magic is not recognized.");
-        }
-
+        var payloadLength = ReadValidatedPayloadLengthForScan(bytes[..HeaderSize]);
         var expectedChecksum = BinaryPrimitives.ReadUInt32LittleEndian(bytes[44..48]);
         var actualChecksum = Crc32C.ComputeWithZeroedRange(bytes, 44, 4);
         if (expectedChecksum != actualChecksum)
@@ -74,17 +76,43 @@ internal static class WalRecordCodec
             throw new WalCorruptionException("WAL record checksum is invalid.");
         }
 
-        var version = bytes[4];
-        var typeValue = bytes[5];
-        var flags = BinaryPrimitives.ReadUInt16LittleEndian(bytes[6..8]);
-        var headerLength = BinaryPrimitives.ReadUInt16LittleEndian(bytes[8..10]);
-        var reserved = BinaryPrimitives.ReadUInt16LittleEndian(bytes[10..12]);
+        var totalLength = checked(HeaderSize + (int)payloadLength);
+        if (bytes.Length != totalLength)
+        {
+            throw new WalCorruptionException("WAL record length does not match its payload field.");
+        }
+
+        var type = (WalRecordType)bytes[5];
         var lsn = BinaryPrimitives.ReadUInt64LittleEndian(bytes[12..20]);
         var transactionId = new TransactionId(new Guid(bytes[20..36]));
-        var payloadLength = BinaryPrimitives.ReadUInt32LittleEndian(bytes[36..40]);
-        var checksumAlgorithm = BinaryPrimitives.ReadUInt32LittleEndian(bytes[40..44]);
+        return new WalRecord(type, lsn, transactionId, bytes[HeaderSize..]);
+    }
 
-        if (version != CurrentVersion || headerLength != HeaderLength || reserved != 0 || checksumAlgorithm != Crc32CAlgorithm)
+    internal static uint ReadValidatedPayloadLengthForScan(ReadOnlySpan<byte> header)
+    {
+        if (header.Length != HeaderSize)
+        {
+            throw new WalCorruptionException("WAL record header has an invalid length.");
+        }
+
+        if (!header[..4].SequenceEqual(Magic))
+        {
+            throw new WalFormatException("WAL record magic is not recognized.");
+        }
+
+        var version = header[4];
+        var typeValue = header[5];
+        var flags = BinaryPrimitives.ReadUInt16LittleEndian(header[6..8]);
+        var headerLength = BinaryPrimitives.ReadUInt16LittleEndian(header[8..10]);
+        var reserved = BinaryPrimitives.ReadUInt16LittleEndian(header[10..12]);
+        var lsn = BinaryPrimitives.ReadUInt64LittleEndian(header[12..20]);
+        var transactionId = new TransactionId(new Guid(header[20..36]));
+        var payloadLength = BinaryPrimitives.ReadUInt32LittleEndian(header[36..40]);
+        var versionField = BinaryPrimitives.ReadUInt32LittleEndian(header[40..44]);
+
+        if (version is not (LegacyVersion or CurrentVersion)
+            || headerLength != HeaderLength
+            || reserved != 0)
         {
             throw new WalFormatException("WAL record header contains unsupported fields.");
         }
@@ -109,16 +137,18 @@ internal static class WalRecordCodec
             throw new WalLimitException("WAL payload exceeds the maximum supported size.");
         }
 
-        var totalLength = checked(HeaderSize + (int)payloadLength);
-        if (bytes.Length != totalLength)
+        if (version == LegacyVersion)
         {
-            throw new WalCorruptionException("WAL record length does not match its payload field.");
+            if (versionField != LegacyCrc32CAlgorithm)
+            {
+                throw new WalFormatException("Legacy WAL checksum algorithm is not supported.");
+            }
+        }
+        else if (versionField != ~payloadLength)
+        {
+            throw new WalCorruptionException("WAL record payload-length redundancy check failed.");
         }
 
-        return new WalRecord(
-            (WalRecordType)typeValue,
-            lsn,
-            transactionId,
-            bytes[HeaderSize..]);
+        return payloadLength;
     }
 }

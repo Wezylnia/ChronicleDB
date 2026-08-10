@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+using System.Diagnostics;
 using ChronicleDB.Core.Identifiers;
 using ChronicleDB.Wal.Errors;
 using ChronicleDB.Wal.Formats;
@@ -15,6 +15,9 @@ public sealed class WalLog : IDisposable
     private readonly FileStream _stream;
     private readonly WalOptions _options;
     private ulong _nextLsn;
+    private long _bytesWritten;
+    private long _flushCount;
+    private long _flushElapsedTicks;
     private bool _faulted;
     private bool _disposed;
 
@@ -26,6 +29,18 @@ public sealed class WalLog : IDisposable
     }
 
     public string FilePath => _stream.Name;
+
+    public long FileLength
+    {
+        get
+        {
+            lock (_gate)
+            {
+                ThrowIfUsable();
+                return _stream.Length;
+            }
+        }
+    }
 
     public ulong NextLsn
     {
@@ -55,9 +70,10 @@ public sealed class WalLog : IDisposable
         FileStream? stream = null;
         try
         {
+            EnsureCreatedAtomically(path, expectedDatabaseId);
             stream = new FileStream(
                 path,
-                FileMode.OpenOrCreate,
+                FileMode.Open,
                 FileAccess.ReadWrite,
                 FileShare.None,
                 bufferSize: 64 * 1024,
@@ -111,7 +127,7 @@ public sealed class WalLog : IDisposable
                 _stream.Write(encoded);
                 if (_options.FlushOnAppend)
                 {
-                    _stream.Flush(flushToDisk: true);
+                    FlushCore();
                 }
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -121,6 +137,7 @@ public sealed class WalLog : IDisposable
             }
 
             _nextLsn++;
+            Interlocked.Add(ref _bytesWritten, encoded.Length);
             return record;
         }
     }
@@ -145,15 +162,30 @@ public sealed class WalLog : IDisposable
         lock (_gate)
         {
             ThrowIfUsable();
-            try
-            {
-                _stream.Flush(flushToDisk: true);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                _faulted = true;
-                throw new WalException("WAL flush failed and the log must be reopened before reuse.", exception);
-            }
+            FlushCore();
+        }
+    }
+
+    internal void MarkFaultedAfterUncertainWrite()
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _faulted = true;
+        }
+    }
+
+    public WalStatistics GetStatistics()
+    {
+        lock (_gate)
+        {
+            ThrowIfUsable();
+            return new WalStatistics(
+                FileLength: _stream.Length,
+                BytesWrittenThisSession: Volatile.Read(ref _bytesWritten),
+                FlushCount: Volatile.Read(ref _flushCount),
+                TotalFlushStopwatchTicks: Volatile.Read(ref _flushElapsedTicks),
+                NextLsn: _nextLsn);
         }
     }
 
@@ -183,16 +215,6 @@ public sealed class WalLog : IDisposable
 
     private static WalFileHeader EnsureHeader(FileStream stream, Guid expectedDatabaseId)
     {
-        if (stream.Length == 0)
-        {
-            var databaseId = expectedDatabaseId == Guid.Empty ? Guid.NewGuid() : expectedDatabaseId;
-            var encoded = WalFileHeaderCodec.Encode(new WalFileHeader(databaseId));
-            stream.Position = 0;
-            stream.Write(encoded);
-            stream.Flush(flushToDisk: true);
-            return new WalFileHeader(databaseId);
-        }
-
         if (stream.Length < WalFileHeaderCodec.Size)
         {
             throw new WalCorruptionException("WAL file header is truncated.");
@@ -201,6 +223,49 @@ public sealed class WalLog : IDisposable
         var bytes = new byte[WalFileHeaderCodec.Size];
         ReadExactly(stream, bytes, 0);
         return WalFileHeaderCodec.Decode(bytes);
+    }
+
+
+    private static void EnsureCreatedAtomically(string path, Guid expectedDatabaseId)
+    {
+        if (File.Exists(path))
+        {
+            return;
+        }
+
+        var temporaryPath = path + "." + Guid.NewGuid().ToString("N") + ".creating";
+        var databaseId = expectedDatabaseId == Guid.Empty ? Guid.NewGuid() : expectedDatabaseId;
+        try
+        {
+            using (var temporary = new FileStream(
+                       temporaryPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       bufferSize: 4 * 1024,
+                       options: FileOptions.WriteThrough))
+            {
+                temporary.Write(WalFileHeaderCodec.Encode(new WalFileHeader(databaseId)));
+                temporary.Flush(flushToDisk: true);
+            }
+
+            try
+            {
+                File.Move(temporaryPath, path);
+            }
+            catch (IOException) when (File.Exists(path))
+            {
+                // Another opener won creation. The exclusive open below will determine
+                // whether this process may proceed and header identity validation follows.
+            }
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
     }
 
     private static WalScan Scan(FileStream stream)
@@ -220,12 +285,7 @@ public sealed class WalLog : IDisposable
             }
 
             ReadExactly(stream, header, position);
-            var payloadLength = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(36, 4));
-            if (payloadLength > WalRecordCodec.MaxPayloadSize)
-            {
-                throw new WalLimitException("WAL payload exceeds the maximum supported size.");
-            }
-
+            var payloadLength = WalRecordCodec.ReadValidatedPayloadLengthForScan(header);
             var recordLength = checked(WalRecordCodec.HeaderSize + (long)payloadLength);
             if (recordLength > remaining)
             {
@@ -287,6 +347,22 @@ public sealed class WalLog : IDisposable
         }
     }
 
+    private void FlushCore()
+    {
+        var started = Stopwatch.GetTimestamp();
+        try
+        {
+            _stream.Flush(flushToDisk: true);
+            Interlocked.Increment(ref _flushCount);
+            Interlocked.Add(ref _flushElapsedTicks, Stopwatch.GetTimestamp() - started);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _faulted = true;
+            throw new WalException("WAL flush failed and the log must be reopened before reuse.", exception);
+        }
+    }
+
     private void ThrowIfUsable()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -312,3 +388,10 @@ public sealed class WalLog : IDisposable
         long TailBytes,
         ulong NextLsn);
 }
+
+public readonly record struct WalStatistics(
+    long FileLength,
+    long BytesWrittenThisSession,
+    long FlushCount,
+    long TotalFlushStopwatchTicks,
+    ulong NextLsn);

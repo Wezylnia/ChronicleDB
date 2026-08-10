@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using ChronicleDB.Core.Identifiers;
 using ChronicleDB.PersistenceTests.Fixtures;
 using ChronicleDB.Wal;
@@ -31,6 +32,18 @@ public sealed class WalLogTests
         Assert.Equal(WalRecordType.Put, records[1].Type);
         Assert.Equal(new byte[] { 1, 2 }, records[1].Payload.ToArray());
         Assert.Equal((ulong)4, reopened.NextLsn);
+    }
+
+
+    [Fact]
+    public void ExistingTruncatedWalHeaderIsRejectedInsteadOfReinitialized()
+    {
+        using var directory = new StorageTestDirectory();
+        var path = Path.Combine(directory.Path, WalOptions.DefaultFileName);
+        File.WriteAllBytes(path, [1, 2, 3]);
+
+        Assert.Throws<WalCorruptionException>(() => WalLog.Open(directory.Path));
+        Assert.Equal(3, new FileInfo(path).Length);
     }
 
     [Fact]
@@ -71,6 +84,29 @@ public sealed class WalLogTests
         using var reopened = WalLog.Open(directory.Path);
         Assert.Equal(validLength, new FileInfo(reopened.FilePath).Length);
         Assert.Single(reopened.ReadAll());
+    }
+
+
+    [Fact]
+    public void CorruptFinalV2PayloadLengthIsRejectedInsteadOfTruncated()
+    {
+        using var directory = new StorageTestDirectory();
+        string path;
+        using (var log = WalLog.Open(directory.Path))
+        {
+            log.Append(WalRecordType.Put, TransactionId.New(), [1, 2, 3]);
+            path = log.FilePath;
+        }
+
+        var originalLength = new FileInfo(path).Length;
+        var bytes = File.ReadAllBytes(path);
+        BinaryPrimitives.WriteUInt32LittleEndian(
+            bytes.AsSpan(WalFileHeaderCodec.Size + 36, 4),
+            100);
+        File.WriteAllBytes(path, bytes);
+
+        Assert.Throws<WalCorruptionException>(() => WalLog.Open(directory.Path));
+        Assert.Equal(originalLength, new FileInfo(path).Length);
     }
 
     [Fact]

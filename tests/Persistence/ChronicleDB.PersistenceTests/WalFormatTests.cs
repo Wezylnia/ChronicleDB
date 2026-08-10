@@ -26,8 +26,33 @@ public sealed class WalFormatTests
         var encoded = WalRecordCodec.Encode(record);
 
         Assert.Equal(
-            "43574C310102000030000000070000000000000033221100554477668899AABBCCDDEEFF030000000100000061E0A88F010203",
+            "43574C310202000030000000070000000000000033221100554477668899AABBCCDDEEFF03000000FCFFFFFFF1399120010203",
             Convert.ToHexString(encoded));
+    }
+
+
+    [Fact]
+    public void LegacyV1RecordRemainsReadable()
+    {
+        var encoded = Convert.FromHexString(
+            "43574C310102000030000000070000000000000033221100554477668899AABBCCDDEEFF030000000100000061E0A88F010203");
+
+        var decoded = WalRecordCodec.Decode(encoded);
+
+        Assert.Equal(WalRecordType.Put, decoded.Type);
+        Assert.Equal((ulong)7, decoded.Lsn);
+        Assert.Equal(new TransactionId(Guid.Parse("00112233-4455-6677-8899-aabbccddeeff")), decoded.TransactionId);
+        Assert.Equal(new byte[] { 1, 2, 3 }, decoded.Payload.ToArray());
+    }
+
+    [Fact]
+    public void V2PayloadLengthRedundancyDetectsHeaderCorruptionBeforeTailHandling()
+    {
+        var encoded = WalRecordCodec.Encode(new WalRecord(WalRecordType.Put, 6, TransactionId.New(), [1, 2, 3]));
+        BinaryPrimitives.WriteUInt32LittleEndian(encoded.AsSpan(36, 4), 100);
+
+        Assert.Throws<WalCorruptionException>(
+            () => WalRecordCodec.ReadValidatedPayloadLengthForScan(encoded.AsSpan(0, WalRecordCodec.HeaderSize)));
     }
 
     [Fact]
@@ -72,7 +97,9 @@ public sealed class WalFormatTests
         Assert.Throws<WalFormatException>(() => WalRecordCodec.Decode(encoded));
 
         var oversized = WalRecordCodec.Encode(new WalRecord(WalRecordType.Abort, 5, TransactionId.New(), []));
-        BinaryPrimitives.WriteUInt32LittleEndian(oversized.AsSpan(36, 4), WalRecordCodec.MaxPayloadSize + 1u);
+        var oversizedLength = WalRecordCodec.MaxPayloadSize + 1u;
+        BinaryPrimitives.WriteUInt32LittleEndian(oversized.AsSpan(36, 4), oversizedLength);
+        BinaryPrimitives.WriteUInt32LittleEndian(oversized.AsSpan(40, 4), ~oversizedLength);
         RewriteChecksum(oversized);
         Assert.Throws<WalLimitException>(() => WalRecordCodec.Decode(oversized));
     }
