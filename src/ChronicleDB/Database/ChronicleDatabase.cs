@@ -1,13 +1,19 @@
+using System.Diagnostics;
 using ChronicleDB.Core.Identifiers;
 using ChronicleDB.Core.Keys;
 using ChronicleDB.Core.Sequences;
+using ChronicleDB.Diagnostics;
+using ChronicleDB.History.Snapshots;
 using ChronicleDB.Indexing.Baseline;
 using ChronicleDB.Recovery;
 using ChronicleDB.Storage;
 using ChronicleDB.Storage.Files;
+using ChronicleDB.Storage.Formats;
+using ChronicleDB.Storage.Snapshots;
 using ChronicleDB.Transactions;
 using ChronicleDB.Transactions.Faults;
 using ChronicleDB.Transactions.Mvcc;
+using ChronicleDB.Transactions.State;
 using ChronicleDB.Wal;
 using ChronicleDB.Wal.Files;
 using ChronicleDB.Wal.Records;
@@ -15,42 +21,77 @@ using ChronicleDB.Wal.Records;
 namespace ChronicleDB;
 
 /// <summary>
-/// Embedded key-value surface with v0.3 durable Snapshot Isolation transactions.
+/// Embedded persistent key-value engine implementing durable Snapshot Isolation,
+/// concurrent readers/writers, persistent named snapshots and retained time travel.
 /// </summary>
 public sealed class ChronicleDatabase : IDisposable
 {
     private readonly PersistentKeyValueStore _store;
     private readonly WalLog _wal;
+    private readonly PersistentSnapshotStore _snapshotStore;
+    private readonly SnapshotCatalog _snapshots;
     private readonly CommittedVersionStore _versions;
-    private readonly object _gate = new();
+    private readonly ReaderWriterLockSlim _lifecycle = new(LockRecursionPolicy.NoRecursion);
+    private readonly object _stateGate = new();
+    private readonly object _commitGate = new();
+    private readonly object _historyGate = new();
     private readonly ITransactionFaultInjector? _faultInjector;
+    private readonly EngineCounters _counters;
+    private readonly Guid _databaseId;
     private CommitSequence _currentCommitSequence;
     private DatabaseState _state = DatabaseState.Open;
 
     private ChronicleDatabase(
         PersistentKeyValueStore store,
         WalLog wal,
+        PersistentSnapshotStore snapshotStore,
+        SnapshotCatalog snapshots,
         CommittedVersionStore versions,
         CommitSequence currentCommitSequence,
-        ITransactionFaultInjector? faultInjector)
+        ITransactionFaultInjector? faultInjector,
+        EngineCounters counters)
     {
         _store = store;
         _wal = wal;
+        _snapshotStore = snapshotStore;
+        _snapshots = snapshots;
         _versions = versions;
         _currentCommitSequence = currentCommitSequence;
         _faultInjector = faultInjector;
+        _counters = counters;
+        _databaseId = store.DatabaseId;
     }
 
-    public Guid DatabaseId => _store.DatabaseId;
+    public Guid DatabaseId => _databaseId;
 
     public CommitSequence CurrentCommitSequence
     {
         get
         {
-            lock (_gate)
+            EnterOperation();
+            try
             {
-                ThrowIfUsable();
-                return _currentCommitSequence;
+                return GetCurrentCommitSequence();
+            }
+            finally
+            {
+                ExitOperation();
+            }
+        }
+    }
+
+    public ulong HistoricalRetentionFloor
+    {
+        get
+        {
+            EnterOperation();
+            try
+            {
+                return _snapshots.RetentionFloor.Value;
+            }
+            finally
+            {
+                ExitOperation();
             }
         }
     }
@@ -59,7 +100,7 @@ public sealed class ChronicleDatabase : IDisposable
     {
         get
         {
-            lock (_gate)
+            lock (_stateGate)
             {
                 return _state;
             }
@@ -70,10 +111,14 @@ public sealed class ChronicleDatabase : IDisposable
     {
         get
         {
-            lock (_gate)
+            EnterOperation();
+            try
             {
-                ThrowIfUsable();
-                return _store.Count;
+                return _versions.CurrentKeyCount;
+            }
+            finally
+            {
+                ExitOperation();
             }
         }
     }
@@ -89,11 +134,20 @@ public sealed class ChronicleDatabase : IDisposable
                 $"ChronicleDB transactions support values up to {WalMutationCodec.MaxValueSize} bytes.");
         }
 
-        var store = PersistentKeyValueStore.Open(directory, options, allowIncompleteFinalPage: true);
+        var validatedOptions = options ?? new StorageOptions();
+        var fullDirectory = Path.GetFullPath(directory);
+        var store = PersistentKeyValueStore.Open(fullDirectory, validatedOptions, allowIncompleteFinalPage: true);
         WalLog? wal = null;
+        PersistentSnapshotStore? snapshotStore = null;
         try
         {
-            wal = WalLog.Open(directory, store.DatabaseId, new WalOptions { FlushOnAppend = false });
+            var walWasInitialized = store.HasFormatFlag(DatabaseHeader.WalInitializedFlag);
+            RequireInitializedFileIfFlagged(
+                store,
+                DatabaseHeader.WalInitializedFlag,
+                Path.Combine(fullDirectory, WalOptions.DefaultFileName),
+                "WAL");
+            wal = WalLog.Open(fullDirectory, store.DatabaseId, new WalOptions { FlushOnAppend = false });
             var recovery = WalRecovery.Reconcile(store, wal);
             var versions = new CommittedVersionStore(new SynchronizedVersionIndex());
             foreach (var transaction in recovery.CommittedTransactions.OrderBy(entry => entry.CommitLsn))
@@ -111,36 +165,96 @@ public sealed class ChronicleDatabase : IDisposable
                 .ToArray();
             if (legacyCurrentState.Length != 0)
             {
-                // v0.1 databases could contain physical current-state keys before WAL
-                // existed. They have no historical sequence, so bootstrap them at the
-                // current open boundary. v0.3 does not expose pre-open time travel.
-                if (currentCommitSequence.IsInitial)
+                if (walWasInitialized)
                 {
-                    currentCommitSequence = currentCommitSequence.Next();
+                    throw new StorageCorruptionException(
+                        "Physical current state contains keys that are not represented by the initialized WAL history.");
                 }
 
-                versions.ReplayCommitted(
-                    TransactionId.New(),
+                // Pre-MVCC physical keys have no stable historical sequence. Persist one
+                // synthetic bootstrap transaction in WAL exactly once so their boundary
+                // cannot drift forward on later reopens. The first snapshot-store floor is
+                // then established at this durable upgrade boundary.
+                currentCommitSequence = PersistLegacyBootstrap(
+                    store,
+                    wal,
+                    versions,
                     currentCommitSequence,
                     legacyCurrentState);
             }
 
+            // The capability flag is the durable statement that future opens may require
+            // WAL-backed logical history. Publish it only after recovery/bootstrap succeeds.
+            store.EnsureFormatFlags(DatabaseHeader.WalInitializedFlag);
+
+            // On first v0.5 open, an upgraded database conservatively retains history only
+            // from the current validated boundary. A fresh database starts at sequence zero.
+            RequireInitializedFileIfFlagged(
+                store,
+                DatabaseHeader.SnapshotStoreInitializedFlag,
+                Path.Combine(fullDirectory, PersistentSnapshotStore.FileName),
+                "persistent snapshot metadata");
+            snapshotStore = PersistentSnapshotStore.Open(
+                fullDirectory,
+                store.DatabaseId,
+                initialRetentionFloor: currentCommitSequence,
+                validatedOptions.FaultInjector);
+            store.EnsureFormatFlags(DatabaseHeader.SnapshotStoreInitializedFlag);
+            if (snapshotStore.Header.RetentionFloor > currentCommitSequence)
+            {
+                throw new StorageCorruptionException(
+                    "Snapshot retention metadata is newer than recovered committed history.");
+            }
+
+            if (snapshotStore.MaximumReferencedSequence > currentCommitSequence)
+            {
+                throw new StorageCorruptionException(
+                    "Snapshot lifecycle metadata references history newer than the recovered database.");
+            }
+
+            SnapshotCatalog snapshots;
+            try
+            {
+                snapshots = new SnapshotCatalog(
+                    snapshotStore.Header.RetentionFloor,
+                    currentCommitSequence,
+                    snapshotStore.ListActive().Select(ToSnapshotDefinition));
+            }
+            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+            {
+                throw new StorageCorruptionException(
+                    "Persistent snapshot metadata is inconsistent with recovered history.",
+                    exception);
+            }
+
+            var counters = new EngineCounters();
+            counters.RecoveryReplayed(recovery.CommittedTransactionCount);
             return new ChronicleDatabase(
                 store,
                 wal,
+                snapshotStore,
+                snapshots,
                 versions,
                 currentCommitSequence,
-                faultInjector);
+                faultInjector,
+                counters);
         }
         catch
         {
             try
             {
-                wal?.Dispose();
+                snapshotStore?.Dispose();
             }
             finally
             {
-                store.Dispose();
+                try
+                {
+                    wal?.Dispose();
+                }
+                finally
+                {
+                    store.Dispose();
+                }
             }
 
             throw;
@@ -149,82 +263,320 @@ public sealed class ChronicleDatabase : IDisposable
 
     public ChronicleTransaction BeginTransaction()
     {
-        lock (_gate)
+        EnterOperation();
+        try
         {
-            ThrowIfUsable();
-            var transaction = new Transaction(startSequence: _currentCommitSequence);
+            var transaction = new Transaction(startSequence: GetCurrentCommitSequence());
             transaction.Begin();
+            _counters.TransactionStarted();
             return new ChronicleTransaction(this, transaction);
+        }
+        finally
+        {
+            ExitOperation();
         }
     }
 
     public void Put(ReadOnlySpan<byte> key, ReadOnlySpan<byte> value)
     {
-        lock (_gate)
-        {
-            ThrowIfUsable();
-            using var transaction = BeginTransaction();
-            transaction.Put(key, value);
-            transaction.Commit();
-        }
+        using var transaction = BeginTransaction();
+        transaction.Put(key, value);
+        transaction.Commit();
     }
 
     public bool TryGet(ReadOnlySpan<byte> key, out byte[] value)
     {
-        lock (_gate)
+        EnterOperation();
+        try
         {
-            ThrowIfUsable();
-            return _versions.TryRead(new BinaryKey(key), _currentCommitSequence, out value);
+            var boundary = GetCurrentCommitSequence();
+            return _versions.TryRead(new BinaryKey(key), boundary, out value);
+        }
+        finally
+        {
+            ExitOperation();
         }
     }
 
     public bool Delete(ReadOnlySpan<byte> key)
     {
-        lock (_gate)
+        using var transaction = BeginTransaction();
+        var existed = transaction.TryGet(key, out _);
+        transaction.Delete(key);
+        transaction.Commit();
+        return existed;
+    }
+
+    public ChronicleSnapshot CreateSnapshot(string name)
+    {
+        EnterOperation();
+        var started = Stopwatch.GetTimestamp();
+        try
         {
-            ThrowIfUsable();
-            var existed = _versions.TryRead(new BinaryKey(key), _currentCommitSequence, out _);
-            using var transaction = BeginTransaction();
-            transaction.Delete(key);
-            transaction.Commit();
-            return existed;
+            lock (_historyGate)
+            {
+                var boundary = GetCurrentCommitSequence();
+                SnapshotDefinition definition;
+                try
+                {
+                    definition = _snapshots.PrepareCreate(name, boundary);
+                }
+                catch (InvalidOperationException)
+                {
+                    throw new SnapshotNameConflictException(name);
+                }
+
+                try
+                {
+                    _snapshotStore.AppendCreate(
+                        definition.SnapshotId,
+                        definition.Sequence,
+                        definition.CreatedUnixMilliseconds,
+                        definition.Name);
+                    _snapshots.RegisterPersisted(definition, GetCurrentCommitSequence());
+                }
+                catch
+                {
+                    if (_snapshotStore.IsFaulted)
+                    {
+                        MarkFaulted();
+                    }
+
+                    throw;
+                }
+
+                _counters.SnapshotCreated(Stopwatch.GetTimestamp() - started);
+                return new ChronicleSnapshot(this, ToSnapshotInfo(definition));
+            }
+        }
+        finally
+        {
+            ExitOperation();
+        }
+    }
+
+    public IReadOnlyList<ChronicleSnapshotInfo> ListSnapshots()
+    {
+        EnterOperation();
+        try
+        {
+            return _snapshots.List().Select(ToSnapshotInfo).ToArray();
+        }
+        finally
+        {
+            ExitOperation();
+        }
+    }
+
+    public ChronicleSnapshot OpenSnapshot(Guid snapshotId)
+    {
+        EnterOperation();
+        try
+        {
+            var id = new SnapshotId(snapshotId);
+            if (!id.IsValid || !_snapshots.TryGet(id, out var definition) || definition is null)
+            {
+                throw new SnapshotNotFoundException(snapshotId.ToString());
+            }
+
+            return new ChronicleSnapshot(this, ToSnapshotInfo(definition));
+        }
+        finally
+        {
+            ExitOperation();
+        }
+    }
+
+    public ChronicleSnapshot OpenSnapshot(string name)
+    {
+        EnterOperation();
+        try
+        {
+            if (!_snapshots.TryGet(name, out var definition) || definition is null)
+            {
+                throw new SnapshotNotFoundException($"named '{name}'");
+            }
+
+            return new ChronicleSnapshot(this, ToSnapshotInfo(definition));
+        }
+        finally
+        {
+            ExitOperation();
+        }
+    }
+
+    public void DeleteSnapshot(Guid snapshotId)
+    {
+        EnterOperation();
+        try
+        {
+            lock (_historyGate)
+            {
+                var id = new SnapshotId(snapshotId);
+                if (!id.IsValid || !_snapshots.TryGet(id, out var definition) || definition is null)
+                {
+                    throw new SnapshotNotFoundException(snapshotId.ToString());
+                }
+
+                try
+                {
+                    _snapshotStore.AppendDelete(id);
+                    _snapshots.RemoveRequired(id);
+                }
+                catch
+                {
+                    if (_snapshotStore.IsFaulted)
+                    {
+                        MarkFaulted();
+                    }
+
+                    throw;
+                }
+            }
+        }
+        finally
+        {
+            ExitOperation();
+        }
+    }
+
+    public ChronicleHistoricalView OpenHistoricalView(ulong sequence)
+    {
+        EnterOperation();
+        try
+        {
+            ValidateHistoricalBoundary(new CommitSequence(sequence));
+            return new ChronicleHistoricalView(this, sequence);
+        }
+        finally
+        {
+            ExitOperation();
+        }
+    }
+
+    public ChronicleDatabaseDiagnostics GetDiagnostics()
+    {
+        EnterOperation();
+        try
+        {
+            var current = GetCurrentCommitSequence();
+            var counters = _counters.Snapshot();
+            var versions = _versions.GetStatistics();
+            var wal = _wal.GetStatistics();
+            var snapshots = _snapshots.List();
+            var averageWalFlushMilliseconds = wal.FlushCount == 0
+                ? 0
+                : wal.TotalFlushStopwatchTicks * 1000d / Stopwatch.Frequency / wal.FlushCount;
+            return new ChronicleDatabaseDiagnostics(
+                DatabaseId: _databaseId,
+                State: State,
+                CurrentCommitSequence: current.Value,
+                RetentionFloor: _snapshots.RetentionFloor.Value,
+                CurrentKeyCount: versions.CurrentKeyCount,
+                ActiveTransactions: counters.ActiveTransactions,
+                CommitAttempts: counters.CommitAttempts,
+                SuccessfulCommits: counters.SuccessfulCommits,
+                Aborts: counters.Aborts,
+                ConflictAborts: counters.ConflictAborts,
+                CommitSerializationContention: counters.CommitSerializationContention,
+                AverageCommitMilliseconds: counters.AverageCommitMilliseconds,
+                VersionCount: versions.VersionCount,
+                VersionChainCount: versions.ChainCount,
+                AverageVersionChainLength: versions.AverageChainLength,
+                MaximumVersionChainLength: versions.MaximumChainLength,
+                IndexContention: versions.Index.ContendedAcquisitions,
+                NextWalLsn: wal.NextLsn,
+                WalFileBytes: wal.FileLength,
+                WalBytesWrittenThisSession: wal.BytesWrittenThisSession,
+                WalFlushCount: wal.FlushCount,
+                AverageWalFlushMilliseconds: averageWalFlushMilliseconds,
+                RecoveryReplayedTransactions: counters.RecoveryReplayedTransactions,
+                SnapshotCount: snapshots.Count,
+                OldestSnapshotSequence: snapshots.Count == 0 ? null : snapshots.Min(item => item.Sequence.Value),
+                NewestSnapshotSequence: snapshots.Count == 0 ? null : snapshots.Max(item => item.Sequence.Value),
+                AverageSnapshotCreateMilliseconds: counters.AverageSnapshotCreateMilliseconds,
+                SnapshotMetadataBytes: _snapshotStore.FileLength,
+                DataFileBytes: _store.DataLength,
+                DataPageCount: _store.PageCount,
+                OverflowPageCount: _store.OverflowPageCount);
+        }
+        finally
+        {
+            ExitOperation();
         }
     }
 
     public void Flush()
     {
-        lock (_gate)
+        EnterOperation();
+        try
         {
-            ThrowIfUsable();
-            _store.Flush();
-            _wal.Flush();
+            EnterCommitSerialization();
+            try
+            {
+                try
+                {
+                    _store.Flush();
+                    _wal.Flush();
+                }
+                catch
+                {
+                    MarkFaulted();
+                    throw;
+                }
+            }
+            finally
+            {
+                Monitor.Exit(_commitGate);
+            }
+        }
+        finally
+        {
+            ExitOperation();
         }
     }
 
     public void Dispose()
     {
-        lock (_gate)
+        _lifecycle.EnterWriteLock();
+        try
         {
-            if (_state == DatabaseState.Closed)
+            lock (_stateGate)
             {
-                return;
+                if (_state == DatabaseState.Closed)
+                {
+                    return;
+                }
+
+                _state = DatabaseState.Closed;
             }
 
             try
             {
-                _wal.Dispose();
+                _snapshotStore.Dispose();
             }
             finally
             {
                 try
                 {
-                    _store.Dispose();
+                    _wal.Dispose();
                 }
                 finally
                 {
-                    _state = DatabaseState.Closed;
+                    try
+                    {
+                        _store.Dispose();
+                    }
+                    finally
+                    {
+                        _versions.Dispose();
+                    }
                 }
             }
+        }
+        finally
+        {
+            _lifecycle.ExitWriteLock();
         }
     }
 
@@ -233,10 +585,11 @@ public sealed class ChronicleDatabase : IDisposable
         CommitSequence visibilityBoundary,
         out byte[] value)
     {
-        lock (_gate)
+        EnterOperation();
+        try
         {
-            ThrowIfUsable();
-            if (visibilityBoundary > _currentCommitSequence)
+            var current = GetCurrentCommitSequence();
+            if (visibilityBoundary > current)
             {
                 throw new ArgumentOutOfRangeException(
                     nameof(visibilityBoundary),
@@ -245,139 +598,184 @@ public sealed class ChronicleDatabase : IDisposable
 
             return _versions.TryRead(new BinaryKey(key), visibilityBoundary, out value);
         }
+        finally
+        {
+            ExitOperation();
+        }
+    }
+
+    internal bool ReadHistorical(
+        ReadOnlySpan<byte> key,
+        CommitSequence visibilityBoundary,
+        out byte[] value)
+    {
+        EnterOperation();
+        try
+        {
+            ValidateHistoricalBoundary(visibilityBoundary);
+            return _versions.TryRead(new BinaryKey(key), visibilityBoundary, out value);
+        }
+        finally
+        {
+            ExitOperation();
+        }
     }
 
     internal void Commit(Transaction transaction)
     {
         ArgumentNullException.ThrowIfNull(transaction);
-        lock (_gate)
+        EnterOperation();
+        var started = Stopwatch.GetTimestamp();
+        _counters.CommitAttempted();
+        try
         {
-            ThrowIfUsable();
-            // Freeze the transaction and copy its final write set atomically with respect
-            // to concurrent callers using the same transaction handle.
-            var writes = transaction.PrepareAndGetWriteSet();
-            List<StorageMutation> mutations;
-            List<(WalRecordType Type, byte[] Payload)> walPayloads;
-            CommitSequence commitSequence;
-            byte[] commitPayload;
-
+            EnterCommitSerialization();
             try
             {
-                ValidateWriteConflicts(transaction, writes);
-                commitSequence = NextCommitSequence();
+                ThrowIfUsable();
+                var writes = transaction.PrepareAndGetWriteSet();
+                List<StorageMutation> mutations;
+                List<(WalRecordType Type, byte[] Payload)> walPayloads;
+                CommitSequence commitSequence;
+                byte[] commitPayload;
 
-                mutations = new List<StorageMutation>(writes.Count);
-                walPayloads = new List<(WalRecordType Type, byte[] Payload)>(writes.Count);
-                foreach (var write in writes)
+                try
                 {
-                    if (write.IsDelete)
+                    ValidateWriteConflicts(transaction, writes);
+                    commitSequence = NextCommitSequence();
+
+                    mutations = new List<StorageMutation>(writes.Count);
+                    walPayloads = new List<(WalRecordType Type, byte[] Payload)>(writes.Count);
+                    foreach (var write in writes)
                     {
-                        var payload = WalMutationCodec.EncodeDelete(write.Key);
-                        ValidateWalPayload(payload);
-                        walPayloads.Add((WalRecordType.Delete, payload));
-                        mutations.Add(new StorageMutation(write.Key, isDelete: true, ReadOnlySpan<byte>.Empty));
+                        if (write.IsDelete)
+                        {
+                            var payload = WalMutationCodec.EncodeDelete(write.Key);
+                            ValidateWalPayload(payload);
+                            walPayloads.Add((WalRecordType.Delete, payload));
+                            mutations.Add(new StorageMutation(write.Key, isDelete: true, ReadOnlySpan<byte>.Empty));
+                        }
+                        else
+                        {
+                            var payload = WalMutationCodec.EncodePut(write.Key, write.Value.Span);
+                            ValidateWalPayload(payload);
+                            walPayloads.Add((WalRecordType.Put, payload));
+                            mutations.Add(new StorageMutation(write.Key, isDelete: false, write.Value.Span));
+                        }
                     }
-                    else
+
+                    // Nothing deterministic is permitted to reject the transaction after
+                    // the Commit record becomes durable.
+                    _store.ValidateBatch(mutations);
+                    _versions.ValidatePublicationCapacity(writes);
+                    ValidateWalCapacity(walPayloads.Count + 2);
+                    commitPayload = WalCommitCodec.Encode(commitSequence, _store.DataLength);
+                }
+                catch (TransactionConflictException)
+                {
+                    if (transaction.State == TransactionState.Preparing)
                     {
-                        var payload = WalMutationCodec.EncodePut(write.Key, write.Value.Span);
-                        ValidateWalPayload(payload);
-                        walPayloads.Add((WalRecordType.Put, payload));
-                        mutations.Add(new StorageMutation(write.Key, isDelete: false, write.Value.Span));
+                        transaction.Abort();
                     }
+
+                    _counters.ConflictAbortRecorded();
+                    throw;
+                }
+                catch
+                {
+                    if (transaction.State == TransactionState.Preparing)
+                    {
+                        transaction.Abort();
+                        _counters.AbortRecorded();
+                    }
+
+                    throw;
                 }
 
-                // Validate every deterministic representation before the first WAL byte is
-                // appended. Once the Commit record is durable, failure requires recovery.
-                _store.ValidateBatch(mutations);
-                ValidateWalCapacity(walPayloads.Count + 2);
-                var baseDataLength = _store.DataLength;
-                commitPayload = WalCommitCodec.Encode(commitSequence, baseDataLength);
+                var walTouched = false;
+                try
+                {
+                    _faultInjector?.Hit(TransactionFaultPoint.BeforeWalAppend);
+                    walTouched = true;
+                    _wal.Append(WalRecordType.Begin, transaction.TransactionId, []);
+                    foreach (var (type, payload) in walPayloads)
+                    {
+                        _wal.Append(type, transaction.TransactionId, payload);
+                    }
+
+                    transaction.MarkCommitting();
+                    _wal.Append(WalRecordType.Commit, transaction.TransactionId, commitPayload);
+                    _faultInjector?.Hit(TransactionFaultPoint.AfterWalAppend);
+                    _faultInjector?.Hit(TransactionFaultPoint.BeforeWalFlush);
+                    _wal.Flush();
+                    transaction.MarkDurableCommitted(commitSequence);
+                    _faultInjector?.Hit(TransactionFaultPoint.AfterWalFlush);
+                    _faultInjector?.Hit(TransactionFaultPoint.BeforePhysicalPublication);
+                    _store.ApplyBatch(mutations);
+                    _faultInjector?.Hit(TransactionFaultPoint.AfterPhysicalPublication);
+
+                    // Multi-key logical publication is one writer-critical section inside
+                    // the version store. Readers either observe the prior boundary or the
+                    // complete new transaction; current sequence is published only after it.
+                    _versions.PublishCommitted(transaction.TransactionId, commitSequence, writes);
+                    transaction.MarkCommitted();
+                    PublishCurrentCommitSequence(commitSequence);
+                    _counters.CommitSucceeded(Stopwatch.GetTimestamp() - started);
+                    _faultInjector?.Hit(TransactionFaultPoint.BeforeAcknowledgement);
+                }
+                catch
+                {
+                    if (walTouched)
+                    {
+                        MarkFaulted();
+                        if (transaction.State is TransactionState.Preparing or TransactionState.Committing)
+                        {
+                            _wal.MarkFaultedAfterUncertainWrite();
+                            transaction.MarkIndeterminate();
+                        }
+                    }
+                    else if (transaction.State == TransactionState.Preparing)
+                    {
+                        transaction.Abort();
+                        _counters.AbortRecorded();
+                    }
+
+                    throw;
+                }
             }
-            catch
+            finally
             {
-                if (transaction.State == Transactions.State.TransactionState.Preparing)
-                {
-                    transaction.Abort();
-                }
-
-                throw;
+                Monitor.Exit(_commitGate);
             }
-
-            var walTouched = false;
-            try
-            {
-                _faultInjector?.Hit(TransactionFaultPoint.BeforeWalAppend);
-                // An append can fail after writing only a prefix. Treat the WAL as touched
-                // before issuing the I/O so the instance is not reused ambiguously.
-                walTouched = true;
-                _wal.Append(WalRecordType.Begin, transaction.TransactionId, []);
-                foreach (var (type, payload) in walPayloads)
-                {
-                    _wal.Append(type, transaction.TransactionId, payload);
-                }
-
-                transaction.MarkCommitting();
-                _wal.Append(WalRecordType.Commit, transaction.TransactionId, commitPayload);
-                _faultInjector?.Hit(TransactionFaultPoint.AfterWalAppend);
-                _faultInjector?.Hit(TransactionFaultPoint.BeforeWalFlush);
-                _wal.Flush();
-                transaction.MarkDurableCommitted(commitSequence);
-                _faultInjector?.Hit(TransactionFaultPoint.AfterWalFlush);
-                _faultInjector?.Hit(TransactionFaultPoint.BeforePhysicalPublication);
-                _store.ApplyBatch(mutations);
-                _faultInjector?.Hit(TransactionFaultPoint.AfterPhysicalPublication);
-
-                // v0.3 serializes commit publication under the database gate. The index
-                // heads may be installed one by one physically, but no reader can observe
-                // the intermediate state. v0.4 can replace this with a descriptor/CAS path.
-                _versions.PublishCommitted(transaction.TransactionId, commitSequence, writes);
-                transaction.MarkCommitted();
-                _currentCommitSequence = commitSequence;
-                _faultInjector?.Hit(TransactionFaultPoint.BeforeAcknowledgement);
-            }
-            catch
-            {
-                if (walTouched)
-                {
-                    _state = DatabaseState.Faulted;
-                }
-                else if (transaction.State == Transactions.State.TransactionState.Preparing)
-                {
-                    // A failure before the first WAL append has no durable ambiguity.
-                    // Complete the local abort so callers do not inherit a transaction
-                    // permanently stuck in Preparing.
-                    transaction.Abort();
-                }
-
-                throw;
-            }
+        }
+        finally
+        {
+            ExitOperation();
         }
     }
 
     internal void Abort(Transaction transaction, bool throwIfNotAbortable)
     {
         ArgumentNullException.ThrowIfNull(transaction);
-        lock (_gate)
+        // Aborting a transaction that has not crossed the WAL commit point only
+        // changes its private descriptor. It must not wait behind another writer's
+        // durability pause; Transaction's own lock serializes this handle with Commit.
+        var state = transaction.State;
+        if (state is TransactionState.Created or TransactionState.Active or TransactionState.Preparing)
         {
-            // Abort is serialized with Commit so a caller cannot move a transaction out
-            // of Committing while another thread is crossing the WAL durability barrier.
-            var state = transaction.State;
-            if (state is Transactions.State.TransactionState.Created
-                or Transactions.State.TransactionState.Active
-                or Transactions.State.TransactionState.Preparing
-                or Transactions.State.TransactionState.Committing)
-            {
-                transaction.Abort();
-                return;
-            }
+            transaction.Abort();
+            _counters.AbortRecorded();
+            return;
+        }
 
-            if (throwIfNotAbortable)
-            {
-                throw new InvalidOperationException(
-                    $"Transaction {transaction.TransactionId.Value} cannot be aborted from {state}.");
-            }
+        if (throwIfNotAbortable)
+        {
+            throw new InvalidOperationException(
+                $"Transaction {transaction.TransactionId.Value} cannot be aborted from {state}.");
         }
     }
+
+    internal void TransactionHandleCompleted() => _counters.TransactionFinished();
 
     private void ValidateWriteConflicts(
         Transaction transaction,
@@ -400,7 +798,7 @@ public sealed class ChronicleDatabase : IDisposable
     {
         try
         {
-            return _currentCommitSequence.Next();
+            return GetCurrentCommitSequence().Next();
         }
         catch (OverflowException exception)
         {
@@ -408,16 +806,183 @@ public sealed class ChronicleDatabase : IDisposable
         }
     }
 
-    private void ThrowIfUsable()
+    private CommitSequence GetCurrentCommitSequence()
     {
-        if (_state == DatabaseState.Closed)
+        lock (_stateGate)
         {
-            ObjectDisposedException.ThrowIf(true, this);
+            return _currentCommitSequence;
+        }
+    }
+
+    private void PublishCurrentCommitSequence(CommitSequence sequence)
+    {
+        lock (_stateGate)
+        {
+            if (sequence <= _currentCommitSequence)
+            {
+                throw new InvalidOperationException("Commit publication attempted to move history backwards.");
+            }
+
+            _currentCommitSequence = sequence;
+        }
+    }
+
+    private void ValidateHistoricalBoundary(CommitSequence boundary)
+    {
+        var current = GetCurrentCommitSequence();
+        if (boundary < _snapshots.RetentionFloor || boundary > current)
+        {
+            throw new HistoricalStateUnavailableException(
+                boundary.Value,
+                _snapshots.RetentionFloor.Value,
+                current.Value);
+        }
+    }
+
+    private void EnterOperation()
+    {
+        _lifecycle.EnterReadLock();
+        try
+        {
+            ThrowIfUsable();
+        }
+        catch
+        {
+            _lifecycle.ExitReadLock();
+            throw;
+        }
+    }
+
+    private void ExitOperation() => _lifecycle.ExitReadLock();
+
+    private void EnterCommitSerialization()
+    {
+        if (Monitor.TryEnter(_commitGate))
+        {
+            return;
         }
 
-        if (_state == DatabaseState.Faulted)
+        _counters.CommitSerializationContended();
+        Monitor.Enter(_commitGate);
+    }
+
+    private void ThrowIfUsable()
+    {
+        lock (_stateGate)
         {
-            throw new ChronicleDatabaseFaultedException();
+            if (_state == DatabaseState.Closed)
+            {
+                ObjectDisposedException.ThrowIf(true, this);
+            }
+
+            if (_state == DatabaseState.Faulted)
+            {
+                throw new ChronicleDatabaseFaultedException();
+            }
+        }
+    }
+
+    private void MarkFaulted()
+    {
+        lock (_stateGate)
+        {
+            if (_state == DatabaseState.Open)
+            {
+                _state = DatabaseState.Faulted;
+            }
+        }
+    }
+
+    private static SnapshotDefinition ToSnapshotDefinition(SnapshotStoreRecord record)
+        => new(
+            record.SnapshotId,
+            record.Name,
+            record.Sequence,
+            record.CreatedUnixMilliseconds);
+
+    private ChronicleSnapshotInfo ToSnapshotInfo(SnapshotDefinition definition)
+        => new(
+            definition.SnapshotId.Value,
+            _databaseId,
+            definition.Name,
+            definition.Sequence.Value,
+            DateTimeOffset.FromUnixTimeMilliseconds(definition.CreatedUnixMilliseconds));
+
+    private static CommitSequence PersistLegacyBootstrap(
+        PersistentKeyValueStore store,
+        WalLog wal,
+        CommittedVersionStore versions,
+        CommitSequence currentSequence,
+        StorageMutation[] legacyCurrentState)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(wal);
+        ArgumentNullException.ThrowIfNull(versions);
+        ArgumentNullException.ThrowIfNull(legacyCurrentState);
+        if (legacyCurrentState.Length == 0)
+        {
+            return currentSequence;
+        }
+
+        CommitSequence bootstrapSequence;
+        try
+        {
+            bootstrapSequence = currentSequence.Next();
+        }
+        catch (OverflowException exception)
+        {
+            throw new StorageLimitException(
+                "Legacy state cannot be assigned a durable upgrade sequence because commit-sequence space is exhausted.",
+                exception);
+        }
+
+        store.ValidateBatch(legacyCurrentState);
+        var payloads = new List<byte[]>(legacyCurrentState.Length);
+        foreach (var mutation in legacyCurrentState)
+        {
+            if (mutation.IsDelete)
+            {
+                throw new StorageCorruptionException(
+                    "The physical current-state bootstrap unexpectedly contained a tombstone.");
+            }
+
+            var payload = WalMutationCodec.EncodePut(mutation.Key, mutation.Value.Span);
+            ValidateWalPayload(payload);
+            payloads.Add(payload);
+        }
+
+        var requiredRecords = checked((ulong)payloads.Count + 2UL);
+        if (wal.NextLsn > ulong.MaxValue - requiredRecords)
+        {
+            throw new ChronicleDB.Wal.Errors.WalLimitException(
+                "The WAL LSN space cannot fit the legacy-state bootstrap transaction.");
+        }
+
+        versions.ValidateReplayCapacity(legacyCurrentState);
+        var transactionId = TransactionId.New();
+        var commitPayload = WalCommitCodec.Encode(bootstrapSequence, store.DataLength);
+        wal.Append(WalRecordType.Begin, transactionId, []);
+        foreach (var payload in payloads)
+        {
+            wal.Append(WalRecordType.Put, transactionId, payload);
+        }
+
+        wal.Append(WalRecordType.Commit, transactionId, commitPayload);
+        wal.Flush();
+        versions.ReplayCommitted(transactionId, bootstrapSequence, legacyCurrentState);
+        return bootstrapSequence;
+    }
+
+    private static void RequireInitializedFileIfFlagged(
+        PersistentKeyValueStore store,
+        uint formatFlag,
+        string path,
+        string description)
+    {
+        if (store.HasFormatFlag(formatFlag) && !File.Exists(path))
+        {
+            throw new StorageCorruptionException(
+                $"Database metadata requires {description}, but '{Path.GetFileName(path)}' is missing.");
         }
     }
 

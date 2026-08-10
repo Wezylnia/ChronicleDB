@@ -1,13 +1,18 @@
-using ChronicleDB.Core.Keys;
 using ChronicleDB.Transactions;
+using ChronicleDB.Transactions.State;
 
 namespace ChronicleDB;
 
+/// <summary>
+/// Public transaction handle. Transaction operations are synchronized internally, but
+/// applications should treat one handle as single-owner; database-level concurrency is
+/// achieved with independent transaction handles.
+/// </summary>
 public sealed class ChronicleTransaction : IDisposable
 {
     private readonly ChronicleDatabase _database;
     private readonly Transaction _transaction;
-    private bool _disposed;
+    private int _completedHandle;
 
     internal ChronicleTransaction(ChronicleDatabase database, Transaction transaction)
     {
@@ -60,11 +65,9 @@ public sealed class ChronicleTransaction : IDisposable
         }
         finally
         {
-            if (_transaction.State is Transactions.State.TransactionState.Committed
-                or Transactions.State.TransactionState.Aborted
-                or Transactions.State.TransactionState.DurableCommitted)
+            if (IsTerminal(_transaction.State))
             {
-                _disposed = true;
+                CompleteHandle();
             }
         }
     }
@@ -73,20 +76,34 @@ public sealed class ChronicleTransaction : IDisposable
     {
         ThrowIfDisposed();
         _database.Abort(_transaction, throwIfNotAbortable: true);
-        _disposed = true;
+        CompleteHandle();
     }
 
     public void Dispose()
     {
-        if (_disposed)
+        if (Volatile.Read(ref _completedHandle) != 0)
         {
             return;
         }
 
         _database.Abort(_transaction, throwIfNotAbortable: false);
-
-        _disposed = true;
+        CompleteHandle();
     }
 
-    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
+    private void CompleteHandle()
+    {
+        if (Interlocked.Exchange(ref _completedHandle, 1) == 0)
+        {
+            _database.TransactionHandleCompleted();
+        }
+    }
+
+    private void ThrowIfDisposed()
+        => ObjectDisposedException.ThrowIf(Volatile.Read(ref _completedHandle) != 0, this);
+
+    private static bool IsTerminal(TransactionState state)
+        => state is TransactionState.Committed
+            or TransactionState.Aborted
+            or TransactionState.DurableCommitted
+            or TransactionState.Indeterminate;
 }

@@ -29,3 +29,38 @@ public sealed class TransactionConflictException : InvalidOperationException
 
     public ulong ConflictingSequence { get; }
 }
+
+public sealed class SnapshotNotFoundException : KeyNotFoundException
+{
+    internal SnapshotNotFoundException(string identity)
+        : base($"Persistent snapshot {identity} does not exist.")
+    {
+    }
+}
+
+public sealed class SnapshotNameConflictException : InvalidOperationException
+{
+    internal SnapshotNameConflictException(string name)
+        : base($"A persistent snapshot named '{name}' already exists.")
+    {
+    }
+}
+
+public sealed class HistoricalStateUnavailableException : InvalidOperationException
+{
+    internal HistoricalStateUnavailableException(ulong requested, ulong retentionFloor, ulong current)
+        : base(
+            $"Historical sequence {requested} is outside the retained range " +
+            $"[{retentionFloor}, {current}].")
+    {
+        RequestedSequence = requested;
+        RetentionFloor = retentionFloor;
+        CurrentSequence = current;
+    }
+
+    public ulong RequestedSequence { get; }
+
+    public ulong RetentionFloor { get; }
+
+    public ulong CurrentSequence { get; }
+}
