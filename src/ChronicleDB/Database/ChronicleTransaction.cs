@@ -68,7 +68,10 @@ public sealed class ChronicleTransaction : IDisposable
             return;
         }
 
-        if (_transaction.State is not (Transactions.State.TransactionState.Committed or Transactions.State.TransactionState.Aborted))
+        if (_transaction.State is Transactions.State.TransactionState.Created
+            or Transactions.State.TransactionState.Active
+            or Transactions.State.TransactionState.Preparing
+            or Transactions.State.TransactionState.Committing)
         {
             _transaction.Abort();
         }

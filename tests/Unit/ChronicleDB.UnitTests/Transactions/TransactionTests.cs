@@ -18,6 +18,7 @@ public sealed class TransactionTests
         transaction.Put([1], [2]);
         transaction.Prepare();
         transaction.MarkCommitting();
+        transaction.MarkDurableCommitted();
         transaction.MarkCommitted();
 
         Assert.Equal(TransactionState.Committed, transaction.State);
@@ -89,5 +90,22 @@ public sealed class TransactionTests
         transaction.Prepare();
         Assert.Throws<InvalidOperationException>(() => transaction.Begin());
         Assert.Throws<InvalidOperationException>(() => transaction.MarkCommitted());
+    }
+
+    [Fact]
+    public void DurableCommitCannotBeAbortedAndMustBePublishedOrRecovered()
+    {
+        var transaction = new Transaction();
+        transaction.Begin();
+        transaction.Put([1], [2]);
+        transaction.Prepare();
+        transaction.MarkCommitting();
+        transaction.MarkDurableCommitted();
+
+        Assert.Equal(TransactionState.DurableCommitted, transaction.State);
+        Assert.Throws<InvalidOperationException>(() => transaction.Abort());
+
+        transaction.MarkCommitted();
+        Assert.Equal(TransactionState.Committed, transaction.State);
     }
 }

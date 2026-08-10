@@ -1,5 +1,6 @@
 using ChronicleDB.Core.Identifiers;
 using ChronicleDB.Core.Keys;
+using ChronicleDB.Storage.Faults;
 using ChronicleDB.Storage.Formats;
 using ChronicleDB.Storage.Pages;
 using ChronicleDB.Storage.Records;
@@ -18,24 +19,32 @@ public sealed class PersistentKeyValueStore : IDisposable
     private readonly StorageOptions _options;
     private readonly FileStream _metadata;
     private readonly FileStream _data;
+    private readonly bool _allowIncompleteFinalPage;
     private readonly Dictionary<BinaryKey, StoredRecord> _records = [];
+    private bool _hasUntrustedTail;
     private bool _disposed;
 
     private PersistentKeyValueStore(
         StorageOptions options,
         FileStream metadata,
         FileStream data,
-        DatabaseHeader header)
+        DatabaseHeader header,
+        bool allowIncompleteFinalPage)
     {
         _options = options;
         _metadata = metadata;
         _data = data;
+        _allowIncompleteFinalPage = allowIncompleteFinalPage;
         Header = header;
     }
 
     public DatabaseHeader Header { get; }
 
     public Guid DatabaseId => Header.DatabaseId;
+
+    internal bool HasUntrustedTail => _hasUntrustedTail;
+
+    internal void DiscardUntrustedTail() => _hasUntrustedTail = false;
 
     public int Count
     {
@@ -52,6 +61,12 @@ public sealed class PersistentKeyValueStore : IDisposable
     public static PersistentKeyValueStore Open(
         string directory,
         StorageOptions? options = null)
+        => Open(directory, options, allowIncompleteFinalPage: false);
+
+    public static PersistentKeyValueStore Open(
+        string directory,
+        StorageOptions? options,
+        bool allowIncompleteFinalPage)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directory);
         var validatedOptions = options ?? new StorageOptions();
@@ -67,8 +82,20 @@ public sealed class PersistentKeyValueStore : IDisposable
         {
             metadata = OpenExclusive(Path.Combine(fullDirectory, MetadataFileName));
             data = OpenExclusive(Path.Combine(fullDirectory, DataFileName));
-            var header = OpenOrCreateHeader(metadata, data, validatedOptions);
-            var store = new PersistentKeyValueStore(validatedOptions, metadata, data, header);
+            var header = OpenOrCreateHeader(metadata, data, validatedOptions, allowIncompleteFinalPage);
+            var store = new PersistentKeyValueStore(
+                validatedOptions,
+                metadata,
+                data,
+                header,
+                allowIncompleteFinalPage);
+            if (data.Length % validatedOptions.PageSize != 0)
+            {
+                var completeLength = data.Length - (data.Length % validatedOptions.PageSize);
+                data.SetLength(completeLength);
+                data.Flush(flushToDisk: true);
+                store._hasUntrustedTail = true;
+            }
             store.ScanDataFile();
             return store;
         }
@@ -147,6 +174,50 @@ public sealed class PersistentKeyValueStore : IDisposable
     /// <summary>
     /// Publishes all mutations under the store lock. The caller must persist its transaction decision before calling this method.
     /// </summary>
+    public void ValidateBatch(IReadOnlyList<StorageMutation> mutations)
+    {
+        ArgumentNullException.ThrowIfNull(mutations);
+
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            foreach (var mutation in mutations)
+            {
+                ArgumentNullException.ThrowIfNull(mutation);
+                ValidateKey(mutation.Key);
+                if (mutation.Value.Length > _options.MaxValueSize)
+                {
+                    throw new StorageLimitException("Value exceeds the configured maximum size.");
+                }
+
+                if (mutation.IsDelete)
+                {
+                    _ = RecordCodec.Encode(
+                        mutation.Key,
+                        ReadOnlySpan<byte>.Empty,
+                        PageId.Invalid,
+                        tombstone: true,
+                        _options);
+                    continue;
+                }
+
+                var usesOverflow = mutation.Value.Length > _options.InlineValueCapacity(mutation.Key.Length);
+                if (usesOverflow)
+                {
+                    var chunkCapacity = checked(_options.PageSize - PageCodec.Size - OverflowCodec.HeaderSize);
+                    _ = checked((mutation.Value.Length + chunkCapacity - 1) / chunkCapacity);
+                }
+
+                _ = RecordCodec.Encode(
+                    mutation.Key,
+                    mutation.Value.Span,
+                    usesOverflow ? new PageId(1) : PageId.Invalid,
+                    tombstone: false,
+                    _options);
+            }
+        }
+    }
+
     public void ApplyBatch(IReadOnlyList<StorageMutation> mutations)
     {
         ArgumentNullException.ThrowIfNull(mutations);
@@ -275,7 +346,8 @@ public sealed class PersistentKeyValueStore : IDisposable
     private static DatabaseHeader OpenOrCreateHeader(
         FileStream metadata,
         FileStream data,
-        StorageOptions options)
+        StorageOptions options,
+        bool allowIncompleteFinalPage)
     {
         if (metadata.Length == 0)
         {
@@ -307,7 +379,7 @@ public sealed class PersistentKeyValueStore : IDisposable
             throw new StorageFormatException("Database page size does not match the requested storage options.");
         }
 
-        if (data.Length % options.PageSize != 0)
+        if (!allowIncompleteFinalPage && data.Length % options.PageSize != 0)
         {
             throw new StorageCorruptionException("Data file length is not page aligned.");
         }
@@ -353,7 +425,20 @@ public sealed class PersistentKeyValueStore : IDisposable
                 case PageType.Overflow:
                     {
                         var overflow = OverflowCodec.Decode(decoded.Payload, _options.PageSize);
-                        ValidateNextOverflowPage(pageId, overflow.NextPage, pageCount);
+                        if (overflow.NextPage.IsValid && overflow.NextPage.Value > pageCount)
+                        {
+                            if (!_allowIncompleteFinalPage || pageId.Value != pageCount)
+                            {
+                                throw new StorageCorruptionException(
+                                    "Overflow chain points outside the data file.");
+                            }
+
+                            _hasUntrustedTail = true;
+                        }
+                        else
+                        {
+                            ValidateNextOverflowPage(pageId, overflow.NextPage, pageCount);
+                        }
                         break;
                     }
                 default:
@@ -406,7 +491,9 @@ public sealed class PersistentKeyValueStore : IDisposable
             new PageHeader(pageId, type, Generation: 1, checked((ushort)payload.Length)),
             payload,
             _options.PageSize);
+        _options.FaultInjector?.Hit(StorageFaultPoint.BeforePageWrite, pageId);
         WriteExactly(_data, page, PageOffset(pageId));
+        _options.FaultInjector?.Hit(StorageFaultPoint.AfterPageWrite, pageId);
         return pageId;
     }
 

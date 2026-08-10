@@ -49,15 +49,19 @@ static async Task<int> RunHarnessAsync()
                 && secondFound
                 && first.SequenceEqual(new byte[] { 11 })
                 && second.SequenceEqual(new byte[] { 22 });
-            var validOutcome = point switch
+            var noneVisible = !firstFound && !secondFound;
+            var atomic = noneVisible || complete;
+            var durableExpectation = point switch
             {
-                TransactionFaultPoint.BeforeWalAppend => !complete,
-                TransactionFaultPoint.AfterWalAppend or TransactionFaultPoint.BeforeWalFlush => true,
+                TransactionFaultPoint.BeforeWalAppend
+                    or TransactionFaultPoint.AfterWalAppend
+                    or TransactionFaultPoint.BeforeWalFlush => true,
                 _ => complete
             };
+            var validOutcome = atomic && durableExpectation;
             if (!validOutcome)
             {
-                Console.Error.WriteLine($"{point}: recovery result was not valid, complete={complete}");
+                Console.Error.WriteLine($"{point}: recovery result was not valid, atomic={atomic}, complete={complete}");
                 failures++;
             }
             else

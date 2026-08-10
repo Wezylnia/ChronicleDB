@@ -6,7 +6,9 @@ public enum TransactionState
     Active = 1,
     Preparing = 2,
     Committing = 3,
-    Committed = 4,
-    Aborting = 5,
-    Aborted = 6
+    /// <summary> The WAL commit record has been flushed durably, but physical publication is not complete. </summary>
+    DurableCommitted = 4,
+    Committed = 5,
+    Aborting = 6,
+    Aborted = 7
 }

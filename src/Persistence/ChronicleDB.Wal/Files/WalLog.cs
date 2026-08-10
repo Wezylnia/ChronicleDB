@@ -39,6 +39,9 @@ public sealed class WalLog : IDisposable
     }
 
     public static WalLog Open(string directory, WalOptions? options = null)
+        => Open(directory, Guid.Empty, options);
+
+    public static WalLog Open(string directory, Guid expectedDatabaseId, WalOptions? options = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directory);
         var validatedOptions = options ?? new WalOptions();
@@ -58,6 +61,12 @@ public sealed class WalLog : IDisposable
                 FileShare.None,
                 bufferSize: 64 * 1024,
                 options: FileOptions.SequentialScan);
+            var header = EnsureHeader(stream, expectedDatabaseId);
+            if (expectedDatabaseId != Guid.Empty && header.DatabaseId != expectedDatabaseId)
+            {
+                throw new WalFormatException("WAL database identity does not match the storage database.");
+            }
+
             var scan = Scan(stream);
             if (scan.TailBytes != 0)
             {
@@ -152,10 +161,32 @@ public sealed class WalLog : IDisposable
         }
     }
 
+    private static WalFileHeader EnsureHeader(FileStream stream, Guid expectedDatabaseId)
+    {
+        if (stream.Length == 0)
+        {
+            var databaseId = expectedDatabaseId == Guid.Empty ? Guid.NewGuid() : expectedDatabaseId;
+            var encoded = WalFileHeaderCodec.Encode(new WalFileHeader(databaseId));
+            stream.Position = 0;
+            stream.Write(encoded);
+            stream.Flush(flushToDisk: true);
+            return new WalFileHeader(databaseId);
+        }
+
+        if (stream.Length < WalFileHeaderCodec.Size)
+        {
+            throw new WalCorruptionException("WAL file header is truncated.");
+        }
+
+        var bytes = new byte[WalFileHeaderCodec.Size];
+        ReadExactly(stream, bytes, 0);
+        return WalFileHeaderCodec.Decode(bytes);
+    }
+
     private static WalScan Scan(FileStream stream)
     {
         var records = new List<WalRecord>();
-        var position = 0L;
+        var position = (long)WalFileHeaderCodec.Size;
         var lastLsn = 0UL;
         var length = stream.Length;
         var header = new byte[WalRecordCodec.HeaderSize];

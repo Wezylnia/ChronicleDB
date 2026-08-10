@@ -1,4 +1,22 @@
-# v0.2 WAL record format
+# v0.2 WAL file and record format
+
+Each WAL starts with a fixed 64-byte file header. The header binds the log to the
+storage database identity; a database never replays a WAL belonging to another
+database.
+
+| Offset | Size | Field |
+| ---: | ---: | --- |
+| 0 | 8 | ASCII magic `CWLHDR01` |
+| 8 | 2 | major version (`1`) |
+| 10 | 2 | minor version (`0`) |
+| 12 | 4 | header size (`64`) |
+| 16 | 16 | database GUID bytes |
+| 32 | 8 | first LSN (`1`) |
+| 40 | 4 | checksum algorithm (`1` = CRC32C) |
+| 44 | 16 | reserved (zero) |
+| 60 | 4 | CRC32C of bytes `0..59` |
+
+Records begin at offset `64`.
 
 Every WAL record is encoded in little-endian form.
 

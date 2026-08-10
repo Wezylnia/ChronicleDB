@@ -19,7 +19,7 @@ public sealed class ChronicleDatabase : IDisposable
     private readonly WalLog _wal;
     private readonly object _gate = new();
     private readonly ITransactionFaultInjector? _faultInjector;
-    private bool _disposed;
+    private DatabaseState _state = DatabaseState.Open;
 
     private ChronicleDatabase(
         PersistentKeyValueStore store,
@@ -33,18 +33,45 @@ public sealed class ChronicleDatabase : IDisposable
 
     public Guid DatabaseId => _store.DatabaseId;
 
-    public int Count => _store.Count;
+    public DatabaseState State
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _state;
+            }
+        }
+    }
+
+    public int Count
+    {
+        get
+        {
+            lock (_gate)
+            {
+                ThrowIfUsable();
+                return _store.Count;
+            }
+        }
+    }
 
     public static ChronicleDatabase Open(
         string directory,
         StorageOptions? options = null,
         ITransactionFaultInjector? faultInjector = null)
     {
-        var store = PersistentKeyValueStore.Open(directory, options);
+        if (options is { MaxValueSize: > WalMutationCodec.MaxValueSize })
+        {
+            throw new StorageLimitException(
+                $"ChronicleDB transactions support values up to {WalMutationCodec.MaxValueSize} bytes.");
+        }
+
+        var store = PersistentKeyValueStore.Open(directory, options, allowIncompleteFinalPage: true);
         WalLog? wal = null;
         try
         {
-            wal = WalLog.Open(directory);
+            wal = WalLog.Open(directory, store.DatabaseId, new WalOptions { FlushOnAppend = false });
             WalRecovery.Reconcile(store, wal);
             return new ChronicleDatabase(store, wal, faultInjector);
         }
@@ -60,7 +87,7 @@ public sealed class ChronicleDatabase : IDisposable
     {
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ThrowIfUsable();
             var transaction = new Transaction();
             transaction.Begin();
             return new ChronicleTransaction(this, transaction);
@@ -71,7 +98,7 @@ public sealed class ChronicleDatabase : IDisposable
     {
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ThrowIfUsable();
             using var transaction = BeginTransaction();
             transaction.Put(key, value);
             transaction.Commit();
@@ -82,7 +109,7 @@ public sealed class ChronicleDatabase : IDisposable
     {
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ThrowIfUsable();
             return _store.TryGet(new BinaryKey(key), out value);
         }
     }
@@ -91,7 +118,7 @@ public sealed class ChronicleDatabase : IDisposable
     {
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ThrowIfUsable();
             var existed = _store.TryGet(new BinaryKey(key), out _);
             using var transaction = BeginTransaction();
             transaction.Delete(key);
@@ -104,7 +131,7 @@ public sealed class ChronicleDatabase : IDisposable
     {
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ThrowIfUsable();
             _store.Flush();
             _wal.Flush();
         }
@@ -114,14 +141,20 @@ public sealed class ChronicleDatabase : IDisposable
     {
         lock (_gate)
         {
-            if (_disposed)
+            if (_state == DatabaseState.Closed)
             {
                 return;
             }
 
-            _wal.Dispose();
-            _store.Dispose();
-            _disposed = true;
+            try
+            {
+                _wal.Dispose();
+                _store.Dispose();
+            }
+            finally
+            {
+                _state = DatabaseState.Closed;
+            }
         }
     }
 
@@ -129,7 +162,7 @@ public sealed class ChronicleDatabase : IDisposable
     {
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ThrowIfUsable();
             return _store.TryGet(new BinaryKey(key), out value);
         }
     }
@@ -139,39 +172,90 @@ public sealed class ChronicleDatabase : IDisposable
         ArgumentNullException.ThrowIfNull(transaction);
         lock (_gate)
         {
-            ThrowIfDisposed();
-            transaction.Prepare();
+            ThrowIfUsable();
             var writes = transaction.GetWriteSet();
-            _faultInjector?.Hit(TransactionFaultPoint.BeforeWalAppend);
-            _wal.Append(WalRecordType.Begin, transaction.TransactionId, []);
             var mutations = new List<StorageMutation>(writes.Count);
+            var walPayloads = new List<(WalRecordType Type, byte[] Payload)>(writes.Count);
             foreach (var write in writes)
             {
                 if (write.IsDelete)
                 {
-                    _wal.Append(WalRecordType.Delete, transaction.TransactionId, WalMutationCodec.EncodeDelete(write.Key));
+                    var payload = WalMutationCodec.EncodeDelete(write.Key);
+                    ValidateWalPayload(payload);
+                    walPayloads.Add((WalRecordType.Delete, payload));
                     mutations.Add(new StorageMutation(write.Key, isDelete: true, ReadOnlySpan<byte>.Empty));
                 }
                 else
                 {
-                    _wal.Append(WalRecordType.Put, transaction.TransactionId, WalMutationCodec.EncodePut(write.Key, write.Value.Span));
+                    var payload = WalMutationCodec.EncodePut(write.Key, write.Value.Span);
+                    ValidateWalPayload(payload);
+                    walPayloads.Add((WalRecordType.Put, payload));
                     mutations.Add(new StorageMutation(write.Key, isDelete: false, write.Value.Span));
                 }
             }
 
-            transaction.MarkCommitting();
-            _wal.Append(WalRecordType.Commit, transaction.TransactionId, []);
-            _faultInjector?.Hit(TransactionFaultPoint.AfterWalAppend);
-            _faultInjector?.Hit(TransactionFaultPoint.BeforeWalFlush);
-            _wal.Flush();
-            _faultInjector?.Hit(TransactionFaultPoint.AfterWalFlush);
-            _faultInjector?.Hit(TransactionFaultPoint.BeforePhysicalPublication);
-            _store.ApplyBatch(mutations);
-            _faultInjector?.Hit(TransactionFaultPoint.AfterPhysicalPublication);
-            transaction.MarkCommitted();
-            _faultInjector?.Hit(TransactionFaultPoint.BeforeAcknowledgement);
+            // Validate every representation before the first WAL byte is appended. This keeps
+            // a rejected mutation from becoming a durable commit that recovery cannot replay.
+            _store.ValidateBatch(mutations);
+            transaction.Prepare();
+
+            var walTouched = false;
+            try
+            {
+                _faultInjector?.Hit(TransactionFaultPoint.BeforeWalAppend);
+                // An append can fail after writing only a prefix. Treat the WAL as touched
+                // before issuing the I/O so the instance is not reused ambiguously.
+                walTouched = true;
+                _wal.Append(WalRecordType.Begin, transaction.TransactionId, []);
+                foreach (var (type, payload) in walPayloads)
+                {
+                    _wal.Append(type, transaction.TransactionId, payload);
+                }
+
+                transaction.MarkCommitting();
+                _wal.Append(WalRecordType.Commit, transaction.TransactionId, []);
+                _faultInjector?.Hit(TransactionFaultPoint.AfterWalAppend);
+                _faultInjector?.Hit(TransactionFaultPoint.BeforeWalFlush);
+                _wal.Flush();
+                transaction.MarkDurableCommitted();
+                _faultInjector?.Hit(TransactionFaultPoint.AfterWalFlush);
+                _faultInjector?.Hit(TransactionFaultPoint.BeforePhysicalPublication);
+                _store.ApplyBatch(mutations);
+                _faultInjector?.Hit(TransactionFaultPoint.AfterPhysicalPublication);
+                transaction.MarkCommitted();
+                _faultInjector?.Hit(TransactionFaultPoint.BeforeAcknowledgement);
+            }
+            catch
+            {
+                if (walTouched)
+                {
+                    _state = DatabaseState.Faulted;
+                }
+
+                throw;
+            }
         }
     }
 
-    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
+    private void ThrowIfUsable()
+    {
+        if (_state == DatabaseState.Closed)
+        {
+            ObjectDisposedException.ThrowIf(true, this);
+        }
+
+        if (_state == DatabaseState.Faulted)
+        {
+            throw new ChronicleDatabaseFaultedException();
+        }
+    }
+
+    private static void ValidateWalPayload(ReadOnlyMemory<byte> payload)
+    {
+        if (payload.Length > WalMutationCodec.MaxRecordPayloadSize)
+        {
+            throw new ChronicleDB.Wal.Errors.WalLimitException(
+                "The mutation does not fit in the maximum WAL record payload.");
+        }
+    }
 }

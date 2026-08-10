@@ -1,5 +1,7 @@
 namespace ChronicleDB.Storage;
 
+using ChronicleDB.Storage.Faults;
+
 public sealed record StorageOptions
 {
     public const int DefaultPageSize = 16 * 1024;
@@ -14,6 +16,9 @@ public sealed record StorageOptions
     public int MaxValueSize { get; init; } = DefaultMaxValueSize;
 
     public bool FlushOnWrite { get; init; } = true;
+
+    /// <summary>Test-only physical publication fault injection; null in production.</summary>
+    public IStorageFaultInjector? FaultInjector { get; init; }
 
     public int InlineValueCapacity(int keyLength)
     {

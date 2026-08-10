@@ -12,12 +12,14 @@ public sealed class WalRecoveryTests
     public void DurableCommitWithoutPhysicalPublicationIsRecovered()
     {
         using var directory = new StorageTestDirectory();
+        Guid databaseId;
         using (var store = PersistentKeyValueStore.Open(directory.Path))
         {
+            databaseId = store.DatabaseId;
         }
 
         var transactionId = TransactionId.New();
-        using (var wal = WalLog.Open(directory.Path))
+        using (var wal = WalLog.Open(directory.Path, databaseId))
         {
             wal.Append(WalRecordType.Begin, transactionId, []);
             wal.Append(WalRecordType.Put, transactionId, WalMutationCodec.EncodePut(new ChronicleDB.Core.Keys.BinaryKey([1]), [2]));
@@ -33,13 +35,15 @@ public sealed class WalRecoveryTests
     public void IncompleteAndAbortedTransactionsNeverBecomeVisible()
     {
         using var directory = new StorageTestDirectory();
+        Guid databaseId;
         using (var store = PersistentKeyValueStore.Open(directory.Path))
         {
+            databaseId = store.DatabaseId;
         }
 
         var incomplete = TransactionId.New();
         var aborted = TransactionId.New();
-        using (var wal = WalLog.Open(directory.Path))
+        using (var wal = WalLog.Open(directory.Path, databaseId))
         {
             wal.Append(WalRecordType.Begin, incomplete, []);
             wal.Append(WalRecordType.Put, incomplete, WalMutationCodec.EncodePut(new ChronicleDB.Core.Keys.BinaryKey([1]), [1]));
@@ -57,12 +61,14 @@ public sealed class WalRecoveryTests
     public void RecoveryUsesLatestCommittedValueAndIsIdempotent()
     {
         using var directory = new StorageTestDirectory();
+        Guid databaseId;
         using (var store = PersistentKeyValueStore.Open(directory.Path))
         {
+            databaseId = store.DatabaseId;
         }
 
         var key = new ChronicleDB.Core.Keys.BinaryKey([9]);
-        using (var wal = WalLog.Open(directory.Path))
+        using (var wal = WalLog.Open(directory.Path, databaseId))
         {
             AppendCommittedPut(wal, key, [1]);
             AppendCommittedPut(wal, key, [2]);
@@ -90,12 +96,14 @@ public sealed class WalRecoveryTests
     public void MutationAfterCommitIsRejectedAsMalformedTransaction()
     {
         using var directory = new StorageTestDirectory();
+        Guid databaseId;
         using (var store = PersistentKeyValueStore.Open(directory.Path))
         {
+            databaseId = store.DatabaseId;
         }
 
         var transactionId = TransactionId.New();
-        using (var wal = WalLog.Open(directory.Path))
+        using (var wal = WalLog.Open(directory.Path, databaseId))
         {
             wal.Append(WalRecordType.Begin, transactionId, []);
             wal.Append(WalRecordType.Commit, transactionId, []);
@@ -109,12 +117,14 @@ public sealed class WalRecoveryTests
     public void ReusedTransactionIdIsRejected()
     {
         using var directory = new StorageTestDirectory();
+        Guid databaseId;
         using (var store = PersistentKeyValueStore.Open(directory.Path))
         {
+            databaseId = store.DatabaseId;
         }
 
         var transactionId = TransactionId.New();
-        using (var wal = WalLog.Open(directory.Path))
+        using (var wal = WalLog.Open(directory.Path, databaseId))
         {
             wal.Append(WalRecordType.Begin, transactionId, []);
             wal.Append(WalRecordType.Commit, transactionId, []);

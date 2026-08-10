@@ -86,7 +86,7 @@ public sealed class WalLogTests
         }
 
         var bytes = File.ReadAllBytes(path);
-        bytes[WalRecordCodec.HeaderSize] ^= 1;
+        bytes[WalFileHeaderCodec.Size + WalRecordCodec.HeaderSize] ^= 1;
         File.WriteAllBytes(path, bytes);
 
         Assert.Throws<WalCorruptionException>(() => WalLog.Open(directory.Path));
@@ -97,9 +97,10 @@ public sealed class WalLogTests
     {
         using var directory = new StorageTestDirectory();
         var path = Path.Combine(directory.Path, WalOptions.DefaultFileName);
+        var header = WalFileHeaderCodec.Encode(new WalFileHeader(Guid.NewGuid()));
         var first = WalRecordCodec.Encode(new WalRecord(WalRecordType.Begin, 2, TransactionId.New(), []));
         var second = WalRecordCodec.Encode(new WalRecord(WalRecordType.Commit, 1, TransactionId.New(), []));
-        File.WriteAllBytes(path, first.Concat(second).ToArray());
+        File.WriteAllBytes(path, header.Concat(first).Concat(second).ToArray());
 
         Assert.Throws<WalCorruptionException>(() => WalLog.Open(directory.Path));
     }
@@ -111,5 +112,17 @@ public sealed class WalLogTests
 
         Assert.Throws<WalFormatException>(() => WalLog.Open(directory.Path, new WalOptions { FileName = "..\\escape.wal" }));
         Assert.Throws<WalFormatException>(() => WalLog.Open(directory.Path, new WalOptions { FileName = "wal.bin" }));
+    }
+
+    [Fact]
+    public void DatabaseIdentityIsBoundToTheWalHeader()
+    {
+        using var directory = new StorageTestDirectory();
+        using (WalLog.Open(directory.Path, Guid.NewGuid()))
+        {
+        }
+
+        Assert.Throws<WalFormatException>(
+            () => WalLog.Open(directory.Path, Guid.NewGuid()));
     }
 }

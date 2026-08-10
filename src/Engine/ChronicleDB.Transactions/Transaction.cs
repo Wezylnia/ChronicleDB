@@ -146,8 +146,16 @@ public sealed class Transaction
     {
         lock (_gate)
         {
-            Transition(TransactionState.Committing, TransactionState.Committed);
+            Transition(TransactionState.DurableCommitted, TransactionState.Committed);
             _writes.Clear();
+        }
+    }
+
+    public void MarkDurableCommitted()
+    {
+        lock (_gate)
+        {
+            Transition(TransactionState.Committing, TransactionState.DurableCommitted);
         }
     }
 

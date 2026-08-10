@@ -66,6 +66,18 @@ public static class WalRecovery
         }
 
         var mutationsToApply = finalState.Values.ToArray();
+        // A partial final physical page is never trusted. Remove its logical footprint
+        // and let complete durable WAL transactions republish the intended state.
+        if (store.HasUntrustedTail)
+        {
+            if (committed.Count == 0)
+            {
+                throw new ChronicleDB.Storage.StorageCorruptionException(
+                    "The storage file has an incomplete final page without a durable WAL decision.");
+            }
+
+            store.DiscardUntrustedTail();
+        }
         store.ApplyBatch(mutationsToApply);
         return new RecoveryResult(committed.Count, active.Count, mutationsToApply.Length);
     }

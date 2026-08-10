@@ -11,6 +11,7 @@ public static class WalMutationCodec
     public const int PutHeaderSize = KeyLengthSize + ValueLengthSize;
     public const int MaxKeySize = ushort.MaxValue;
     public const int MaxValueSize = 64 * 1024 * 1024;
+    public const int MaxRecordPayloadSize = 64 * 1024 * 1024;
 
     public static byte[] EncodePut(BinaryKey key, ReadOnlySpan<byte> value)
     {

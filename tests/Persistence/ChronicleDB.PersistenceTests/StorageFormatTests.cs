@@ -121,6 +121,23 @@ public sealed class StorageFormatTests
     }
 
     [Fact]
+    public void IncompleteFinalDataPageIsReplayedFromDurableWal()
+    {
+        using var directory = new StorageTestDirectory();
+        using (var database = ChronicleDatabase.Open(directory.Path))
+        {
+            database.Put([7], [8]);
+        }
+
+        var dataPath = System.IO.Path.Combine(directory.Path, PersistentKeyValueStore.DataFileName);
+        File.AppendAllBytes(dataPath, [0xCC]);
+
+        using var reopened = ChronicleDatabase.Open(directory.Path);
+        Assert.True(reopened.TryGet([7], out var value));
+        Assert.Equal(new byte[] { 8 }, value);
+    }
+
+    [Fact]
     public void CorruptRecordPageIsRejectedOnOpen()
     {
         using var directory = new StorageTestDirectory();
