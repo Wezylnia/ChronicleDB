@@ -213,11 +213,29 @@ public sealed class SnapshotIntegrationTests
         var diagnostics = database.GetDiagnostics();
 
         Assert.Equal(1, diagnostics.SnapshotCount);
+        Assert.Equal(1, diagnostics.RetainingRootCount);
         Assert.Equal((ulong?)2, diagnostics.OldestSnapshotSequence);
         Assert.Equal(2, diagnostics.VersionCount);
         Assert.Equal(2, diagnostics.MaximumVersionChainLength);
         Assert.True(diagnostics.WalFlushCount >= 2);
         Assert.True(diagnostics.DataPageCount >= 2);
+    }
+
+    [Fact]
+    public void SnapshotDeletionReleasesItsHistoryRootWithoutChangingTheConservativeFloor()
+    {
+        using var directory = new StorageTestDirectory();
+        using var database = ChronicleDB.ChronicleDatabase.Open(directory.Path);
+        database.Put([1], [1]);
+        using var snapshot = database.CreateSnapshot("release-root");
+
+        var beforeDelete = database.GetDiagnostics();
+        Assert.Equal(1, beforeDelete.RetainingRootCount);
+        database.DeleteSnapshot(snapshot.SnapshotId);
+
+        var diagnostics = database.GetDiagnostics();
+        Assert.Equal(0, diagnostics.RetainingRootCount);
+        Assert.Equal(beforeDelete.RetentionFloor, diagnostics.RetentionFloor);
     }
     [Fact]
     public void SnapshotFailureBeforeMetadataWriteDoesNotFaultDatabase()

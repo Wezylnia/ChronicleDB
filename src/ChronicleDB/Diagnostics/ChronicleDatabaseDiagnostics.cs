@@ -29,6 +29,7 @@ public sealed record ChronicleDatabaseDiagnostics(
     double AverageWalFlushMilliseconds,
     long RecoveryReplayedTransactions,
     int SnapshotCount,
+    int RetainingRootCount,
     ulong? OldestSnapshotSequence,
     ulong? NewestSnapshotSequence,
     double AverageSnapshotCreateMilliseconds,

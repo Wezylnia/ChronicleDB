@@ -110,6 +110,20 @@ public sealed class HistoryRootRegistry
         }
     }
 
+    /// <summary>
+    /// Cancels a deletion intent when its durable delete record was not
+    /// published. The root remains protected and active.
+    /// </summary>
+    public void CancelDelete(HistoryRootId rootId)
+    {
+        lock (_gate)
+        {
+            var root = GetRequiredLocked(rootId);
+            EnsureState(root, HistoryRootState.Deleting);
+            _roots[rootId] = root.WithState(HistoryRootState.Active);
+        }
+    }
+
     public bool TryGet(HistoryRootId rootId, out HistoryRoot? root)
     {
         lock (_gate)
