@@ -31,7 +31,7 @@ public sealed class StorageFormatTests
         Assert.Equal(expected, actual);
         Assert.Equal(DatabaseHeaderCodec.Size, bytes.Length);
         Assert.Equal(
-            "4348444276303031010000004000000033221100554477668899AABBCCDDEEFF0040000001000000000000000068E5CF8B0100000000000000000000624A1567",
+            "4348444276303031010001004000000033221100554477668899AABBCCDDEEFF0040000001000000000000000068E5CF8B01000001000000000000000CC1D5CF",
             Convert.ToHexString(bytes));
     }
 
@@ -60,6 +60,110 @@ public sealed class StorageFormatTests
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(60, 4), Crc32C.Compute(bytes.AsSpan(0, 60)));
 
         Assert.Throws<StorageFormatException>(() => DatabaseHeaderCodec.Decode(bytes));
+    }
+
+
+    [Fact]
+    public void LegacyV10HeaderRemainsReadableForUpgrade()
+    {
+        var bytes = Convert.FromHexString(
+            "4348444276303031010000004000000033221100554477668899AABBCCDDEEFF0040000001000000000000000068E5CF8B0100000000000000000000624A1567");
+
+        var decoded = DatabaseHeaderCodec.Decode(bytes);
+
+        Assert.Equal(Guid.Parse("00112233-4455-6677-8899-aabbccddeeff"), decoded.DatabaseId);
+        Assert.Equal((uint)0, decoded.FormatFlags);
+        Assert.Equal((ulong)0, decoded.Generation);
+    }
+
+    [Fact]
+    public void HeaderRejectsUnknownFormatFlagAfterChecksumValidation()
+    {
+        var bytes = DatabaseHeaderCodec.Encode(new DatabaseHeader(
+            Guid.NewGuid(),
+            StorageOptions.DefaultPageSize,
+            FormatFlags: 0,
+            CreatedUnixMilliseconds: 1));
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(40, 4), 1u << 31);
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(60, 4), Crc32C.Compute(bytes.AsSpan(0, 60)));
+
+        Assert.Throws<StorageFormatException>(() => DatabaseHeaderCodec.Decode(bytes));
+    }
+
+    [Fact]
+    public void MetadataHeaderJournalPersistsFlagsAndRepairsOnlyPartialFinalSlot()
+    {
+        using var directory = new StorageTestDirectory();
+        using (var store = PersistentKeyValueStore.Open(directory.Path))
+        {
+            store.EnsureFormatFlags(DatabaseHeader.WalInitializedFlag);
+            store.EnsureFormatFlags(DatabaseHeader.SnapshotStoreInitializedFlag);
+            Assert.Equal(DatabaseHeader.SupportedFormatFlags, store.Header.FormatFlags);
+            Assert.Equal((ulong)3, store.Header.Generation);
+        }
+
+        var metadataPath = Path.Combine(directory.Path, PersistentKeyValueStore.MetadataFileName);
+        Assert.Equal(DatabaseHeaderCodec.Size * 3L, new FileInfo(metadataPath).Length);
+        File.AppendAllBytes(metadataPath, [1, 2, 3]);
+
+        using var reopened = PersistentKeyValueStore.Open(directory.Path);
+        Assert.Equal(DatabaseHeader.SupportedFormatFlags, reopened.Header.FormatFlags);
+        Assert.Equal((ulong)3, reopened.Header.Generation);
+        Assert.Equal(DatabaseHeaderCodec.Size * 3L, new FileInfo(metadataPath).Length);
+    }
+
+    [Fact]
+    public void CompleteCorruptMetadataGenerationIsNeverSilentlyDiscarded()
+    {
+        using var directory = new StorageTestDirectory();
+        using (var store = PersistentKeyValueStore.Open(directory.Path))
+        {
+            store.EnsureFormatFlags(DatabaseHeader.WalInitializedFlag);
+        }
+
+        var metadataPath = Path.Combine(directory.Path, PersistentKeyValueStore.MetadataFileName);
+        var bytes = File.ReadAllBytes(metadataPath);
+        bytes[^1] ^= 1;
+        File.WriteAllBytes(metadataPath, bytes);
+
+        Assert.Throws<StorageCorruptionException>(() => PersistentKeyValueStore.Open(directory.Path).Dispose());
+    }
+
+
+    [Fact]
+    public void MetadataJournalRejectsSuccessorThatRemovesDurableFeatureFlag()
+    {
+        using var directory = new StorageTestDirectory();
+        DatabaseHeader latest;
+        using (var store = PersistentKeyValueStore.Open(directory.Path))
+        {
+            store.EnsureFormatFlags(DatabaseHeader.WalInitializedFlag);
+            latest = store.Header;
+        }
+
+        var invalid = latest with
+        {
+            FormatFlags = 0,
+            Generation = latest.Generation + 1
+        };
+        File.AppendAllBytes(
+            Path.Combine(directory.Path, PersistentKeyValueStore.MetadataFileName),
+            DatabaseHeaderCodec.Encode(invalid));
+
+        Assert.Throws<StorageCorruptionException>(
+            () => PersistentKeyValueStore.Open(directory.Path).Dispose());
+    }
+
+    [Fact]
+    public void ExistingEmptyMetadataFileIsNotSilentlyAssignedANewDatabaseIdentity()
+    {
+        using var directory = new StorageTestDirectory();
+        File.WriteAllBytes(
+            Path.Combine(directory.Path, PersistentKeyValueStore.MetadataFileName),
+            []);
+
+        Assert.Throws<StorageCorruptionException>(
+            () => PersistentKeyValueStore.Open(directory.Path).Dispose());
     }
 
     [Fact]

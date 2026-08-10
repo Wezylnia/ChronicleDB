@@ -19,6 +19,11 @@ public sealed class StorageFormatException : StorageException
         : base(message)
     {
     }
+
+    public StorageFormatException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
 }
 
 public sealed class StorageCorruptionException : StorageException
@@ -27,12 +32,22 @@ public sealed class StorageCorruptionException : StorageException
         : base(message)
     {
     }
+
+    public StorageCorruptionException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
 }
 
 public sealed class StorageLimitException : StorageException
 {
     public StorageLimitException(string message)
         : base(message)
+    {
+    }
+
+    public StorageLimitException(string message, Exception innerException)
+        : base(message, innerException)
     {
     }
 }

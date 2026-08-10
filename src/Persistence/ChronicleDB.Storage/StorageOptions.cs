@@ -17,7 +17,10 @@ public sealed record StorageOptions
 
     public bool FlushOnWrite { get; init; } = true;
 
-    /// <summary>Test-only physical publication fault injection; null in production.</summary>
+    /// <summary>
+    /// Test-only durable-storage fault injection for data pages and snapshot metadata;
+    /// null in production.
+    /// </summary>
     public IStorageFaultInjector? FaultInjector { get; init; }
 
     public int InlineValueCapacity(int keyLength)

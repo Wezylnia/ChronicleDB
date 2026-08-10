@@ -20,10 +20,14 @@ public sealed class PersistentKeyValueStore : IDisposable
     private readonly FileStream _metadata;
     private readonly FileStream _data;
     private readonly bool _allowIncompleteFinalPage;
+    private readonly Guid _databaseId;
     private readonly Dictionary<BinaryKey, StoredRecord> _records = [];
+    private DatabaseHeader _header;
     private long? _untrustedTailOffset;
     private bool _untrustedTailIsFinalAppend;
     private bool _untrustedTailIsPartialPage;
+    private long _overflowPageCount;
+    private bool _faulted;
     private bool _disposed;
 
     private PersistentKeyValueStore(
@@ -37,12 +41,95 @@ public sealed class PersistentKeyValueStore : IDisposable
         _metadata = metadata;
         _data = data;
         _allowIncompleteFinalPage = allowIncompleteFinalPage;
-        Header = header;
+        _databaseId = header.DatabaseId;
+        _header = header;
     }
 
-    public DatabaseHeader Header { get; }
+    public DatabaseHeader Header
+    {
+        get
+        {
+            lock (_gate)
+            {
+                ThrowIfUsable();
+                return _header;
+            }
+        }
+    }
 
-    public Guid DatabaseId => Header.DatabaseId;
+    public Guid DatabaseId => _databaseId;
+
+    public bool IsFaulted
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _faulted;
+            }
+        }
+    }
+
+    public bool HasFormatFlag(uint formatFlag)
+    {
+        if ((formatFlag & ~DatabaseHeader.SupportedFormatFlags) != 0 || formatFlag == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(formatFlag));
+        }
+
+        lock (_gate)
+        {
+            ThrowIfUsable();
+            return (_header.FormatFlags & formatFlag) == formatFlag;
+        }
+    }
+
+    public void EnsureFormatFlags(uint requiredFlags)
+    {
+        if (requiredFlags == 0 || (requiredFlags & ~DatabaseHeader.SupportedFormatFlags) != 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(requiredFlags));
+        }
+
+        lock (_gate)
+        {
+            ThrowIfUsable();
+            if ((_header.FormatFlags & requiredFlags) == requiredFlags)
+            {
+                return;
+            }
+
+            if (_header.Generation == ulong.MaxValue)
+            {
+                throw new StorageLimitException("Database metadata generation space is exhausted.");
+            }
+
+            var nextGeneration = _header.Generation == 0 ? 1UL : _header.Generation + 1;
+            var nextHeader = _header with
+            {
+                FormatFlags = _header.FormatFlags | requiredFlags,
+                Generation = nextGeneration
+            };
+            var encoded = DatabaseHeaderCodec.Encode(nextHeader);
+            var startingLength = _metadata.Length;
+            try
+            {
+                _metadata.Position = startingLength;
+                _metadata.Write(encoded);
+                _metadata.Flush(flushToDisk: true);
+                _header = nextHeader;
+            }
+            catch (Exception exception)
+            {
+                if (exception is IOException or UnauthorizedAccessException || _metadata.Length != startingLength)
+                {
+                    _faulted = true;
+                }
+
+                throw;
+            }
+        }
+    }
 
     internal bool HasUntrustedTail
     {
@@ -50,7 +137,7 @@ public sealed class PersistentKeyValueStore : IDisposable
         {
             lock (_gate)
             {
-                ThrowIfDisposed();
+                ThrowIfUsable();
                 return _untrustedTailOffset.HasValue;
             }
         }
@@ -62,7 +149,7 @@ public sealed class PersistentKeyValueStore : IDisposable
         {
             lock (_gate)
             {
-                ThrowIfDisposed();
+                ThrowIfUsable();
                 return _untrustedTailOffset;
             }
         }
@@ -74,7 +161,7 @@ public sealed class PersistentKeyValueStore : IDisposable
         {
             lock (_gate)
             {
-                ThrowIfDisposed();
+                ThrowIfUsable();
                 return _untrustedTailIsFinalAppend;
             }
         }
@@ -86,19 +173,19 @@ public sealed class PersistentKeyValueStore : IDisposable
         {
             lock (_gate)
             {
-                ThrowIfDisposed();
+                ThrowIfUsable();
                 return _untrustedTailIsPartialPage;
             }
         }
     }
 
-    internal long DataLength
+    public long DataLength
     {
         get
         {
             lock (_gate)
             {
-                ThrowIfDisposed();
+                ThrowIfUsable();
                 return _data.Length;
             }
         }
@@ -108,7 +195,7 @@ public sealed class PersistentKeyValueStore : IDisposable
     {
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ThrowIfUsable();
             return baseDataLength >= 0
                    && baseDataLength % _options.PageSize == 0
                    && baseDataLength <= _data.Length
@@ -121,7 +208,7 @@ public sealed class PersistentKeyValueStore : IDisposable
     {
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ThrowIfUsable();
             if (_untrustedTailOffset is not { } offset)
             {
                 return;
@@ -135,7 +222,7 @@ public sealed class PersistentKeyValueStore : IDisposable
     {
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ThrowIfUsable();
             if (!CanRepairFrom(safeBaseDataLength))
             {
                 throw new StorageCorruptionException(
@@ -163,8 +250,32 @@ public sealed class PersistentKeyValueStore : IDisposable
         {
             lock (_gate)
             {
-                ThrowIfDisposed();
+                ThrowIfUsable();
                 return _records.Count;
+            }
+        }
+    }
+
+    public long PageCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                ThrowIfUsable();
+                return checked((_untrustedTailOffset ?? _data.Length) / _options.PageSize);
+            }
+        }
+    }
+
+    public long OverflowPageCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                ThrowIfUsable();
+                return _overflowPageCount;
             }
         }
     }
@@ -186,13 +297,16 @@ public sealed class PersistentKeyValueStore : IDisposable
         var fullDirectory = Path.GetFullPath(directory);
         Directory.CreateDirectory(fullDirectory);
 
+        var metadataPath = Path.Combine(fullDirectory, MetadataFileName);
+        var dataPath = Path.Combine(fullDirectory, DataFileName);
         FileStream? metadata = null;
         FileStream? data = null;
 
         try
         {
-            metadata = OpenExclusive(Path.Combine(fullDirectory, MetadataFileName));
-            data = OpenExclusive(Path.Combine(fullDirectory, DataFileName));
+            EnsureMetadataCreatedAtomically(metadataPath, dataPath, validatedOptions);
+            metadata = OpenExclusive(metadataPath);
+            data = OpenExclusive(dataPath);
             var header = OpenOrCreateHeader(metadata, data, validatedOptions, allowIncompleteFinalPage);
             var store = new PersistentKeyValueStore(
                 validatedOptions,
@@ -222,7 +336,7 @@ public sealed class PersistentKeyValueStore : IDisposable
     {
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ThrowIfUsable();
             var snapshot = new List<StorageMutation>(_records.Count);
             foreach (var (key, record) in _records)
             {
@@ -242,7 +356,7 @@ public sealed class PersistentKeyValueStore : IDisposable
 
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ThrowIfUsable();
             if (!_records.TryGetValue(key, out var record))
             {
                 value = [];
@@ -262,24 +376,33 @@ public sealed class PersistentKeyValueStore : IDisposable
 
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ThrowIfUsable();
             ValidateKey(key);
             if (value.Length > _options.MaxValueSize)
             {
                 throw new StorageLimitException("Value exceeds the configured maximum size.");
             }
 
-            var overflowHead = PageId.Invalid;
-            if (value.Length > _options.InlineValueCapacity(key.Length))
+            var startingLength = _data.Length;
+            try
             {
-                overflowHead = AppendOverflow(value);
-            }
+                var overflowHead = PageId.Invalid;
+                if (value.Length > _options.InlineValueCapacity(key.Length))
+                {
+                    overflowHead = AppendOverflow(value);
+                }
 
-            var payload = RecordCodec.Encode(key, value, overflowHead, tombstone: false, _options);
-            var pageId = AppendPage(PageType.Record, payload);
-            FlushIfConfigured();
-            var inlineValue = overflowHead.IsValid ? [] : value.ToArray();
-            _records[key] = new StoredRecord(pageId, value.Length, overflowHead, inlineValue);
+                var payload = RecordCodec.Encode(key, value, overflowHead, tombstone: false, _options);
+                var pageId = AppendPage(PageType.Record, payload);
+                FlushIfConfigured();
+                var inlineValue = overflowHead.IsValid ? [] : value.ToArray();
+                _records[key] = new StoredRecord(pageId, value.Length, overflowHead, inlineValue);
+            }
+            catch (Exception exception)
+            {
+                MarkFaultedIfWriteOutcomeIsUncertain(startingLength, exception);
+                throw;
+            }
         }
     }
 
@@ -289,14 +412,23 @@ public sealed class PersistentKeyValueStore : IDisposable
 
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ThrowIfUsable();
             ValidateKey(key);
             var existed = _records.ContainsKey(key);
-            var payload = RecordCodec.Encode(key, ReadOnlySpan<byte>.Empty, PageId.Invalid, tombstone: true, _options);
-            AppendPage(PageType.Record, payload);
-            FlushIfConfigured();
-            _records.Remove(key);
-            return existed;
+            var startingLength = _data.Length;
+            try
+            {
+                var payload = RecordCodec.Encode(key, ReadOnlySpan<byte>.Empty, PageId.Invalid, tombstone: true, _options);
+                AppendPage(PageType.Record, payload);
+                FlushIfConfigured();
+                _records.Remove(key);
+                return existed;
+            }
+            catch (Exception exception)
+            {
+                MarkFaultedIfWriteOutcomeIsUncertain(startingLength, exception);
+                throw;
+            }
         }
     }
 
@@ -310,7 +442,7 @@ public sealed class PersistentKeyValueStore : IDisposable
 
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ThrowIfUsable();
             long additionalPages = 0;
             foreach (var mutation in mutations)
             {
@@ -369,70 +501,79 @@ public sealed class PersistentKeyValueStore : IDisposable
 
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ThrowIfUsable();
             if (mutations.Count == 0)
             {
                 return;
             }
 
-            var staged = new List<(StorageMutation Mutation, StoredRecord? Record)>(mutations.Count);
-            foreach (var mutation in mutations)
+            var startingLength = _data.Length;
+            try
             {
-                ArgumentNullException.ThrowIfNull(mutation);
-                ValidateKey(mutation.Key);
-                if (mutation.Value.Length > _options.MaxValueSize)
+                var staged = new List<(StorageMutation Mutation, StoredRecord? Record)>(mutations.Count);
+                foreach (var mutation in mutations)
                 {
-                    throw new StorageLimitException("Value exceeds the configured maximum size.");
-                }
+                    ArgumentNullException.ThrowIfNull(mutation);
+                    ValidateKey(mutation.Key);
+                    if (mutation.Value.Length > _options.MaxValueSize)
+                    {
+                        throw new StorageLimitException("Value exceeds the configured maximum size.");
+                    }
 
-                if (mutation.IsDelete)
-                {
-                    if (!_records.ContainsKey(mutation.Key))
+                    if (mutation.IsDelete)
+                    {
+                        if (!_records.ContainsKey(mutation.Key))
+                        {
+                            continue;
+                        }
+
+                        var payload = RecordCodec.Encode(
+                            mutation.Key,
+                            ReadOnlySpan<byte>.Empty,
+                            PageId.Invalid,
+                            tombstone: true,
+                            _options);
+                        AppendPage(PageType.Record, payload);
+                        staged.Add((mutation, null));
+                        continue;
+                    }
+
+                    if (MutationMatchesCurrent(mutation))
                     {
                         continue;
                     }
 
-                    var payload = RecordCodec.Encode(
+                    var overflowHead = mutation.Value.Length > _options.InlineValueCapacity(mutation.Key.Length)
+                        ? AppendOverflow(mutation.Value.Span)
+                        : PageId.Invalid;
+                    var recordPayload = RecordCodec.Encode(
                         mutation.Key,
-                        ReadOnlySpan<byte>.Empty,
-                        PageId.Invalid,
-                        tombstone: true,
+                        mutation.Value.Span,
+                        overflowHead,
+                        tombstone: false,
                         _options);
-                    AppendPage(PageType.Record, payload);
-                    staged.Add((mutation, null));
-                    continue;
+                    var pageId = AppendPage(PageType.Record, recordPayload);
+                    var inlineValue = overflowHead.IsValid ? [] : mutation.Value.ToArray();
+                    staged.Add((mutation, new StoredRecord(pageId, mutation.Value.Length, overflowHead, inlineValue)));
                 }
 
-                if (MutationMatchesCurrent(mutation))
+                FlushIfConfigured();
+                foreach (var (mutation, record) in staged)
                 {
-                    continue;
+                    if (mutation.IsDelete)
+                    {
+                        _records.Remove(mutation.Key);
+                    }
+                    else
+                    {
+                        _records[mutation.Key] = record!;
+                    }
                 }
-
-                var overflowHead = mutation.Value.Length > _options.InlineValueCapacity(mutation.Key.Length)
-                    ? AppendOverflow(mutation.Value.Span)
-                    : PageId.Invalid;
-                var recordPayload = RecordCodec.Encode(
-                    mutation.Key,
-                    mutation.Value.Span,
-                    overflowHead,
-                    tombstone: false,
-                    _options);
-                var pageId = AppendPage(PageType.Record, recordPayload);
-                var inlineValue = overflowHead.IsValid ? [] : mutation.Value.ToArray();
-                staged.Add((mutation, new StoredRecord(pageId, mutation.Value.Length, overflowHead, inlineValue)));
             }
-
-            FlushIfConfigured();
-            foreach (var (mutation, record) in staged)
+            catch (Exception exception)
             {
-                if (mutation.IsDelete)
-                {
-                    _records.Remove(mutation.Key);
-                }
-                else
-                {
-                    _records[mutation.Key] = record!;
-                }
+                MarkFaultedIfWriteOutcomeIsUncertain(startingLength, exception);
+                throw;
             }
         }
     }
@@ -441,9 +582,17 @@ public sealed class PersistentKeyValueStore : IDisposable
     {
         lock (_gate)
         {
-            ThrowIfDisposed();
-            _data.Flush(flushToDisk: true);
-            _metadata.Flush(flushToDisk: true);
+            ThrowIfUsable();
+            try
+            {
+                _data.Flush(flushToDisk: true);
+                _metadata.Flush(flushToDisk: true);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                _faulted = true;
+                throw new StorageException("Persistent storage flush failed and the store must be reopened.", exception);
+            }
         }
     }
 
@@ -458,8 +607,11 @@ public sealed class PersistentKeyValueStore : IDisposable
 
             try
             {
-                _data.Flush(flushToDisk: true);
-                _metadata.Flush(flushToDisk: true);
+                if (!_faulted)
+                {
+                    _data.Flush(flushToDisk: true);
+                    _metadata.Flush(flushToDisk: true);
+                }
             }
             finally
             {
@@ -488,6 +640,62 @@ public sealed class PersistentKeyValueStore : IDisposable
         }
     }
 
+
+    private static void EnsureMetadataCreatedAtomically(
+        string metadataPath,
+        string dataPath,
+        StorageOptions options)
+    {
+        if (File.Exists(metadataPath))
+        {
+            return;
+        }
+
+        if (File.Exists(dataPath) && new FileInfo(dataPath).Length != 0)
+        {
+            throw new StorageCorruptionException("Data pages exist without database metadata.");
+        }
+
+        var temporaryPath = metadataPath + "." + Guid.NewGuid().ToString("N") + ".creating";
+        try
+        {
+            var header = new DatabaseHeader(
+                Guid.NewGuid(),
+                options.PageSize,
+                FormatFlags: 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Generation: 1);
+            using (var temporary = new FileStream(
+                       temporaryPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       bufferSize: 4 * 1024,
+                       options: FileOptions.WriteThrough))
+            {
+                temporary.Write(DatabaseHeaderCodec.Encode(header));
+                temporary.Flush(flushToDisk: true);
+            }
+
+            try
+            {
+                File.Move(temporaryPath, metadataPath);
+            }
+            catch (IOException) when (File.Exists(metadataPath))
+            {
+                // Another opener won atomic creation. Exclusive open and header validation
+                // below decide whether this process can continue.
+            }
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
+    }
+
     private static DatabaseHeader OpenOrCreateHeader(
         FileStream metadata,
         FileStream data,
@@ -496,29 +704,42 @@ public sealed class PersistentKeyValueStore : IDisposable
     {
         if (metadata.Length == 0)
         {
-            if (data.Length != 0)
+            throw new StorageCorruptionException(
+                "Database metadata exists but contains no durable header generation.");
+        }
+
+        if (metadata.Length < DatabaseHeaderCodec.Size)
+        {
+            throw new StorageCorruptionException("Database header file is truncated.");
+        }
+
+        var completeLength = metadata.Length - metadata.Length % DatabaseHeaderCodec.Size;
+        var slotCount = checked((int)(completeLength / DatabaseHeaderCodec.Size));
+        var bytes = new byte[DatabaseHeaderCodec.Size];
+        DatabaseHeader? latest = null;
+        for (var slot = 0; slot < slotCount; slot++)
+        {
+            ReadExactly(metadata, bytes, checked((long)slot * DatabaseHeaderCodec.Size));
+            var candidate = DatabaseHeaderCodec.Decode(bytes);
+            if (latest is not null)
             {
-                throw new StorageCorruptionException("Data pages exist without a database header.");
+                ValidateHeaderSuccessor(latest, candidate);
             }
 
-            var header = new DatabaseHeader(
-                Guid.NewGuid(),
-                options.PageSize,
-                FormatFlags: 0,
-                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-            WriteExactly(metadata, DatabaseHeaderCodec.Encode(header), 0);
-            metadata.Flush(flushToDisk: true);
-            return header;
+            latest = candidate;
         }
 
-        if (metadata.Length != DatabaseHeaderCodec.Size)
+        if (metadata.Length != completeLength)
         {
-            throw new StorageCorruptionException("Database header file is truncated or has trailing bytes.");
+            // Metadata updates are append-only. A short final slot can only be an
+            // incomplete later generation; the previous checksummed slot remains
+            // authoritative. Never repair a damaged complete slot this way.
+            metadata.SetLength(completeLength);
+            metadata.Flush(flushToDisk: true);
         }
 
-        var bytes = new byte[DatabaseHeaderCodec.Size];
-        ReadExactly(metadata, bytes, 0);
-        var existingHeader = DatabaseHeaderCodec.Decode(bytes);
+        var existingHeader = latest
+            ?? throw new StorageCorruptionException("Database metadata contains no complete header slot.");
         if (existingHeader.PageSize != options.PageSize)
         {
             throw new StorageFormatException("Database page size does not match the requested storage options.");
@@ -532,8 +753,30 @@ public sealed class PersistentKeyValueStore : IDisposable
         return existingHeader;
     }
 
+    private static void ValidateHeaderSuccessor(DatabaseHeader previous, DatabaseHeader next)
+    {
+        if (next.DatabaseId != previous.DatabaseId
+            || next.PageSize != previous.PageSize
+            || next.CreatedUnixMilliseconds != previous.CreatedUnixMilliseconds)
+        {
+            throw new StorageCorruptionException("Database metadata generations disagree on immutable identity fields.");
+        }
+
+        if (next.Generation <= previous.Generation)
+        {
+            throw new StorageCorruptionException("Database metadata generations are not strictly increasing.");
+        }
+
+        if ((next.FormatFlags & previous.FormatFlags) != previous.FormatFlags)
+        {
+            throw new StorageCorruptionException("Database metadata removed a previously durable format capability flag.");
+        }
+    }
+
     private void ScanDataFile()
     {
+        _records.Clear();
+        _overflowPageCount = 0;
         var trustedLength = _untrustedTailOffset ?? _data.Length;
         if (trustedLength % _options.PageSize != 0)
         {
@@ -577,6 +820,7 @@ public sealed class PersistentKeyValueStore : IDisposable
                         }
                     case PageType.Overflow:
                         {
+                            _overflowPageCount++;
                             var overflow = OverflowCodec.Decode(decoded.Payload, _options.PageSize);
                             if (overflow.NextPage.IsValid && overflow.NextPage.Value > pageCount)
                             {
@@ -669,6 +913,11 @@ public sealed class PersistentKeyValueStore : IDisposable
         _options.FaultInjector?.Hit(StorageFaultPoint.BeforePageWrite, pageId);
         WriteExactly(_data, page, PageOffset(pageId));
         _options.FaultInjector?.Hit(StorageFaultPoint.AfterPageWrite, pageId);
+        if (type == PageType.Overflow)
+        {
+            _overflowPageCount++;
+        }
+
         return pageId;
     }
 
@@ -783,9 +1032,22 @@ public sealed class PersistentKeyValueStore : IDisposable
         }
     }
 
-    private void ThrowIfDisposed()
+    private void ThrowIfUsable()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_faulted)
+        {
+            throw new StorageException(
+                "Persistent storage is faulted after an uncertain I/O operation and must be reopened.");
+        }
+    }
+
+    private void MarkFaultedIfWriteOutcomeIsUncertain(long startingLength, Exception exception)
+    {
+        if (exception is IOException or UnauthorizedAccessException || _data.Length != startingLength)
+        {
+            _faulted = true;
+        }
     }
 
     private static void ReadExactly(Stream stream, byte[] buffer, long offset)

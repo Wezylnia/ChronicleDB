@@ -4,9 +4,14 @@ public sealed record DatabaseHeader(
     Guid DatabaseId,
     int PageSize,
     uint FormatFlags,
-    long CreatedUnixMilliseconds)
+    long CreatedUnixMilliseconds,
+    ulong Generation = 1)
 {
     public const ushort CurrentMajorVersion = 1;
-    public const ushort CurrentMinorVersion = 0;
+    public const ushort CurrentMinorVersion = 1;
     public const uint Crc32CAlgorithm = 1;
+
+    public const uint WalInitializedFlag = 1u << 0;
+    public const uint SnapshotStoreInitializedFlag = 1u << 1;
+    public const uint SupportedFormatFlags = WalInitializedFlag | SnapshotStoreInitializedFlag;
 }

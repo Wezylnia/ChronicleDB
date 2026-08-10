@@ -19,12 +19,17 @@ public static class DatabaseHeaderCodec
 
         if (header.PageSize != StorageOptions.DefaultPageSize)
         {
-            throw new StorageFormatException("The v0.1 database header must use a 16 KiB page size.");
+            throw new StorageFormatException("The database header must use the supported 16 KiB page size.");
         }
 
-        if (header.FormatFlags != 0)
+        if ((header.FormatFlags & ~DatabaseHeader.SupportedFormatFlags) != 0)
         {
-            throw new StorageFormatException("The v0.1 database header does not define format flags.");
+            throw new StorageFormatException("The database header contains unsupported format flags.");
+        }
+
+        if (header.Generation == 0)
+        {
+            throw new StorageFormatException("A current database header requires a non-zero generation.");
         }
 
         var buffer = new byte[Size];
@@ -37,6 +42,7 @@ public static class DatabaseHeaderCodec
         BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(36, 4), DatabaseHeader.Crc32CAlgorithm);
         BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(40, 4), header.FormatFlags);
         BinaryPrimitives.WriteInt64LittleEndian(buffer.AsSpan(44, 8), header.CreatedUnixMilliseconds);
+        BinaryPrimitives.WriteUInt64LittleEndian(buffer.AsSpan(52, 8), header.Generation);
         BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(60, 4), Crc32C.Compute(buffer.AsSpan(0, 60)));
         return buffer;
     }
@@ -67,7 +73,7 @@ public static class DatabaseHeaderCodec
         var checksumAlgorithm = BinaryPrimitives.ReadUInt32LittleEndian(bytes[36..40]);
         var flags = BinaryPrimitives.ReadUInt32LittleEndian(bytes[40..44]);
         var created = BinaryPrimitives.ReadInt64LittleEndian(bytes[44..52]);
-        var reserved = BinaryPrimitives.ReadUInt64LittleEndian(bytes[52..60]);
+        var generationOrReserved = BinaryPrimitives.ReadUInt64LittleEndian(bytes[52..60]);
 
         if (major != DatabaseHeader.CurrentMajorVersion || minor > DatabaseHeader.CurrentMinorVersion)
         {
@@ -89,14 +95,29 @@ public static class DatabaseHeaderCodec
             throw new StorageFormatException("Database checksum algorithm is not supported.");
         }
 
-        if (flags != 0)
+        if ((flags & ~DatabaseHeader.SupportedFormatFlags) != 0)
         {
             throw new StorageFormatException("Database header contains unsupported format flags.");
         }
 
-        if (reserved != 0)
+        ulong generation;
+        if (minor == 0)
         {
-            throw new StorageFormatException("Database header reserved bytes are not zero.");
+            if (flags != 0 || generationOrReserved != 0)
+            {
+                throw new StorageFormatException("Legacy database header reserved fields are not zero.");
+            }
+
+            generation = 0;
+        }
+        else
+        {
+            if (generationOrReserved == 0)
+            {
+                throw new StorageFormatException("Database header generation is invalid.");
+            }
+
+            generation = generationOrReserved;
         }
 
         var databaseId = new Guid(bytes[16..32]);
@@ -105,6 +126,11 @@ public static class DatabaseHeaderCodec
             throw new StorageFormatException("Database header contains an empty database ID.");
         }
 
-        return new DatabaseHeader(databaseId, checked((int)pageSize), flags, created);
+        return new DatabaseHeader(
+            databaseId,
+            checked((int)pageSize),
+            flags,
+            created,
+            generation);
     }
 }
