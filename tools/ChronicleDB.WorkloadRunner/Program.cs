@@ -1,59 +1,125 @@
-if (args.Length > 0 && !args[0].Equals("run", StringComparison.OrdinalIgnoreCase))
+using ChronicleDB.ReferenceModel;
+
+var seed = args.Length >= 1 && int.TryParse(args[0], out var parsedSeed) ? parsedSeed : 42;
+var rounds = args.Length >= 2 && int.TryParse(args[1], out var parsedRounds) ? parsedRounds : 1_000;
+if (rounds <= 0)
 {
-    Console.Error.WriteLine("Usage: run [directory] [seed] [operations]");
+    Console.Error.WriteLine("Usage: ChronicleDB.WorkloadRunner [seed] [positive-round-count]");
     return 2;
 }
 
-var directory = args.Length > 1
-    ? Path.GetFullPath(args[1])
-    : Path.Combine(Path.GetTempPath(), "chronicle-workload-" + Guid.NewGuid().ToString("N"));
-var seed = args.Length > 2 && int.TryParse(args[2], out var parsedSeed) ? parsedSeed : 17;
-var operationCount = args.Length > 3 && int.TryParse(args[3], out var parsedCount) ? parsedCount : 100;
-if (operationCount is < 1 or > 100_000)
-{
-    Console.Error.WriteLine("operations must be between 1 and 100000.");
-    return 2;
-}
-
-var ownsDirectory = args.Length <= 1;
+var directory = Path.Combine(
+    Path.GetTempPath(),
+    "chronicle-workload-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(directory);
 try
 {
-    Directory.CreateDirectory(directory);
-    var model = new ChronicleDB.ReferenceModel.ReferenceKeyValueModel();
-    using var database = ChronicleDB.ChronicleDatabase.Open(directory);
     var random = new Random(seed);
-    for (var index = 0; index < operationCount; index++)
+    var model = new ReferenceMvccModel();
+    using var database = ChronicleDB.ChronicleDatabase.Open(directory);
+
+    for (var round = 0; round < rounds; round++)
     {
-        var key = new[] { (byte)random.Next(0, 16) };
-        if (random.Next(4) == 0)
+        using var engineTransaction = database.BeginTransaction();
+        using var referenceTransaction = model.BeginTransaction();
+        if (engineTransaction.StartSequence != referenceTransaction.StartSequence)
         {
-            var expected = model.Delete(key);
-            var actual = database.Delete(key);
-            if (expected != actual)
+            return Fail($"round {round}: start sequence mismatch");
+        }
+
+        var operationCount = random.Next(1, 6);
+        for (var operation = 0; operation < operationCount; operation++)
+        {
+            var key = new byte[] { checked((byte)random.Next(0, 32)) };
+            if (random.Next(100) < 25)
             {
-                throw new InvalidOperationException($"Delete mismatch at operation {index}.");
+                engineTransaction.Delete(key);
+                referenceTransaction.Delete(key);
+            }
+            else
+            {
+                var value = new byte[]
+                {
+                    checked((byte)random.Next(0, 256)),
+                    checked((byte)random.Next(0, 256)),
+                    checked((byte)random.Next(0, 256))
+                };
+                engineTransaction.Put(key, value);
+                referenceTransaction.Put(key, value);
             }
         }
-        else
+
+        if (random.Next(100) < 35)
         {
-            var value = new[] { (byte)random.Next(0, 256), (byte)index };
-            model.Put(key, value);
-            database.Put(key, value);
+            using var engineConcurrent = database.BeginTransaction();
+            using var referenceConcurrent = model.BeginTransaction();
+            var key = new byte[] { checked((byte)random.Next(0, 32)) };
+            var value = new byte[] { checked((byte)random.Next(0, 256)) };
+            engineConcurrent.Put(key, value);
+            referenceConcurrent.Put(key, value);
+            engineConcurrent.Commit();
+            referenceConcurrent.Commit();
         }
 
-        if (database.Count != model.Count)
+        var engineConflict = false;
+        try
         {
-            throw new InvalidOperationException($"Count mismatch at operation {index}.");
+            engineTransaction.Commit();
         }
+        catch (ChronicleDB.TransactionConflictException)
+        {
+            engineConflict = true;
+        }
+
+        var referenceConflict = false;
+        try
+        {
+            referenceTransaction.Commit();
+        }
+        catch (ReferenceTransactionConflictException)
+        {
+            referenceConflict = true;
+        }
+
+        if (engineConflict != referenceConflict)
+        {
+            return Fail($"round {round}: conflict outcome mismatch");
+        }
+
+        if (database.CurrentCommitSequence.Value != model.CurrentCommitSequence)
+        {
+            return Fail($"round {round}: commit sequence mismatch");
+        }
+
+        using var referenceView = model.BeginTransaction();
+        for (var keyValue = 0; keyValue < 32; keyValue++)
+        {
+            var key = new byte[] { checked((byte)keyValue) };
+            var engineFound = database.TryGet(key, out var engineValue);
+            var referenceFound = referenceView.TryGet(key, out var referenceValue);
+            if (engineFound != referenceFound || !engineValue.AsSpan().SequenceEqual(referenceValue))
+            {
+                return Fail($"round {round}: state mismatch for key {keyValue}");
+            }
+        }
+
+        referenceView.Abort();
     }
 
-    Console.WriteLine($"ok seed={seed} operations={operationCount} keys={model.Count}");
+    Console.WriteLine(
+        $"PASS seed={seed} rounds={rounds} commits={database.CurrentCommitSequence.Value}");
     return 0;
 }
 finally
 {
-    if (ownsDirectory && Directory.Exists(directory))
+    if (Directory.Exists(directory))
     {
         Directory.Delete(directory, recursive: true);
     }
+}
+
+static int Fail(string message)
+{
+    Console.Error.WriteLine("FAIL " + message);
+    return 1;
 }
