@@ -7,5 +7,9 @@ public enum StorageFaultPoint
     BeforeSnapshotRecordWrite = 2,
     AfterSnapshotRecordWrite = 3,
     BeforeSnapshotFlush = 4,
-    AfterSnapshotFlush = 5
+    AfterSnapshotFlush = 5,
+    BeforeHistoryRootRecordWrite = 6,
+    AfterHistoryRootRecordWrite = 7,
+    BeforeHistoryRootFlush = 8,
+    AfterHistoryRootFlush = 9
 }

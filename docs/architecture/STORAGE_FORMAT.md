@@ -1,4 +1,4 @@
-# v0.5 storage format
+# v0.6 storage format
 
 This document describes the byte-level persistent storage owned by `ChronicleDB.Storage`. WAL framing is documented separately.
 
@@ -9,6 +9,7 @@ This document describes the byte-level persistent storage owned by `ChronicleDB.
 | `chronicle.meta` | append-only 64-byte header generations | database identity, format capabilities |
 | `chronicle.data` | `N * 16,384` bytes except an untrusted crash tail during recovery | append-only record/overflow pages |
 | `chronicle.snapshots` | 64-byte header + framed lifecycle records | persistent named snapshot roots |
+| `chronicle.history-roots` | 64-byte header + fixed 120-byte lifecycle records | generalized retained history-root registry |
 
 `chronicle.wal` is owned by `ChronicleDB.Wal`.
 
@@ -27,13 +28,13 @@ All encoded lengths are validated before allocation/slicing/file access.
 
 ## Database metadata journal
 
-Each `chronicle.meta` slot is 64 bytes. v1.1 slots use:
+Each `chronicle.meta` slot is 64 bytes. v1.2 slots use:
 
 | Offset | Size | Field |
 | ---: | ---: | --- |
 | 0 | 8 | `CHDBv001` |
 | 8 | 2 | major `1` |
-| 10 | 2 | minor `1` |
+| 10 | 2 | minor `2` |
 | 12 | 4 | slot size `64` |
 | 16 | 16 | database GUID |
 | 32 | 4 | page size |
@@ -43,7 +44,7 @@ Each `chronicle.meta` slot is 64 bytes. v1.1 slots use:
 | 52 | 8 | strictly increasing metadata generation |
 | 60 | 4 | CRC32C of bytes `0..59` |
 
-Capability flags currently record that WAL and persistent snapshot metadata have been durably initialized. Once a flag is present, a later generation may not remove it. This prevents accidental deletion of a critical persistence file from being mistaken for a first-time upgrade.
+Capability flags record that WAL, persistent snapshot metadata, and the generalized history-root registry have been durably initialized. Once a flag is present, a later generation may not remove it. This prevents accidental deletion of a critical persistence file from being mistaken for a first-time upgrade.
 
 Legacy v1.0 single-slot headers remain readable only with zero flags/reserved bytes. Their in-memory generation is zero; the first capability update appends a v1.1 generation.
 
@@ -73,12 +74,19 @@ It is followed by Create/Delete lifecycle records. Records have a 64-byte fixed 
 
 Delete records remove the named persistent root only. v0.5 does not reclaim committed history.
 
+## Persistent history-root file
+
+`chronicle.history-roots` begins with a checksummed 64-byte `CHROOT01` header containing the database GUID and the main `HistoryId`. It is followed by fixed-size 120-byte `HRT1` records. A Create record publishes an active root; a Delete record publishes the same root metadata with the deleted state. Records contain the root ID, root kind, lifecycle state, owner database, history domain, optional parent history, visibility boundary, creation time, redundant frame lengths, footer magic, and CRC32C.
+
+The storage layer keeps lifecycle records database-bound and append-only. The semantic registry exposes Creating and Deleting intents while the durable protocol publishes only complete Active or Deleted outcomes. A crash before a complete frame leaves no new active root; a complete flushed frame is recovered even if acknowledgement was lost. Root IDs are never reused.
+
 ## Corruption versus crash tail
 
 Complete checksummed structures are never silently discarded. Automatic repair is restricted to:
 
 - partial final database-metadata generation;
 - incomplete final WAL/snapshot frame after validated framing;
+- incomplete final history-root frame after validated framing;
 - data append regions whose recovery base is proven by a durable WAL Commit, plus the narrow legacy partial-final-page rule.
 ### Faulted low-level store instances
 

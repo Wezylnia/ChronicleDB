@@ -31,7 +31,7 @@ public sealed class StorageFormatTests
         Assert.Equal(expected, actual);
         Assert.Equal(DatabaseHeaderCodec.Size, bytes.Length);
         Assert.Equal(
-            "4348444276303031010001004000000033221100554477668899AABBCCDDEEFF0040000001000000000000000068E5CF8B01000001000000000000000CC1D5CF",
+            "4348444276303031010002004000000033221100554477668899AABBCCDDEEFF0040000001000000000000000068E5CF8B010000010000000000000026AD3CE8",
             Convert.ToHexString(bytes));
     }
 
@@ -98,18 +98,19 @@ public sealed class StorageFormatTests
         {
             store.EnsureFormatFlags(DatabaseHeader.WalInitializedFlag);
             store.EnsureFormatFlags(DatabaseHeader.SnapshotStoreInitializedFlag);
+            store.EnsureFormatFlags(DatabaseHeader.HistoryRootStoreInitializedFlag);
             Assert.Equal(DatabaseHeader.SupportedFormatFlags, store.Header.FormatFlags);
-            Assert.Equal((ulong)3, store.Header.Generation);
+            Assert.Equal((ulong)4, store.Header.Generation);
         }
 
         var metadataPath = Path.Combine(directory.Path, PersistentKeyValueStore.MetadataFileName);
-        Assert.Equal(DatabaseHeaderCodec.Size * 3L, new FileInfo(metadataPath).Length);
+        Assert.Equal(DatabaseHeaderCodec.Size * 4L, new FileInfo(metadataPath).Length);
         File.AppendAllBytes(metadataPath, [1, 2, 3]);
 
         using var reopened = PersistentKeyValueStore.Open(directory.Path);
         Assert.Equal(DatabaseHeader.SupportedFormatFlags, reopened.Header.FormatFlags);
-        Assert.Equal((ulong)3, reopened.Header.Generation);
-        Assert.Equal(DatabaseHeaderCodec.Size * 3L, new FileInfo(metadataPath).Length);
+        Assert.Equal((ulong)4, reopened.Header.Generation);
+        Assert.Equal(DatabaseHeaderCodec.Size * 4L, new FileInfo(metadataPath).Length);
     }
 
     [Fact]
