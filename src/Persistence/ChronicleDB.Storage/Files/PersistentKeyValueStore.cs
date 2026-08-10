@@ -144,6 +144,73 @@ public sealed class PersistentKeyValueStore : IDisposable
         }
     }
 
+    /// <summary>
+    /// Publishes all mutations under the store lock. The caller must persist its transaction decision before calling this method.
+    /// </summary>
+    public void ApplyBatch(IReadOnlyList<StorageMutation> mutations)
+    {
+        ArgumentNullException.ThrowIfNull(mutations);
+
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (mutations.Count == 0)
+            {
+                return;
+            }
+
+            var staged = new List<(StorageMutation Mutation, StoredRecord? Record)>(mutations.Count);
+            foreach (var mutation in mutations)
+            {
+                ArgumentNullException.ThrowIfNull(mutation);
+                ValidateKey(mutation.Key);
+                if (mutation.Value.Length > _options.MaxValueSize)
+                {
+                    throw new StorageLimitException("Value exceeds the configured maximum size.");
+                }
+
+                if (mutation.IsDelete)
+                {
+                    var payload = RecordCodec.Encode(
+                        mutation.Key,
+                        ReadOnlySpan<byte>.Empty,
+                        PageId.Invalid,
+                        tombstone: true,
+                        _options);
+                    AppendPage(PageType.Record, payload);
+                    staged.Add((mutation, null));
+                    continue;
+                }
+
+                var overflowHead = mutation.Value.Length > _options.InlineValueCapacity(mutation.Key.Length)
+                    ? AppendOverflow(mutation.Value.Span)
+                    : PageId.Invalid;
+                var recordPayload = RecordCodec.Encode(
+                    mutation.Key,
+                    mutation.Value.Span,
+                    overflowHead,
+                    tombstone: false,
+                    _options);
+                var pageId = AppendPage(PageType.Record, recordPayload);
+                var inlineValue = overflowHead.IsValid ? [] : mutation.Value.ToArray();
+                staged.Add((mutation, new StoredRecord(pageId, mutation.Value.Length, overflowHead, inlineValue)));
+            }
+
+            FlushIfConfigured();
+            foreach (var (mutation, record) in staged)
+            {
+                if (mutation.IsDelete)
+                {
+                    _records.Remove(mutation.Key);
+                }
+                else
+                {
+                    _records[mutation.Key] = record!;
+                }
+            }
+        }
+    }
+
     public void Flush()
     {
         lock (_gate)
