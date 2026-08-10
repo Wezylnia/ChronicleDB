@@ -233,6 +233,50 @@ public sealed class PersistentKeyValueStore : IDisposable
         }
     }
 
+    /// <summary>
+    /// Truncates an append-only auxiliary store to a previously durably published page boundary.
+    /// This is intentionally internal and must only be used when a separate authoritative
+    /// metadata protocol proves that every byte after <paramref name="safeDataLength"/> is orphaned.
+    /// </summary>
+    internal void RecoverAppendOnlyPrefix(long safeDataLength)
+    {
+        lock (_gate)
+        {
+            ThrowIfUsable();
+            if (safeDataLength < 0
+                || safeDataLength % _options.PageSize != 0
+                || safeDataLength > _data.Length)
+            {
+                throw new StorageCorruptionException(
+                    "The published append-only recovery boundary is not a valid data-file prefix.");
+            }
+
+            if (_untrustedTailOffset is { } tailOffset && safeDataLength > tailOffset)
+            {
+                throw new StorageCorruptionException(
+                    "Corruption begins inside the durably published append-only prefix.");
+            }
+
+            if (safeDataLength == _data.Length && !_untrustedTailOffset.HasValue)
+            {
+                return;
+            }
+
+            _data.SetLength(safeDataLength);
+            _data.Flush(flushToDisk: true);
+            _untrustedTailOffset = null;
+            _untrustedTailIsFinalAppend = false;
+            _untrustedTailIsPartialPage = false;
+            _records.Clear();
+            ScanDataFile();
+            if (_untrustedTailOffset.HasValue)
+            {
+                throw new StorageCorruptionException(
+                    "The durably published append-only prefix remains corrupt after tail recovery.");
+            }
+        }
+    }
+
     private void DiscardUntrustedTailCore(long offset)
     {
         _data.SetLength(offset);

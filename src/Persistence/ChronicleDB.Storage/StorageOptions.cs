@@ -18,7 +18,7 @@ public sealed record StorageOptions
     public bool FlushOnWrite { get; init; } = true;
 
     /// <summary>
-    /// Test-only durable-storage fault injection for data pages and snapshot metadata;
+    /// Test-only durable-storage fault injection for data pages and auxiliary metadata journals;
     /// null in production.
     /// </summary>
     public IStorageFaultInjector? FaultInjector { get; init; }

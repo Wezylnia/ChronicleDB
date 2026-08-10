@@ -1,5 +1,6 @@
 using ChronicleDB.PersistenceTests.Fixtures;
 using ChronicleDB.Storage;
+using ChronicleDB.Storage.Branches;
 using ChronicleDB.Storage.Files;
 using ChronicleDB.Storage.Formats;
 using ChronicleDB.Storage.HistoryRoots;
@@ -25,8 +26,10 @@ public sealed class PersistenceLifecycleTests
         Assert.True(store.HasFormatFlag(DatabaseHeader.WalInitializedFlag));
         Assert.True(store.HasFormatFlag(DatabaseHeader.SnapshotStoreInitializedFlag));
         Assert.True(store.HasFormatFlag(DatabaseHeader.HistoryRootStoreInitializedFlag));
+        Assert.True(store.HasFormatFlag(DatabaseHeader.BranchStoreInitializedFlag));
         Assert.Equal(DatabaseHeader.SupportedFormatFlags, store.Header.FormatFlags);
         Assert.True(File.Exists(Path.Combine(directory.Path, PersistentHistoryRootStore.FileName)));
+        Assert.True(File.Exists(Path.Combine(directory.Path, PersistentBranchMetadataStore.FileName)));
     }
 
     [Fact]
@@ -76,6 +79,21 @@ public sealed class PersistenceLifecycleTests
     }
 
     [Fact]
+    public void MissingInitializedBranchStoreIsRejectedInsteadOfForgettingBranches()
+    {
+        using var directory = new StorageTestDirectory();
+        using (var database = ChronicleDB.ChronicleDatabase.Open(directory.Path))
+        {
+            database.Put([1], [10]);
+        }
+
+        File.Delete(Path.Combine(directory.Path, PersistentBranchMetadataStore.FileName));
+
+        Assert.Throws<StorageCorruptionException>(
+            () => ChronicleDB.ChronicleDatabase.Open(directory.Path).Dispose());
+    }
+
+    [Fact]
     public void LegacyStoreWithoutInitializationFlagsCanUpgradeOnce()
     {
         using var directory = new StorageTestDirectory();
@@ -94,6 +112,7 @@ public sealed class PersistenceLifecycleTests
         Assert.True(File.Exists(Path.Combine(directory.Path, WalOptions.DefaultFileName)));
         Assert.True(File.Exists(Path.Combine(directory.Path, PersistentSnapshotStore.FileName)));
         Assert.True(File.Exists(Path.Combine(directory.Path, PersistentHistoryRootStore.FileName)));
+        Assert.True(File.Exists(Path.Combine(directory.Path, PersistentBranchMetadataStore.FileName)));
         using var store = PersistentKeyValueStore.Open(directory.Path);
         Assert.Equal(DatabaseHeader.SupportedFormatFlags, store.Header.FormatFlags);
     }

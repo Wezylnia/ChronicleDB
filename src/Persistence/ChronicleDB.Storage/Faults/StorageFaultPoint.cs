@@ -11,5 +11,9 @@ public enum StorageFaultPoint
     BeforeHistoryRootRecordWrite = 6,
     AfterHistoryRootRecordWrite = 7,
     BeforeHistoryRootFlush = 8,
-    AfterHistoryRootFlush = 9
+    AfterHistoryRootFlush = 9,
+    BeforeBranchMetadataRecordWrite = 10,
+    AfterBranchMetadataRecordWrite = 11,
+    BeforeBranchMetadataFlush = 12,
+    AfterBranchMetadataFlush = 13
 }
