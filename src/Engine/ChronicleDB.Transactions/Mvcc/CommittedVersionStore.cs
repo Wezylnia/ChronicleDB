@@ -62,14 +62,31 @@ public sealed class CommittedVersionStore : IDisposable
 
     public bool TryRead(BinaryKey key, CommitSequence visibilityBoundary, out byte[] value)
     {
+        var resolution = Resolve(key, visibilityBoundary);
+        if (resolution.Kind == CommittedVersionResolutionKind.Value)
+        {
+            value = resolution.Value;
+            return true;
+        }
+
+        value = [];
+        return false;
+    }
+
+    /// <summary>
+    /// Resolves a key while preserving the distinction between "no local version"
+    /// and a visible tombstone. Branch fallback requires this distinction: a tombstone
+    /// intentionally shadows inherited parent state, while no local version falls back.
+    /// </summary>
+    public CommittedVersionResolution Resolve(BinaryKey key, CommitSequence visibilityBoundary)
+    {
         ArgumentNullException.ThrowIfNull(key);
         _gate.EnterReadLock();
         try
         {
             if (!_index.TryGet(key, out var current))
             {
-                value = [];
-                return false;
+                return CommittedVersionResolution.Missing;
             }
 
             while (current.IsValid)
@@ -77,21 +94,15 @@ public sealed class CommittedVersionStore : IDisposable
                 var version = GetVersion(current);
                 if (VersionVisibility.IsVisible(version.Metadata, visibilityBoundary))
                 {
-                    if (version.Metadata.IsTombstone)
-                    {
-                        value = [];
-                        return false;
-                    }
-
-                    value = version.Value.ToArray();
-                    return true;
+                    return version.Metadata.IsTombstone
+                        ? CommittedVersionResolution.Deleted
+                        : CommittedVersionResolution.Present(version.Value.ToArray());
                 }
 
                 current = version.Previous;
             }
 
-            value = [];
-            return false;
+            return CommittedVersionResolution.Missing;
         }
         finally
         {

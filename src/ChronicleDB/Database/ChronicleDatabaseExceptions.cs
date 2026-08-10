@@ -64,3 +64,36 @@ public sealed class HistoricalStateUnavailableException : InvalidOperationExcept
 
     public ulong CurrentSequence { get; }
 }
+
+public sealed class BranchNotFoundException : KeyNotFoundException
+{
+    internal BranchNotFoundException(string identity)
+        : base($"Branch {identity} does not exist.")
+    {
+    }
+}
+
+public sealed class BranchNameConflictException : InvalidOperationException
+{
+    internal BranchNameConflictException(string name)
+        : base($"A branch named '{name}' already exists.")
+    {
+    }
+}
+
+public sealed class BranchHistoricalStateUnavailableException : InvalidOperationException
+{
+    internal BranchHistoricalStateUnavailableException(Guid branchId, ulong requested, ulong current)
+        : base($"Branch {branchId} historical sequence {requested} is newer than local sequence {current}.")
+    {
+        BranchId = branchId;
+        RequestedSequence = requested;
+        CurrentSequence = current;
+    }
+
+    public Guid BranchId { get; }
+
+    public ulong RequestedSequence { get; }
+
+    public ulong CurrentSequence { get; }
+}

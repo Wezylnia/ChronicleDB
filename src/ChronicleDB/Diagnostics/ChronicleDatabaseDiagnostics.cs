@@ -36,4 +36,9 @@ public sealed record ChronicleDatabaseDiagnostics(
     long SnapshotMetadataBytes,
     long DataFileBytes,
     long DataPageCount,
-    long OverflowPageCount);
+    long OverflowPageCount,
+    int BranchCount = 0,
+    long BranchMetadataBytes = 0,
+    long BranchLocalDataBytes = 0,
+    int BranchLocalVersionCount = 0,
+    int BranchSnapshotCount = 0);

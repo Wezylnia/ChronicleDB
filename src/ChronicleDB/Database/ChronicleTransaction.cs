@@ -4,23 +4,26 @@ using ChronicleDB.Transactions.State;
 namespace ChronicleDB;
 
 /// <summary>
-/// Public transaction handle. Transaction operations are synchronized internally, but
-/// applications should treat one handle as single-owner; database-level concurrency is
-/// achieved with independent transaction handles.
+/// Public transaction handle. Independent handles may execute concurrently. Operations
+/// on one handle are serialized so commit cannot race an abort/dispose transition on
+/// the same transaction descriptor.
 /// </summary>
 public sealed class ChronicleTransaction : IDisposable
 {
-    private readonly ChronicleDatabase _database;
+    private readonly ITransactionHost _host;
     private readonly Transaction _transaction;
+    private readonly object _handleGate = new();
     private int _completedHandle;
 
-    internal ChronicleTransaction(ChronicleDatabase database, Transaction transaction)
+    internal ChronicleTransaction(ITransactionHost host, Transaction transaction)
     {
-        _database = database;
+        _host = host ?? throw new ArgumentNullException(nameof(host));
         _transaction = transaction;
     }
 
     public Guid TransactionId => _transaction.TransactionId.Value;
+
+    public Guid HistoryId => _transaction.HistoryId.Value;
 
     public ulong StartSequence => _transaction.StartSequence.Value;
 
@@ -28,73 +31,91 @@ public sealed class ChronicleTransaction : IDisposable
 
     public void Put(ReadOnlySpan<byte> key, ReadOnlySpan<byte> value)
     {
-        ThrowIfDisposed();
-        _transaction.Put(key, value);
+        lock (_handleGate)
+        {
+            ThrowIfDisposed();
+            _transaction.Put(key, value);
+        }
     }
 
     public void Delete(ReadOnlySpan<byte> key)
     {
-        ThrowIfDisposed();
-        _transaction.Delete(key);
+        lock (_handleGate)
+        {
+            ThrowIfDisposed();
+            _transaction.Delete(key);
+        }
     }
 
     public bool TryGet(ReadOnlySpan<byte> key, out byte[] value)
     {
-        ThrowIfDisposed();
-        if (_transaction.TryGetLocalWrite(key, out var write))
+        lock (_handleGate)
         {
-            if (write.IsDelete)
+            ThrowIfDisposed();
+            if (_transaction.TryGetLocalWrite(key, out var write))
             {
-                value = [];
-                return false;
+                if (write.IsDelete)
+                {
+                    value = [];
+                    return false;
+                }
+
+                value = write.Value.ToArray();
+                return true;
             }
 
-            value = write.Value.ToArray();
-            return true;
+            return _host.ReadAt(key, _transaction.StartSequence, out value);
         }
-
-        return _database.ReadAt(key, _transaction.StartSequence, out value);
     }
 
     public void Commit()
     {
-        ThrowIfDisposed();
-        try
+        lock (_handleGate)
         {
-            _database.Commit(_transaction);
-        }
-        finally
-        {
-            if (IsTerminal(_transaction.State))
+            ThrowIfDisposed();
+            try
             {
-                CompleteHandle();
+                _host.Commit(_transaction);
+            }
+            finally
+            {
+                if (IsTerminal(_transaction.State))
+                {
+                    CompleteHandle();
+                }
             }
         }
     }
 
     public void Abort()
     {
-        ThrowIfDisposed();
-        _database.Abort(_transaction, throwIfNotAbortable: true);
-        CompleteHandle();
+        lock (_handleGate)
+        {
+            ThrowIfDisposed();
+            _host.Abort(_transaction, throwIfNotAbortable: true);
+            CompleteHandle();
+        }
     }
 
     public void Dispose()
     {
-        if (Volatile.Read(ref _completedHandle) != 0)
+        lock (_handleGate)
         {
-            return;
-        }
+            if (Volatile.Read(ref _completedHandle) != 0)
+            {
+                return;
+            }
 
-        _database.Abort(_transaction, throwIfNotAbortable: false);
-        CompleteHandle();
+            _host.Abort(_transaction, throwIfNotAbortable: false);
+            CompleteHandle();
+        }
     }
 
     private void CompleteHandle()
     {
         if (Interlocked.Exchange(ref _completedHandle, 1) == 0)
         {
-            _database.TransactionHandleCompleted();
+            _host.TransactionHandleCompleted();
         }
     }
 

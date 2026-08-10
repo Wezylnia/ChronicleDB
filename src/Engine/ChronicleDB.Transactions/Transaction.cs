@@ -19,7 +19,8 @@ public sealed class Transaction
 
     public Transaction(
         TransactionId? transactionId = null,
-        CommitSequence startSequence = default)
+        CommitSequence startSequence = default,
+        HistoryId historyId = default)
     {
         TransactionId = transactionId ?? TransactionId.New();
         if (!TransactionId.IsValid)
@@ -28,9 +29,16 @@ public sealed class Transaction
         }
 
         StartSequence = startSequence;
+        HistoryId = historyId;
     }
 
     public TransactionId TransactionId { get; }
+
+    /// <summary>
+    /// Logical history domain that owns this transaction. Empty is permitted only
+    /// for low-level tests and legacy direct use of the transaction descriptor.
+    /// </summary>
+    public HistoryId HistoryId { get; }
 
     public CommitSequence StartSequence { get; }
 

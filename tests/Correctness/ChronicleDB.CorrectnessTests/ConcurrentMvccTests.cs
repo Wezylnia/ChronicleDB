@@ -310,3 +310,71 @@ public sealed class ConcurrentMvccTests
         }
     }
 }
+
+public sealed class TransactionHandleConcurrencyTests
+{
+    [Fact]
+    public async Task AbortCannotRaceCommitPreparationOnSamePublicHandle()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "chronicle-handle-race-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using var injector = new BlockingFaultInjector();
+            using var database = ChronicleDB.ChronicleDatabase.Open(directory, faultInjector: injector);
+            var transaction = database.BeginTransaction();
+            transaction.Put([1], [10]);
+
+            var commit = Task.Run(transaction.Commit);
+            Assert.True(injector.Entered.Wait(TimeSpan.FromSeconds(10)));
+            var abort = Task.Run(() => Assert.Throws<ObjectDisposedException>(transaction.Abort));
+            await Task.Delay(100);
+            Assert.False(abort.IsCompleted);
+
+            injector.Release.Set();
+            await commit;
+            await abort;
+            Assert.True(database.TryGet([1], out var value));
+            Assert.Equal(new byte[] { 10 }, value);
+            transaction.Dispose();
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+            catch (DirectoryNotFoundException)
+            {
+            }
+        }
+    }
+
+    private sealed class BlockingFaultInjector : ITransactionFaultInjector, IDisposable
+    {
+        public ManualResetEventSlim Entered { get; } = new(false);
+
+        public ManualResetEventSlim Release { get; } = new(false);
+
+        public void Hit(TransactionFaultPoint point)
+        {
+            if (point != TransactionFaultPoint.BeforeWalAppend)
+            {
+                return;
+            }
+
+            Entered.Set();
+            if (!Release.Wait(TimeSpan.FromSeconds(10)))
+            {
+                throw new TimeoutException("Test did not release the commit fault point.");
+            }
+        }
+
+        public void Dispose()
+        {
+            Release.Set();
+            Entered.Dispose();
+            Release.Dispose();
+        }
+    }
+}
