@@ -125,4 +125,17 @@ public sealed class WalLogTests
         Assert.Throws<WalFormatException>(
             () => WalLog.Open(directory.Path, Guid.NewGuid()));
     }
+
+    [Fact]
+    public void MissingLsnIsRejectedAsCorruption()
+    {
+        using var directory = new StorageTestDirectory();
+        var path = Path.Combine(directory.Path, WalOptions.DefaultFileName);
+        var header = WalFileHeaderCodec.Encode(new WalFileHeader(Guid.NewGuid()));
+        var first = WalRecordCodec.Encode(new WalRecord(WalRecordType.Begin, 1, TransactionId.New(), []));
+        var third = WalRecordCodec.Encode(new WalRecord(WalRecordType.Begin, 3, TransactionId.New(), []));
+        File.WriteAllBytes(path, header.Concat(first).Concat(third).ToArray());
+
+        Assert.Throws<WalCorruptionException>(() => WalLog.Open(directory.Path));
+    }
 }

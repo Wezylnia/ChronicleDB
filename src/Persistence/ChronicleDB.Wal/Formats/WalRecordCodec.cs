@@ -8,7 +8,10 @@ namespace ChronicleDB.Wal.Formats;
 internal static class WalRecordCodec
 {
     public const int HeaderSize = 48;
-    public const int MaxPayloadSize = 64 * 1024 * 1024;
+    // Mutation values are limited to 64 MiB, but a Put payload also contains
+    // its key and length fields. Keep the record envelope slightly larger so
+    // every otherwise-valid 64 MiB value + 64 KiB key can be represented.
+    public const int MaxPayloadSize = 65 * 1024 * 1024;
     private const byte CurrentVersion = 1;
     private const ushort HeaderLength = HeaderSize;
     private const uint Crc32CAlgorithm = 1;

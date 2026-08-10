@@ -45,6 +45,22 @@ public sealed class CommitValidationTests
     }
 
     [Fact]
+    public void FailureBeforeFirstWalAppendAbortsTransactionWithoutFaultingDatabase()
+    {
+        using var directory = new StorageTestDirectory();
+        using var database = ChronicleDB.ChronicleDatabase.Open(
+            directory.Path,
+            faultInjector: new ThrowBeforeWalAppendInjector());
+        using var transaction = database.BeginTransaction();
+        transaction.Put([1], [2]);
+
+        Assert.Throws<InvalidOperationException>(() => transaction.Commit());
+        Assert.Equal(ChronicleDB.DatabaseState.Open, database.State);
+        Assert.False(database.TryGet([1], out _));
+        Assert.Throws<ObjectDisposedException>(() => transaction.Put([2], [3]));
+    }
+
+    [Fact]
     public void DatabaseRejectsValueLimitThatCannotBeRepresentedByWal()
     {
         using var directory = new StorageTestDirectory();
@@ -77,6 +93,17 @@ public sealed class CommitValidationTests
             if (point == ChronicleDB.Transactions.Faults.TransactionFaultPoint.AfterWalFlush)
             {
                 throw new InvalidOperationException("Injected post-durability failure.");
+            }
+        }
+    }
+
+    private sealed class ThrowBeforeWalAppendInjector : ChronicleDB.Transactions.Faults.ITransactionFaultInjector
+    {
+        public void Hit(ChronicleDB.Transactions.Faults.TransactionFaultPoint point)
+        {
+            if (point == ChronicleDB.Transactions.Faults.TransactionFaultPoint.BeforeWalAppend)
+            {
+                throw new InvalidOperationException("Injected pre-WAL failure.");
             }
         }
     }

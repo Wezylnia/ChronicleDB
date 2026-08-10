@@ -15,6 +15,7 @@ public sealed class WalLog : IDisposable
     private readonly FileStream _stream;
     private readonly WalOptions _options;
     private ulong _nextLsn;
+    private bool _faulted;
     private bool _disposed;
 
     private WalLog(FileStream stream, WalOptions options, ulong nextLsn)
@@ -32,7 +33,7 @@ public sealed class WalLog : IDisposable
         {
             lock (_gate)
             {
-                ThrowIfDisposed();
+                ThrowIfUsable();
                 return _nextLsn;
             }
         }
@@ -95,7 +96,7 @@ public sealed class WalLog : IDisposable
     {
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ThrowIfUsable();
             if (_nextLsn == ulong.MaxValue)
             {
                 throw new WalLimitException("WAL LSN space is exhausted.");
@@ -104,11 +105,19 @@ public sealed class WalLog : IDisposable
             var record = new WalRecord(type, _nextLsn, transactionId, payload);
             var encoded = WalRecordCodec.Encode(record);
 
-            _stream.Position = _stream.Length;
-            _stream.Write(encoded);
-            if (_options.FlushOnAppend)
+            try
             {
-                _stream.Flush(flushToDisk: true);
+                _stream.Position = _stream.Length;
+                _stream.Write(encoded);
+                if (_options.FlushOnAppend)
+                {
+                    _stream.Flush(flushToDisk: true);
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                _faulted = true;
+                throw new WalException("WAL append failed and the log must be reopened before reuse.", exception);
             }
 
             _nextLsn++;
@@ -120,7 +129,7 @@ public sealed class WalLog : IDisposable
     {
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ThrowIfUsable();
             var scan = Scan(_stream);
             if (scan.TailBytes != 0)
             {
@@ -135,8 +144,16 @@ public sealed class WalLog : IDisposable
     {
         lock (_gate)
         {
-            ThrowIfDisposed();
-            _stream.Flush(flushToDisk: true);
+            ThrowIfUsable();
+            try
+            {
+                _stream.Flush(flushToDisk: true);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                _faulted = true;
+                throw new WalException("WAL flush failed and the log must be reopened before reuse.", exception);
+            }
         }
     }
 
@@ -151,7 +168,10 @@ public sealed class WalLog : IDisposable
 
             try
             {
-                _stream.Flush(flushToDisk: true);
+                if (!_faulted)
+                {
+                    _stream.Flush(flushToDisk: true);
+                }
             }
             finally
             {
@@ -220,9 +240,11 @@ public sealed class WalLog : IDisposable
             }
 
             var record = WalRecordCodec.Decode(encoded);
-            if (record.Lsn <= lastLsn)
+            var expectedLsn = NextLsnAfter(lastLsn);
+            if (record.Lsn != expectedLsn)
             {
-                throw new WalCorruptionException("WAL LSNs must be strictly increasing.");
+                throw new WalCorruptionException(
+                    $"WAL LSN sequence is discontinuous: expected {expectedLsn}, found {record.Lsn}.");
             }
 
             records.Add(record);
@@ -265,7 +287,14 @@ public sealed class WalLog : IDisposable
         }
     }
 
-    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
+    private void ThrowIfUsable()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_faulted)
+        {
+            throw new WalException("The WAL is faulted after an uncertain I/O operation and must be reopened.");
+        }
+    }
 
     private static ulong NextLsnAfter(ulong lastLsn)
     {

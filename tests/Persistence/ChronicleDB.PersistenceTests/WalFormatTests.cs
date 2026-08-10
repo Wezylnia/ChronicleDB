@@ -85,6 +85,29 @@ public sealed class WalFormatTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new WalRecord(WalRecordType.Begin, 0, TransactionId.New(), []));
     }
 
+    [Fact]
+    public void RecordEnvelopeCanRepresentMaximumMutationPayload()
+    {
+        Assert.Equal(WalRecordCodec.MaxPayloadSize, WalMutationCodec.MaxRecordPayloadSize);
+        Assert.True(
+            WalRecordCodec.MaxPayloadSize
+            >= WalMutationCodec.PutHeaderSize + WalMutationCodec.MaxKeySize + WalMutationCodec.MaxValueSize);
+    }
+
+
+    [Fact]
+    public void CommitPayloadRoundTripsCommitSequence()
+    {
+        var payload = WalCommitCodec.Encode(
+            new ChronicleDB.Core.Sequences.CommitSequence(42),
+            32_768);
+        Assert.Equal(WalCommitCodec.PayloadSize, payload.Length);
+        var decoded = WalCommitCodec.Decode(payload);
+        Assert.Equal(new ChronicleDB.Core.Sequences.CommitSequence(42), decoded.CommitSequence);
+        Assert.Equal(32_768L, decoded.BaseDataLength);
+        Assert.Throws<WalCorruptionException>(() => WalCommitCodec.Decode([]));
+    }
+
     private static void RewriteChecksum(byte[] encoded)
         => BinaryPrimitives.WriteUInt32LittleEndian(
             encoded.AsSpan(44, 4),
