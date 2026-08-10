@@ -26,6 +26,16 @@ The harness crashes:
 - at equivalent points during snapshot deletion;
 - during a later durable parent write after a snapshot already exists.
 
+## History-root scenarios
+
+The v0.6 recovery matrix also covers:
+
+- a missing root record after a durable snapshot create;
+- an orphaned active root after a durable snapshot delete;
+- an incomplete final root frame;
+- a complete corrupt root frame;
+- a fault before and after the root metadata flush boundary.
+
 Pre-flush snapshot lifecycle operations may recover as old or new complete state. Post-flush operations must recover the new durable state. Whenever a snapshot exists, its historical contents are verified, not only its metadata count.
 
 ## Repetition

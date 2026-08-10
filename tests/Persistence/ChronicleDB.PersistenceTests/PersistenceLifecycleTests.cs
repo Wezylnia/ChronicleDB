@@ -2,6 +2,7 @@ using ChronicleDB.PersistenceTests.Fixtures;
 using ChronicleDB.Storage;
 using ChronicleDB.Storage.Files;
 using ChronicleDB.Storage.Formats;
+using ChronicleDB.Storage.HistoryRoots;
 using ChronicleDB.Storage.Snapshots;
 using ChronicleDB.Wal;
 using ChronicleDB.Wal.Files;
@@ -23,7 +24,9 @@ public sealed class PersistenceLifecycleTests
         using var store = PersistentKeyValueStore.Open(directory.Path);
         Assert.True(store.HasFormatFlag(DatabaseHeader.WalInitializedFlag));
         Assert.True(store.HasFormatFlag(DatabaseHeader.SnapshotStoreInitializedFlag));
+        Assert.True(store.HasFormatFlag(DatabaseHeader.HistoryRootStoreInitializedFlag));
         Assert.Equal(DatabaseHeader.SupportedFormatFlags, store.Header.FormatFlags);
+        Assert.True(File.Exists(Path.Combine(directory.Path, PersistentHistoryRootStore.FileName)));
     }
 
     [Fact]
@@ -58,6 +61,21 @@ public sealed class PersistenceLifecycleTests
     }
 
     [Fact]
+    public void MissingInitializedHistoryRootStoreIsRejectedInsteadOfForgettingRoots()
+    {
+        using var directory = new StorageTestDirectory();
+        using (var database = ChronicleDB.ChronicleDatabase.Open(directory.Path))
+        {
+            database.Put([1], [10]);
+        }
+
+        File.Delete(Path.Combine(directory.Path, PersistentHistoryRootStore.FileName));
+
+        Assert.Throws<StorageCorruptionException>(
+            () => ChronicleDB.ChronicleDatabase.Open(directory.Path).Dispose());
+    }
+
+    [Fact]
     public void LegacyStoreWithoutInitializationFlagsCanUpgradeOnce()
     {
         using var directory = new StorageTestDirectory();
@@ -75,6 +93,7 @@ public sealed class PersistenceLifecycleTests
 
         Assert.True(File.Exists(Path.Combine(directory.Path, WalOptions.DefaultFileName)));
         Assert.True(File.Exists(Path.Combine(directory.Path, PersistentSnapshotStore.FileName)));
+        Assert.True(File.Exists(Path.Combine(directory.Path, PersistentHistoryRootStore.FileName)));
         using var store = PersistentKeyValueStore.Open(directory.Path);
         Assert.Equal(DatabaseHeader.SupportedFormatFlags, store.Header.FormatFlags);
     }

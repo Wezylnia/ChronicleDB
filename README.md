@@ -1,6 +1,6 @@
 # ChronicleDB
 
-ChronicleDB is an experimental embedded, persistent, versioned key-value storage engine for .NET 10. The v0.5 baseline is intentionally correctness-first: it combines checksummed append-only storage, WAL-backed atomic transactions, MVCC Snapshot Isolation, concurrent transaction execution, persistent named snapshots, retained point-in-time reads, deterministic recovery, fault injection, differential testing, diagnostics, and reproducible baseline benchmarks.
+ChronicleDB is an experimental embedded, persistent, versioned key-value storage engine for .NET 10. The v0.6 baseline extends the v0.5 correctness-first engine with generalized durable history roots and explainable retention queries while preserving snapshot semantics.
 
 The current release deliberately does **not** implement branching, latch-free indexing, epoch-based reclamation, native-memory hot paths, aggressive historical garbage collection, group commit, or SQL. Those belong to later release lines after the v0.5 semantics are treated as fixed.
 
@@ -15,6 +15,8 @@ The current release deliberately does **not** implement branching, latch-free in
 - persistent named snapshots survive restart and keep a fixed historical boundary;
 - retained commit-sequence views are read-only and deterministic;
 - snapshot deletion removes the named root but v0.5 conservatively keeps historical versions;
+- persistent snapshots are represented as generalized history roots and survive restart through `chronicle.history-roots`;
+- interrupted root publication is reconciled deterministically during open;
 - complete persistent corruption is rejected rather than silently repaired;
 - only proven crash tails are truncated or rebuilt.
 
@@ -32,6 +34,7 @@ The current release deliberately does **not** implement branching, latch-free in
 - [Isolation contract](docs/architecture/ISOLATION.md)
 - [Recovery](docs/architecture/RECOVERY.md)
 - [Persistent snapshots and time travel](docs/architecture/SNAPSHOTS.md)
+- [History roots and retention](docs/architecture/HISTORY_ROOTS.md)
 - [Correctness invariants](docs/architecture/INVARIANTS.md)
 - [Crash harness](docs/architecture/CRASH_HARNESS.md)
 - [Testing methodology](docs/TESTING.md)

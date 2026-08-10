@@ -1,4 +1,4 @@
-# v0.5 persistent snapshots and time travel
+# v0.6 persistent snapshots and time travel
 
 v0.5 exposes retained MVCC history as read-only public state. Branching is not part of this release.
 
@@ -12,7 +12,7 @@ A persistent snapshot contains:
 - fixed commit-sequence boundary;
 - creation timestamp.
 
-Creating a snapshot does **not** copy database pages. The operation captures the current published commit sequence, persists one Create lifecycle record to `chronicle.snapshots`, flushes it to the stable-storage boundary, registers it in the in-memory catalog, and only then returns the handle.
+Creating a snapshot does **not** copy database pages. The operation captures the current published commit sequence, persists one Create lifecycle record to `chronicle.snapshots`, persists the corresponding active history-root record to `chronicle.history-roots`, flushes both to the stable-storage boundary, registers the root and snapshot in memory, and only then returns the handle.
 
 The capture point is the snapshot's linearization boundary. A transaction that commits after that sequence is excluded even if it completes before snapshot creation returns.
 
@@ -23,7 +23,7 @@ The capture point is the snapshot's linearization boundary. A transaction that c
 - after snapshot metadata flush: the root is durable even if acknowledgement is lost;
 - a partial framed tail is discarded on reopen; complete corrupt metadata is rejected.
 
-Delete follows the same durable lifecycle protocol with a Delete record.
+Delete follows the same durable lifecycle protocol with Delete records in both metadata streams. If a crash occurs between the two files, recovery reconciles the root registry with the authoritative snapshot catalog before exposing the database.
 
 ## Open and list
 
@@ -45,4 +45,4 @@ The API is database-scoped, so a raw sequence is interpreted only inside the dat
 
 Fresh v0.5 databases start with retention floor zero and can time-travel through all WAL-reconstructable commits. When an older physical database lacks provable historical commit provenance, first v0.5 open establishes a conservative floor at the validated upgrade boundary rather than inventing history.
 
-The floor is intentionally not advanced by snapshot deletion in v0.5. Precise reclamation and branch-aware retention belong to v1.0.
+The floor remains conservative and is not advanced by snapshot deletion. v0.6 makes the retention roots queryable and durable; precise physical reclamation and branch-aware retention belong to later v1.0 stages.

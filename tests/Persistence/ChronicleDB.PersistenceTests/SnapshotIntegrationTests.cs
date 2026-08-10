@@ -276,6 +276,29 @@ public sealed class SnapshotIntegrationTests
         Assert.Equal(new byte[] { 7 }, value);
     }
 
+    [Fact]
+    public void HistoryRootFailureAfterDurabilityFaultsDatabaseAndRecoveryKeepsSnapshot()
+    {
+        using var directory = new StorageTestDirectory();
+        var injector = new ThrowingSnapshotFaultInjector(StorageFaultPoint.AfterHistoryRootFlush);
+        using (var database = ChronicleDB.ChronicleDatabase.Open(
+                   directory.Path,
+                   new StorageOptions { FaultInjector = injector }))
+        {
+            database.Put([1], [8]);
+            Assert.Throws<InvalidOperationException>(() =>
+            {
+                using var snapshot = database.CreateSnapshot("root-durable-but-unacknowledged");
+            });
+            Assert.Equal(ChronicleDB.DatabaseState.Faulted, database.State);
+        }
+
+        using var reopened = ChronicleDB.ChronicleDatabase.Open(directory.Path);
+        using var snapshotAfterRecovery = reopened.OpenSnapshot("root-durable-but-unacknowledged");
+        Assert.True(snapshotAfterRecovery.TryGet([1], out var value));
+        Assert.Equal(new byte[] { 8 }, value);
+    }
+
     private sealed class ThrowingSnapshotFaultInjector(StorageFaultPoint target) : IStorageFaultInjector
     {
         public void Hit(StorageFaultPoint point, ChronicleDB.Core.Identifiers.PageId pageId)

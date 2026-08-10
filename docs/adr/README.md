@@ -14,5 +14,6 @@ ADRs record decisions that are expensive to reverse or that affect correctness, 
 | [0008](0008-v04-concurrent-mvcc-baseline.md) | v0.4 conventional concurrent MVCC baseline | Accepted |
 | [0009](0009-v05-persistent-snapshots.md) | v0.5 persistent snapshots and conservative retention | Accepted |
 | [0010](0010-v05-persistence-lifecycle-hardening.md) | v0.5 persistence lifecycle and framing hardening | Accepted |
+| [0011](0011-v06-generalized-history-roots.md) | v0.6 generalized durable history roots | Accepted |
 
 Use a new ADR when changing the project graph, persistent formats, commit/durability semantics, memory ownership, public lifetime rules, or baseline/optimized implementation strategy.

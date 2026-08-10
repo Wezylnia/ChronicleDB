@@ -46,6 +46,8 @@ These invariants are the release contract. Performance work may change implement
 
 **Persistent integrity.** Metadata, pages, WAL records, and snapshot records are explicitly framed/versioned/checksummed and validated before use.
 
+**Root retention integrity.** Every active persistent snapshot has a matching active history-root record; root metadata is database-bound, checksummed, and reconciled before the database becomes usable. A deleted root never contributes to retention, while Creating/Deleting intents remain conservatively protected.
+
 **Monotonic capabilities.** Once durable metadata says a critical persistence subsystem was initialized, its file cannot disappear and be silently recreated as empty history.
 
 **No out-of-band adoption.** After WAL initialization, physical current keys without WAL-backed logical history are corruption, not implicit new database state.

@@ -10,6 +10,7 @@ using ChronicleDB.Recovery;
 using ChronicleDB.Storage;
 using ChronicleDB.Storage.Files;
 using ChronicleDB.Storage.Formats;
+using ChronicleDB.Storage.HistoryRoots;
 using ChronicleDB.Storage.Snapshots;
 using ChronicleDB.Transactions;
 using ChronicleDB.Transactions.Faults;
@@ -30,6 +31,7 @@ public sealed class ChronicleDatabase : IDisposable
     private readonly PersistentKeyValueStore _store;
     private readonly WalLog _wal;
     private readonly PersistentSnapshotStore _snapshotStore;
+    private readonly PersistentHistoryRootStore _historyRootStore;
     private readonly SnapshotCatalog _snapshots;
     private readonly HistoryRootRegistry _historyRoots;
     private readonly CommittedVersionStore _versions;
@@ -48,6 +50,7 @@ public sealed class ChronicleDatabase : IDisposable
         PersistentKeyValueStore store,
         WalLog wal,
         PersistentSnapshotStore snapshotStore,
+        PersistentHistoryRootStore historyRootStore,
         SnapshotCatalog snapshots,
         HistoryRootRegistry historyRoots,
         CommittedVersionStore versions,
@@ -58,6 +61,7 @@ public sealed class ChronicleDatabase : IDisposable
         _store = store;
         _wal = wal;
         _snapshotStore = snapshotStore;
+        _historyRootStore = historyRootStore;
         _snapshots = snapshots;
         _historyRoots = historyRoots;
         _versions = versions;
@@ -145,6 +149,7 @@ public sealed class ChronicleDatabase : IDisposable
         var store = PersistentKeyValueStore.Open(fullDirectory, validatedOptions, allowIncompleteFinalPage: true);
         WalLog? wal = null;
         PersistentSnapshotStore? snapshotStore = null;
+        PersistentHistoryRootStore? historyRootStore = null;
         try
         {
             var walWasInitialized = store.HasFormatFlag(DatabaseHeader.WalInitializedFlag);
@@ -218,6 +223,21 @@ public sealed class ChronicleDatabase : IDisposable
                     "Snapshot lifecycle metadata references history newer than the recovered database.");
             }
 
+            var mainHistoryId = new HistoryId(store.DatabaseId);
+            RequireInitializedFileIfFlagged(
+                store,
+                DatabaseHeader.HistoryRootStoreInitializedFlag,
+                Path.Combine(fullDirectory, PersistentHistoryRootStore.FileName),
+                "persistent history-root metadata");
+            historyRootStore = PersistentHistoryRootStore.Open(
+                fullDirectory,
+                store.DatabaseId,
+                mainHistoryId,
+                validatedOptions.FaultInjector);
+
+            var snapshotRecords = snapshotStore.ListActive();
+            ReconcileSnapshotRoots(historyRootStore, snapshotRecords, store.DatabaseId, mainHistoryId);
+
             SnapshotCatalog snapshots;
             HistoryRootRegistry historyRoots;
             try
@@ -225,19 +245,20 @@ public sealed class ChronicleDatabase : IDisposable
                 snapshots = new SnapshotCatalog(
                     snapshotStore.Header.RetentionFloor,
                     currentCommitSequence,
-                    snapshotStore.ListActive().Select(ToSnapshotDefinition));
-                var mainHistoryId = new HistoryId(store.DatabaseId);
+                    snapshotRecords.Select(ToSnapshotDefinition));
                 historyRoots = new HistoryRootRegistry(
                     mainHistoryId,
                     snapshotStore.Header.RetentionFloor,
-                    snapshotStore.ListActive().Select(record => ToHistoryRoot(record, store.DatabaseId, mainHistoryId)));
+                    historyRootStore.ListRetaining().Select(record => ToHistoryRoot(record)));
             }
-            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or StorageFormatException)
             {
                 throw new StorageCorruptionException(
-                    "Persistent snapshot metadata is inconsistent with recovered history.",
+                    "Persistent historical-root metadata is inconsistent with recovered history.",
                     exception);
             }
+
+            store.EnsureFormatFlags(DatabaseHeader.HistoryRootStoreInitializedFlag);
 
             var counters = new EngineCounters();
             counters.RecoveryReplayed(recovery.CommittedTransactionCount);
@@ -245,6 +266,7 @@ public sealed class ChronicleDatabase : IDisposable
                 store,
                 wal,
                 snapshotStore,
+                historyRootStore,
                 snapshots,
                 historyRoots,
                 versions,
@@ -256,17 +278,24 @@ public sealed class ChronicleDatabase : IDisposable
         {
             try
             {
-                snapshotStore?.Dispose();
+                historyRootStore?.Dispose();
             }
             finally
             {
                 try
                 {
-                    wal?.Dispose();
+                    snapshotStore?.Dispose();
                 }
                 finally
                 {
-                    store.Dispose();
+                    try
+                    {
+                        wal?.Dispose();
+                    }
+                    finally
+                    {
+                        store.Dispose();
+                    }
                 }
             }
 
@@ -343,18 +372,20 @@ public sealed class ChronicleDatabase : IDisposable
                 try
                 {
                     var root = ToHistoryRoot(definition, _databaseId, _mainHistoryId);
+                    var rootRecord = ToHistoryRootStoreRecord(definition, _databaseId, _mainHistoryId);
                     _snapshotStore.AppendCreate(
                         definition.SnapshotId,
                         definition.Sequence,
                         definition.CreatedUnixMilliseconds,
                         definition.Name);
                     metadataAppended = true;
+                    _historyRootStore.AppendCreate(rootRecord);
                     _historyRoots.RegisterActive(root);
                     _snapshots.RegisterPersisted(definition, GetCurrentCommitSequence());
                 }
                 catch
                 {
-                    if (_snapshotStore.IsFaulted || metadataAppended)
+                    if (_snapshotStore.IsFaulted || _historyRootStore.IsFaulted || metadataAppended)
                     {
                         MarkFaulted();
                     }
@@ -444,6 +475,7 @@ public sealed class ChronicleDatabase : IDisposable
                     deletionStarted = true;
                     _snapshotStore.AppendDelete(id);
                     metadataAppended = true;
+                    _historyRootStore.AppendDelete(rootId);
                     _snapshots.RemoveRequired(id);
                     _historyRoots.CompleteDelete(rootId);
                 }
@@ -454,7 +486,7 @@ public sealed class ChronicleDatabase : IDisposable
                         _historyRoots.CancelDelete(rootId);
                     }
 
-                    if (_snapshotStore.IsFaulted || metadataAppended)
+                    if (_snapshotStore.IsFaulted || _historyRootStore.IsFaulted || metadataAppended)
                     {
                         MarkFaulted();
                     }
@@ -583,23 +615,30 @@ public sealed class ChronicleDatabase : IDisposable
 
             try
             {
-                _snapshotStore.Dispose();
+                _historyRootStore.Dispose();
             }
             finally
             {
                 try
                 {
-                    _wal.Dispose();
+                    _snapshotStore.Dispose();
                 }
                 finally
                 {
                     try
                     {
-                        _store.Dispose();
+                        _wal.Dispose();
                     }
                     finally
                     {
-                        _versions.Dispose();
+                        try
+                        {
+                            _store.Dispose();
+                        }
+                        finally
+                        {
+                            _versions.Dispose();
+                        }
                     }
                 }
             }
@@ -935,19 +974,25 @@ public sealed class ChronicleDatabase : IDisposable
             record.Sequence,
             record.CreatedUnixMilliseconds);
 
-    private static HistoryRoot ToHistoryRoot(
-        SnapshotStoreRecord record,
-        Guid databaseId,
-        HistoryId mainHistoryId)
-        => new(
-            new HistoryRootId(record.SnapshotId.Value),
+    private static HistoryRoot ToHistoryRoot(HistoryRootStoreRecord record)
+    {
+        if (record.RootKind != (byte)HistoryRootKind.PersistentSnapshot
+            || record.RootState != (byte)HistoryRootState.Active
+            || !record.ParentHistoryId.Equals(HistoryId.Empty))
+        {
+            throw new StorageFormatException("The v0.6 database contains an unsupported non-snapshot history root.");
+        }
+
+        return new HistoryRoot(
+            record.RootId,
             HistoryRootKind.PersistentSnapshot,
-            databaseId,
-            mainHistoryId,
-            HistoryId.Empty,
-            record.Sequence,
+            record.OwnerDatabaseId,
+            record.HistoryId,
+            record.ParentHistoryId,
+            record.Boundary,
             record.CreatedUnixMilliseconds,
             HistoryRootState.Active);
+    }
 
     private static HistoryRoot ToHistoryRoot(
         SnapshotDefinition definition,
@@ -962,6 +1007,66 @@ public sealed class ChronicleDatabase : IDisposable
             definition.Sequence,
             definition.CreatedUnixMilliseconds,
             HistoryRootState.Active);
+
+    private static HistoryRootStoreRecord ToHistoryRootStoreRecord(
+        SnapshotDefinition definition,
+        Guid databaseId,
+        HistoryId mainHistoryId)
+        => new(
+            HistoryRootStoreRecordType.Create,
+            EventSequence: 0,
+            new HistoryRootId(definition.SnapshotId.Value),
+            (byte)HistoryRootKind.PersistentSnapshot,
+            (byte)HistoryRootState.Active,
+            databaseId,
+            mainHistoryId,
+            HistoryId.Empty,
+            definition.Sequence,
+            definition.CreatedUnixMilliseconds);
+
+    private static void ReconcileSnapshotRoots(
+        PersistentHistoryRootStore historyRootStore,
+        IReadOnlyList<SnapshotStoreRecord> snapshots,
+        Guid databaseId,
+        HistoryId mainHistoryId)
+    {
+        ArgumentNullException.ThrowIfNull(historyRootStore);
+        ArgumentNullException.ThrowIfNull(snapshots);
+
+        var snapshotRootIds = new HashSet<HistoryRootId>();
+        foreach (var snapshot in snapshots)
+        {
+            var definition = ToSnapshotDefinition(snapshot);
+            var expected = ToHistoryRootStoreRecord(definition, databaseId, mainHistoryId);
+            snapshotRootIds.Add(expected.RootId);
+            if (!historyRootStore.TryGet(expected.RootId, out var existing) || existing is null)
+            {
+                historyRootStore.AppendCreate(expected);
+                continue;
+            }
+
+            if (existing.RootState == (byte)HistoryRootState.Deleted
+                || existing.RootKind != expected.RootKind
+                || existing.OwnerDatabaseId != expected.OwnerDatabaseId
+                || existing.HistoryId != expected.HistoryId
+                || existing.ParentHistoryId != expected.ParentHistoryId
+                || existing.Boundary != expected.Boundary
+                || existing.CreatedUnixMilliseconds != expected.CreatedUnixMilliseconds)
+            {
+                throw new StorageCorruptionException(
+                    $"History-root metadata for snapshot {definition.SnapshotId.Value} does not match the snapshot catalog.");
+            }
+        }
+
+        foreach (var root in historyRootStore.ListRetaining())
+        {
+            if (root.RootKind == (byte)HistoryRootKind.PersistentSnapshot
+                && !snapshotRootIds.Contains(root.RootId))
+            {
+                historyRootStore.AppendDelete(root.RootId);
+            }
+        }
+    }
 
     private ChronicleSnapshotInfo ToSnapshotInfo(SnapshotDefinition definition)
         => new(
