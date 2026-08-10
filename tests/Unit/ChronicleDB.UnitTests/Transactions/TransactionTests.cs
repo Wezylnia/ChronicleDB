@@ -18,10 +18,11 @@ public sealed class TransactionTests
         transaction.Put([1], [2]);
         transaction.Prepare();
         transaction.MarkCommitting();
-        transaction.MarkDurableCommitted();
+        transaction.MarkDurableCommitted(new CommitSequence(18));
         transaction.MarkCommitted();
 
         Assert.Equal(TransactionState.Committed, transaction.State);
+        Assert.Equal(new CommitSequence(18), transaction.CommitSequence);
         Assert.Equal(0, transaction.WriteCount);
         Assert.Throws<InvalidOperationException>(() => transaction.Put([1], [3]));
     }
@@ -100,12 +101,28 @@ public sealed class TransactionTests
         transaction.Put([1], [2]);
         transaction.Prepare();
         transaction.MarkCommitting();
-        transaction.MarkDurableCommitted();
+        transaction.MarkDurableCommitted(new CommitSequence(18));
 
         Assert.Equal(TransactionState.DurableCommitted, transaction.State);
         Assert.Throws<InvalidOperationException>(() => transaction.Abort());
 
         transaction.MarkCommitted();
         Assert.Equal(TransactionState.Committed, transaction.State);
+    }
+
+    [Fact]
+    public void PrepareAndGetWriteSetAtomicallyFreezesFurtherMutations()
+    {
+        var transaction = new Transaction();
+        transaction.Begin();
+        transaction.Put([1], [10]);
+
+        var writes = transaction.PrepareAndGetWriteSet();
+
+        Assert.Single(writes);
+        Assert.Equal(TransactionState.Preparing, transaction.State);
+        Assert.Throws<InvalidOperationException>(() => transaction.Put([2], [20]));
+        Assert.Throws<InvalidOperationException>(() => transaction.Delete([1]));
+        transaction.Abort();
     }
 }

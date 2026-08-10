@@ -8,13 +8,14 @@ using ChronicleDB.Transactions.Writes;
 namespace ChronicleDB.Transactions;
 
 /// <summary>
-/// Coarse-grained v0.2 transaction descriptor. It owns writes until the commit protocol publishes them.
+/// Coarse-grained v0.3 Snapshot Isolation transaction descriptor. It owns writes until the commit protocol publishes them.
 /// </summary>
 public sealed class Transaction
 {
     private readonly object _gate = new();
     private readonly Dictionary<BinaryKey, TransactionWrite> _writes = [];
     private TransactionState _state = TransactionState.Created;
+    private CommitSequence? _commitSequence;
 
     public Transaction(
         TransactionId? transactionId = null,
@@ -32,6 +33,17 @@ public sealed class Transaction
     public TransactionId TransactionId { get; }
 
     public CommitSequence StartSequence { get; }
+
+    public CommitSequence? CommitSequence
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _commitSequence;
+            }
+        }
+    }
 
     public TransactionState State
     {
@@ -126,6 +138,15 @@ public sealed class Transaction
         }
     }
 
+    public IReadOnlyList<TransactionWrite> PrepareAndGetWriteSet()
+    {
+        lock (_gate)
+        {
+            Transition(TransactionState.Active, TransactionState.Preparing);
+            return _writes.Values.Select(write => write.Clone()).ToArray();
+        }
+    }
+
     public void Prepare()
     {
         lock (_gate)
@@ -151,11 +172,19 @@ public sealed class Transaction
         }
     }
 
-    public void MarkDurableCommitted()
+    public void MarkDurableCommitted(CommitSequence commitSequence)
     {
         lock (_gate)
         {
+            if (commitSequence.IsInitial)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(commitSequence),
+                    "A durable commit requires a non-zero commit sequence.");
+            }
+
             Transition(TransactionState.Committing, TransactionState.DurableCommitted);
+            _commitSequence = commitSequence;
         }
     }
 
