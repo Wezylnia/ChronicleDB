@@ -11,6 +11,7 @@ public sealed class ReferenceMvccModel
 {
     private readonly object _gate = new();
     private readonly Dictionary<BinaryKey, List<ReferenceVersion>> _versions = [];
+    private readonly Dictionary<string, ReferenceSnapshot> _snapshots = new(StringComparer.Ordinal);
     private ulong _currentCommitSequence;
 
     public ulong CurrentCommitSequence
@@ -30,6 +31,55 @@ public sealed class ReferenceMvccModel
         {
             return new ReferenceTransaction(this, _currentCommitSequence);
         }
+    }
+
+    public ReferenceSnapshot CreateSnapshot(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        lock (_gate)
+        {
+            if (_snapshots.ContainsKey(name))
+            {
+                throw new InvalidOperationException($"Reference snapshot '{name}' already exists.");
+            }
+
+            var snapshot = new ReferenceSnapshot(name, _currentCommitSequence);
+            _snapshots.Add(name, snapshot);
+            return snapshot;
+        }
+    }
+
+    public void DeleteSnapshot(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        lock (_gate)
+        {
+            if (!_snapshots.Remove(name))
+            {
+                throw new KeyNotFoundException($"Reference snapshot '{name}' does not exist.");
+            }
+        }
+    }
+
+    public IReadOnlyList<ReferenceSnapshot> ListSnapshots()
+    {
+        lock (_gate)
+        {
+            return _snapshots.Values.OrderBy(item => item.Sequence).ThenBy(item => item.Name, StringComparer.Ordinal).ToArray();
+        }
+    }
+
+    public bool TryReadHistorical(ReadOnlySpan<byte> key, ulong boundary, out byte[] value)
+    {
+        lock (_gate)
+        {
+            if (boundary > _currentCommitSequence)
+            {
+                ArgumentOutOfRangeException.ThrowIfGreaterThan(boundary, _currentCommitSequence, nameof(boundary));
+            }
+        }
+
+        return TryReadAt(key, boundary, out value);
     }
 
     internal bool TryReadAt(ReadOnlySpan<byte> key, ulong boundary, out byte[] value)
@@ -228,3 +278,5 @@ public sealed class ReferenceTransactionConflictException : InvalidOperationExce
 
     public ulong ConflictingSequence { get; }
 }
+
+public sealed record ReferenceSnapshot(string Name, ulong Sequence);

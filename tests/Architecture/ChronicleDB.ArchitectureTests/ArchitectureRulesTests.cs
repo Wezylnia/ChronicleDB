@@ -201,12 +201,20 @@ public sealed class ArchitectureRulesTests
                 .Descendants("ProjectReference")
                 .Select(element => element.Attribute("Include")?.Value)
                 .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Select(value => Path.GetFullPath(Path.Combine(Path.GetDirectoryName(projectFile)!, value!)))
+                .Select(value => NormalizeProjectReference(projectFile, value!))
                 .Where(path => IsUnder(path, Path.Combine(RepositoryRoot(), "src")))
                 .Select(path => Path.GetFileNameWithoutExtension(path)!)
                 .Order(StringComparer.Ordinal)
                 .ToArray(),
             StringComparer.Ordinal);
+    }
+
+    private static string NormalizeProjectReference(string projectFile, string reference)
+    {
+        var normalized = reference
+            .Replace('\\', Path.DirectorySeparatorChar)
+            .Replace('/', Path.DirectorySeparatorChar);
+        return Path.GetFullPath(Path.Combine(Path.GetDirectoryName(projectFile)!, normalized));
     }
 
     private static void Visit(
