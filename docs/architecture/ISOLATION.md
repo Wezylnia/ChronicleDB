@@ -1,24 +1,31 @@
-# v0.3 isolation contract
+# v0.5 isolation contract
 
-ChronicleDB v0.3 provides **Snapshot Isolation**, not Serializable Isolation.
+ChronicleDB v0.5 provides **Snapshot Isolation (SI)**. It does not claim serializability.
 
 ## Guarantees
 
 For an active transaction:
 
-- reads use one stable `StartSequence` for the transaction lifetime;
-- commits newer than that boundary are not visible;
-- the transaction always sees its own latest local write;
-- uncommitted writes from other transactions are never visible;
-- a later tombstone does not hide a value from an older snapshot;
-- two writers that overlap on a logical key cannot both commit when one has committed a version newer than the other's start sequence.
+- `StartSequence` is fixed for the transaction lifetime;
+- commits newer than that sequence are invisible;
+- the transaction sees its own latest local write;
+- uncommitted work from other transactions is never visible;
+- historical tombstones obey the same sequence rule as values;
+- first-committer-wins prevents two transactions with an overlapping written key from both committing after one has produced a version newer than the other's start sequence;
+- one committed multi-key write set is observed atomically at a commit boundary.
 
-The current conflict policy is first-committer-wins. Conflict validation happens before the transaction writes any WAL record.
+Conflict validation and commit decision are serialized by the v0.5 commit coordinator, so two same-key writers cannot both pass validation against the same stale head.
 
-## Non-guarantees
+## Permitted anomaly: write skew
 
-Snapshot Isolation is not serializability. Transactions that read overlapping state but write different keys can both commit. Therefore anomalies such as write skew remain possible.
+SI is weaker than serializability. Two transactions may read the same invariant-bearing state but write disjoint keys and both commit.
 
-For example, two transactions can both read `A = 1, B = 1`; one can write `A = 0` while the other writes `B = 0`; because their write sets do not overlap, both may commit and produce `A = 0, B = 0`.
+Example:
 
-This behavior is intentional in v0.3 and is covered by tests so that later changes do not accidentally claim stronger isolation.
+1. T1 and T2 both start with `A = 1, B = 1`.
+2. T1 reads both and writes `A = 0`.
+3. T2 reads both and writes `B = 0`.
+4. Their write sets do not overlap, so both can commit.
+5. Final state is `A = 0, B = 0`.
+
+The test suite keeps explicit coverage for this behavior so ChronicleDB is not accidentally documented as serializable.

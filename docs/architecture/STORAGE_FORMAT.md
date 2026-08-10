@@ -1,100 +1,91 @@
-# v0.1 Storage Format
+# v0.5 storage format
 
-This is the byte-level contract implemented by `ChronicleDB.Storage`.
+This document describes the byte-level persistent storage owned by `ChronicleDB.Storage`. WAL framing is documented separately.
 
 ## Files
 
-| File | Size | Purpose |
-| --- | ---: | --- |
-| `chronicle.meta` | exactly 64 bytes | database identity and format configuration |
-| `chronicle.data` | `N * 16,384` bytes | append-only fixed-size pages |
+| File | Shape | Purpose |
+| --- | --- | --- |
+| `chronicle.meta` | append-only 64-byte header generations | database identity, format capabilities |
+| `chronicle.data` | `N * 16,384` bytes except an untrusted crash tail during recovery | append-only record/overflow pages |
+| `chronicle.snapshots` | 64-byte header + framed lifecycle records | persistent named snapshot roots |
 
-The v0.1 store does not create a WAL. Transactional durability starts in v0.2.
+`chronicle.wal` is owned by `ChronicleDB.Wal`.
 
 ## Limits
 
-- page size: exactly 16,384 bytes;
-- maximum key size: 1,024 bytes by default, never more than `UInt16.MaxValue`;
-- maximum value size: 64 MiB by default, never more than 256 MiB;
-- page ID: unsigned 64-bit, one-based; zero is invalid;
-- all length fields are checked before allocation, slicing, or file access.
+- page size: exactly 16 KiB;
+- default maximum key: 1,024 bytes;
+- default maximum value: 64 MiB;
+- configured storage value limit can never exceed 256 MiB, while ChronicleDB's WAL-backed facade is limited by the 64 MiB mutation protocol;
+- record pages contain one logical record payload in the current append-only layout;
+- page IDs are one-based `UInt64`; zero is invalid;
+- the current `FileStream`/`long` offset model limits `chronicle.data` to at most 562,949,953,421,311 full 16 KiB pages (largest aligned length below `Int64.MaxValue`);
+- persistent snapshot names are at most 1,024 valid UTF-8 bytes.
 
-The configured limits are validated when opening the database. A header with a different page size is incompatible with the requested options.
+All encoded lengths are validated before allocation/slicing/file access.
 
-## Database header (`chronicle.meta`)
+## Database metadata journal
 
-| Offset | Size | Field |
-| ---: | ---: | --- |
-| 0 | 8 | ASCII magic `CHDBv001` |
-| 8 | 2 | major format version (`1`) |
-| 10 | 2 | minor format version (`0`) |
-| 12 | 4 | header size (`64`) |
-| 16 | 16 | database GUID bytes |
-| 32 | 4 | page size (`16,384`) |
-| 36 | 4 | checksum algorithm (`1` = CRC32C) |
-| 40 | 4 | format flags (currently zero) |
-| 44 | 8 | creation timestamp, Unix milliseconds |
-| 52 | 8 | reserved bytes (must be zero) |
-| 60 | 4 | CRC32C of offsets `0..59` |
-
-Unknown major versions, unsupported checksum algorithms, non-zero reserved bytes, invalid GUIDs, wrong header size, and checksum failures are rejected.
-
-## Page header
-
-Every 16 KiB page begins with a 32-byte header.
+Each `chronicle.meta` slot is 64 bytes. v1.1 slots use:
 
 | Offset | Size | Field |
 | ---: | ---: | --- |
-| 0 | 4 | ASCII magic `CPG1` |
-| 4 | 1 | page type (`1` record, `2` overflow) |
-| 5 | 1 | page flags (currently zero) |
-| 6 | 2 | page header size (`32`) |
-| 8 | 8 | one-based page ID |
-| 16 | 8 | generation marker (`1` in v0.1) |
-| 24 | 2 | payload length |
-| 26 | 2 | reserved bytes (must be zero) |
-| 28 | 4 | CRC32C of the complete page with this field treated as zero |
+| 0 | 8 | `CHDBv001` |
+| 8 | 2 | major `1` |
+| 10 | 2 | minor `1` |
+| 12 | 4 | slot size `64` |
+| 16 | 16 | database GUID |
+| 32 | 4 | page size |
+| 36 | 4 | CRC32C algorithm ID |
+| 40 | 4 | monotonic capability flags |
+| 44 | 8 | creation Unix milliseconds |
+| 52 | 8 | strictly increasing metadata generation |
+| 60 | 4 | CRC32C of bytes `0..59` |
 
-Bytes after `header + payload length` and before the page end are zero-filled and included in the checksum. A page with an unexpected ID, type, header size, reserved field, payload length, or checksum is corrupt.
+Capability flags currently record that WAL and persistent snapshot metadata have been durably initialized. Once a flag is present, a later generation may not remove it. This prevents accidental deletion of a critical persistence file from being mistaken for a first-time upgrade.
 
-## Record payload
+Legacy v1.0 single-slot headers remain readable only with zero flags/reserved bytes. Their in-memory generation is zero; the first capability update appends a v1.1 generation.
 
-The record page payload begins with a 24-byte record header.
+A partial **final** metadata slot can be discarded because an earlier complete checksummed generation remains authoritative. A corrupt complete slot is fatal.
 
-| Offset | Size | Field |
-| ---: | ---: | --- |
-| 0 | 1 | record version (`1`) |
-| 1 | 1 | flags: bit 0 tombstone, bit 1 overflow value |
-| 2 | 2 | key length |
-| 4 | 4 | value length |
-| 8 | 8 | overflow head page ID, or zero |
-| 16 | 4 | inline value length |
-| 20 | 4 | reserved bytes (must be zero) |
-| 24 | `key length` | full binary key |
-| 24 + key length | `inline length` | inline value bytes |
+Initial metadata creation uses a fully flushed temporary file followed by an atomic same-directory move; an existing empty canonical metadata file is corruption, not an invitation to invent a new database identity.
 
-Record flags and lengths must agree. Tombstones have zero value length and no overflow head. Inline records have `inline length == value length` and a zero overflow head. Overflow records have `inline length == 0` and a non-zero overflow head.
+## Data pages
 
-## Overflow payload
+Every 16 KiB page uses the existing 32-byte `CPG1` header with page type, one-based ID, generation, payload length, reserved fields, and CRC32C over the whole zero-padded page. Page types are `Record` and `Overflow`.
 
-An overflow page payload begins with a 16-byte header:
+Record payloads retain the v0.1 layout: key length, value length, flags, overflow head, inline length, full key bytes, and inline bytes. Overflow pages form forward-only chains and must reconstruct exactly the declared value length.
 
-| Offset | Size | Field |
-| ---: | ---: | --- |
-| 0 | 8 | next overflow page ID, or zero for the tail |
-| 8 | 4 | chunk length |
-| 12 | 4 | reserved bytes (must be zero) |
-| 16 | `chunk length` | value bytes |
+The append-only page model deliberately retains old physical records in v0.5; current state is rebuilt by scanning newest record/tombstone state per key. Once the database metadata says WAL is initialized, the high-level engine requires every physical current key to have WAL-backed logical history; newly injected low-level keys are rejected as persistence divergence rather than silently adopted.
 
-The chain must be forward-only, must not repeat a page, and must produce exactly the record’s declared value length. A chain with a missing page, cycle, short result, or excess result is corruption.
+## Persistent snapshot file
 
-## Error categories
+`chronicle.snapshots` begins with a checksummed 64-byte `CHSNAP01` header containing:
 
-- `StorageFormatException`: incompatible version, unsupported algorithm, or invalid format configuration;
-- `StorageCorruptionException`: malformed/truncated/checksum-invalid bytes;
-- `StorageLimitException`: key/value/configuration exceeds documented limits;
-- `StorageException`: general storage lifecycle or I/O boundary failure.
+- format version 1.0;
+- database GUID;
+- durable historical `RetentionFloor`;
+- checksum algorithm;
+- maximum UTF-8 name bytes.
 
-## Compatibility
+It is followed by Create/Delete lifecycle records. Records have a 64-byte fixed header, UTF-8 name payload for Create, and an 8-byte footer. Framing stores total length redundantly in the header and footer; CRC32C covers the complete record with the checksum field zeroed. Event sequences are contiguous and snapshot IDs are never reusable.
 
-The v0.1 format is development-stable, not a promise of cross-release migration. Any incompatible byte-level change must increment the major format version and add an ADR, golden fixtures, corruption tests, and an explicit migration/rejection policy.
+Delete records remove the named persistent root only. v0.5 does not reclaim committed history.
+
+## Corruption versus crash tail
+
+Complete checksummed structures are never silently discarded. Automatic repair is restricted to:
+
+- partial final database-metadata generation;
+- incomplete final WAL/snapshot frame after validated framing;
+- data append regions whose recovery base is proven by a durable WAL Commit, plus the narrow legacy partial-final-page rule.
+### Faulted low-level store instances
+
+A `PersistentKeyValueStore` instance is not reusable after an operation may have modified
+persistent bytes and then failed. The store enters a faulted/recovery-required state and
+rejects further reads and writes until it is closed and reopened. A fault injected before
+the first page write does not fault the instance because persistence was not touched.
+This mirrors the WAL and snapshot-metadata lifetime rule and prevents callers of the
+low-level storage API from continuing with an in-memory index whose physical append
+outcome is uncertain.

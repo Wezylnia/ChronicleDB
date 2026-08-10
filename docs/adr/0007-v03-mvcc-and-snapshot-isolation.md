@@ -27,4 +27,4 @@ Every successful transaction receives a monotonically increasing commit sequence
 - Write skew remains possible because v0.3 is not Serializable Isolation.
 - Current reads and transaction reads use the MVCC version store rather than the mutable physical current-state index.
 - WAL history is required to rebuild in-memory version chains until a later persistent MVCC/checkpoint representation is introduced.
-- v0.3 commit publication is logically atomic because the database gate excludes readers during physical/index publication; v0.4 may replace this with finer-grained publication while preserving the same semantics.
+- v0.3 established the semantic baseline; ADR 0008 records the v0.4 refinement that allows concurrent readers while retaining an ordered durability-critical commit coordinator.

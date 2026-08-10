@@ -1,20 +1,39 @@
-# v0.3 transaction commit boundary
+# v0.5 transaction commit boundary
 
-The v0.3 facade serializes commit publication through one managed database gate while allowing multiple transactions to remain active with independent snapshot boundaries.
+ChronicleDB v0.5 allows transactions and reads to execute concurrently, but intentionally serializes the **durability-critical commit decision** through one commit gate. This is not a database-wide read lock: ordinary current reads, historical reads, persistent snapshot reads, and transaction construction do not wait for WAL fsync. The serialized region preserves one unambiguous order across commit-sequence allocation, WAL LSNs, physical append recovery bases, and final publication.
 
-Before any WAL byte is appended, commit performs the following work:
+## Preflight phase
 
-1. read the transaction's final local write set;
-2. validate first-committer-wins conflicts against the newest committed version for every written key;
-3. allocate the next logical commit sequence;
-4. encode and validate every WAL mutation;
-5. validate every storage mutation and overflow calculation;
-6. capture the current physical data-file length as the recovery base.
+Before any WAL byte is appended, commit:
 
-A conflict aborts the transaction without touching the WAL and does not fault the database.
+1. atomically freezes and copies the transaction's final local write set;
+2. validates first-committer-wins conflicts against newest committed versions;
+3. allocates the next logical commit sequence;
+4. encodes every WAL mutation and validates WAL record capacity;
+5. validates storage key/value limits, overflow calculations, and final file-length arithmetic;
+6. validates MVCC version-handle and chain-length capacity;
+7. captures the current `chronicle.data` length as the recovery base;
+8. encodes the Commit payload.
 
-The durable path then appends `Begin`, one `Put`/`Delete` record per final mutation, and one `Commit` record. The Commit payload stores the logical commit sequence and the data-file length observed before physical publication. ChronicleDB disables per-record WAL flushing on this path and performs one explicit stable-storage flush after the Commit record.
+The invariant is strict: **no known deterministic format/limit validation is intentionally deferred until after durable commit**.
 
-A successful WAL flush transitions the transaction to `DurableCommitted`; abort is impossible after this point. Physical current-state pages are then reconciled. Immutable MVCC versions and index heads are published while the database gate excludes readers, the transaction becomes `Committed`, and the database current sequence advances.
+## Durable path
 
-Any exception after WAL I/O begins faults the database instance. The caller must close and reopen so WAL recovery can resolve the durable outcome.
+The WAL path appends `Begin`, the final `Put`/`Delete` mutation for every written key, then `Commit`. Transactional use disables per-record fsync and performs one explicit `Flush(flushToDisk: true)` after the complete Commit record.
+
+The Commit payload contains:
+
+- logical `CommitSequence`;
+- `chronicle.data` length before this transaction's physical publication.
+
+After that flush succeeds, the transaction enters `DurableCommitted`. ChronicleDB then reconciles append-only physical current-state pages, publishes all immutable MVCC versions under one version-store writer section, marks the transaction `Committed`, and finally publishes the new current sequence. A reader therefore uses either the previous sequence boundary or the complete new version set.
+
+## Failure policy
+
+- failure before WAL append: abort the transaction; database may remain open;
+- failure after WAL I/O may have started but before durable decision: mark transaction `Indeterminate`, fault the database/WAL, and require reopen;
+- failure after durable commit: never abort; fault the database and require recovery;
+- conflict: abort before WAL and return `TransactionConflictException`;
+- faulted database: reject ordinary operations until reopened.
+
+This conservative policy prevents cleanup code from pretending it knows an I/O outcome it cannot prove.

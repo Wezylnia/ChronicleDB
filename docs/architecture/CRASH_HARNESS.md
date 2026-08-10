@@ -1,9 +1,39 @@
-# v0.3 crash harness
+# v0.5 crash harness
 
-`ChronicleDB.CrashHarness` runs a deterministic two-key transaction in a child process for every transaction fault point. The child uses `Environment.FailFast` so file handles are not closed through normal managed disposal. The parent reopens the database and validates the recovered state.
+`ChronicleDB.CrashHarness` is a separate-process durability test. Children terminate with `Environment.FailFast`; normal managed disposal therefore cannot make a test pass accidentally by flushing cleanly.
 
-The harness also includes an `AfterFirstPhysicalPage` scenario. In that case the WAL Commit decision has already crossed the durability barrier, the child is terminated after the first data-page write, and recovery must reconstruct the complete two-key transaction from WAL. This directly exercises partial physical publication rather than testing only the boundaries around it.
+The parent now rejects a child that exits normally: every configured scenario must actually reach its crash point.
 
-At `BeforeWalAppend`, the transaction must be absent. After WAL bytes have been appended but before the explicit flush boundary, the harness accepts the transaction as either absent or complete because an operating system may persist buffered writes despite the missing application flush. A partial transaction is never accepted. At and after the durable boundary, including the physical-page crash scenario, the transaction must recover completely.
+## Transaction scenarios
 
-The harness is intentionally a tool-level executable; storage, WAL, transaction, MVCC, and recovery logic remain in their owning production projects.
+Every `TransactionFaultPoint` is exercised around WAL append, explicit flush, physical publication, and acknowledgement. The recovered two-key transaction must **always** be atomic: either neither key is visible or both expected values are visible.
+
+- before WAL append: transaction must be absent;
+- WAL appended but explicit flush not reached: absent or complete is allowed because the OS may persist buffered data, but partial is forbidden;
+- at/after durable flush: transaction must be complete.
+
+`AfterFirstPhysicalPage` additionally kills the child after the first page of a durable multi-key transaction is written. Recovery must replay the complete WAL decision.
+
+## Persistent snapshot scenarios
+
+The harness crashes:
+
+- before snapshot metadata write;
+- after metadata write;
+- before metadata flush;
+- after metadata flush;
+- immediately after successful snapshot acknowledgement;
+- at equivalent points during snapshot deletion;
+- during a later durable parent write after a snapshot already exists.
+
+Pre-flush snapshot lifecycle operations may recover as old or new complete state. Post-flush operations must recover the new durable state. Whenever a snapshot exists, its historical contents are verified, not only its metadata count.
+
+## Repetition
+
+`run N` executes every scenario N times with fresh directories. For example:
+
+```powershell
+dotnet run --project tools/ChronicleDB.CrashHarness -- run 100
+```
+
+This is intentionally heavier than the normal unit suite and should be part of release/soak validation.

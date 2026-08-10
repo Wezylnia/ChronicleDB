@@ -1,46 +1,51 @@
-# v0.3 MVCC model
+# v0.5 MVCC model
 
-ChronicleDB v0.3 uses immutable committed version chains to provide stable transaction snapshots.
+ChronicleDB v0.5 uses immutable managed committed-version chains as the semantic source for current, transactional, snapshot, and time-travel reads.
 
 ## Commit sequences
 
-`CommitSequence(0)` represents the initial empty history boundary. Every successful transaction receives a non-zero sequence greater than the previous committed sequence. Gaps are allowed by the semantic model, although the current serialized v0.3 commit path normally allocates the immediate successor.
+`CommitSequence(0)` is the initial empty boundary. Every successful transaction, including a read-only committed transaction, receives one monotonically increasing sequence. Sequence gaps are semantically legal even though the current serialized commit coordinator normally uses the immediate successor.
 
-A transaction captures the current committed sequence when it begins. That value is its immutable `StartSequence`.
+A transaction captures the current committed sequence when it begins. That immutable value is its `StartSequence`.
 
 ## Version chains
 
-Each committed key mutation creates one logical version containing:
+Each final key mutation contributed by a committed transaction creates one logical version containing:
 
 - full binary key identity;
 - creator transaction identity;
 - commit sequence;
 - tombstone flag;
-- immutable value bytes when not a tombstone;
+- immutable value bytes for non-tombstones;
 - previous-version handle.
 
-The baseline index maps each full binary key to the newest version handle. The index does not decide visibility; it only locates the chain head.
+No committed older version is mutated to store an `EndSequence`. The baseline index only maps a full key to the newest version handle; MVCC remains authoritative for visibility.
 
 ## Visibility
 
-Transaction-local writes are checked first. Otherwise the engine walks newest-to-oldest and selects the first version for which:
+`VersionVisibility` is the single committed-version predicate:
 
-`version.State == Committed && version.CommitSequence <= transaction.StartSequence`
+`version.State == Committed && version.CommitSequence <= visibilityBoundary`
 
-A visible tombstone means the key is absent at that boundary. If every version in the chain is newer than the boundary, the key is absent from that snapshot.
+Reads walk newest-to-oldest until they find the newest visible version. A visible tombstone means absence. Transaction-local writes are checked before the committed chain.
 
-`VersionVisibility` is the authoritative committed-version predicate. Other subsystems must not invent a separate rule.
+The same rule is used for:
 
-## Publication
+- current reads, using the published current sequence;
+- transaction reads, using `StartSequence`;
+- named snapshot reads, using the snapshot's fixed sequence;
+- explicit historical views, using the requested retained sequence.
 
-v0.3 intentionally keeps commit publication under the database-wide gate. WAL durability is established first, physical current-state storage is reconciled second, and immutable version heads are then published while all facade readers are excluded by the same gate. This is a correctness baseline, not the final concurrency design.
+## Atomic multi-key publication
 
-## Recovery
+`CommittedVersionStore` uses reader/writer synchronization. Parallel readers may traverse immutable chains. A committed multi-key write set is installed under one writer critical section, and the database current sequence is published only after the complete set is installed. Readers that captured the older sequence cannot see newer versions even if physical publication has already occurred.
 
-Commit WAL records persist the logical commit sequence. On open, recovery validates committed transactions, replays final current state into the physical store, then rebuilds the complete in-memory version history from committed WAL transactions in commit order.
+This is the conventional correctness baseline for later optimized indexes; it is deliberately not latch-free.
 
-Legacy v0.2 Commit records with an empty payload remain readable; recovery assigns them monotonically increasing sequences in WAL commit order.
+## Recovery and retention
 
-## Pre-WAL development databases
+The WAL is currently the durable source for reconstructing committed MVCC history. Recovery replays committed transactions in commit order to rebuild chains. Persistent snapshot metadata records a durable `RetentionFloor`; historical APIs reject boundaries below that floor.
 
-If the append-only storage contains current keys that have no WAL-backed version chain, v0.3 bootstraps those keys at the database's current open boundary. This preserves current-state compatibility for early v0.1 development databases without pretending that pre-WAL historical boundaries are reconstructable. Once a key is modified through the WAL-backed facade, normal version history applies.
+When opening pre-MVCC physical state, ChronicleDB writes one durable synthetic bootstrap transaction to WAL for current keys that have no WAL-backed version. This assigns those keys a stable upgrade sequence exactly once; their apparent history cannot drift forward on later reopens.
+
+v0.5 intentionally performs no aggressive committed-history reclamation. Deleting a named snapshot does not physically delete versions, which also keeps already-open snapshot handles safe.

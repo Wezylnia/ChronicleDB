@@ -1,7 +1,25 @@
 # WAL lifecycle and tail policy
 
-`WalLog` owns one `.wal` file exclusively. Its fixed file header contains the storage database GUID and prevents replaying a WAL from another database. Appends allocate contiguous, monotonically increasing LSNs while holding the log lock. The standalone log default flushes each complete record to the stable-storage barrier before returning from `Append`; the ChronicleDB transaction path deliberately disables per-append flushing and performs one explicit flush after `Commit`.
+`WalLog` owns one `.wal` file exclusively. Its fixed file header contains the storage database GUID and prevents replaying a WAL from another database. Initial creation writes and flushes a unique temporary file before moving it to the canonical name; an existing truncated canonical header is corruption rather than a reason to invent a new log identity.
 
-On open, records are scanned sequentially. A final incomplete header or payload is treated as an interrupted tail and truncated to the last complete record. A complete record with an invalid checksum, unsupported format, invalid length, or non-monotonic LSN is corruption and fails open; it is never silently discarded.
+Appends allocate **contiguous** LSNs while holding the log lock. The standalone low-level default may flush on each append; ChronicleDB's transaction path explicitly opens the log with per-append flushing disabled and performs one stable-storage flush after the complete Commit record.
 
-`ReadAll` exposes only complete records. The log is not a transaction manager: grouping records by transaction and replaying committed effects belongs to the Recovery/Transactions layers.
+## Tail policy
+
+On open, records are scanned sequentially. Version-2 record headers contain redundant payload-length information, so a complete header must validate internally before an incomplete payload can be classified as a crash tail.
+
+- short final header: truncate to prior valid record;
+- internally valid header + incomplete final payload: truncate to prior valid record;
+- complete record checksum failure: corruption;
+- invalid framing/version/type/identity: corruption;
+- LSN gap/duplicate/reordering: corruption.
+
+`ReadAll` exposes only complete records.
+
+## Faulted log
+
+If append or explicit flush encounters uncertain I/O, the `WalLog` instance enters a faulted state and cannot be reused. ChronicleDB also faults the owning database and marks a pre-durability transaction indeterminate. Recovery after reopen is the authority on the durable prefix.
+
+A faulted `WalLog.Dispose()` deliberately avoids issuing another explicit `Flush(true)` that could be mistaken for the transaction's missing application durability barrier. File-handle cleanup itself is not treated as a successful commit acknowledgement.
+
+The log is not a transaction manager: transaction grouping, commit semantics, recovery bases, MVCC reconstruction, and historical retention belong to higher layers.

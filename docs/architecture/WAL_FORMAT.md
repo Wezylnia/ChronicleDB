@@ -1,44 +1,46 @@
-# v0.3 WAL file and record format
+# v0.5 WAL format
 
-Each WAL starts with a fixed 64-byte file header. The header binds the log to the storage database identity; a database never replays a WAL belonging to another database. The WAL file header remains format version `1.0`. The v0.3 Commit payload is a backward-compatible, length-delimited record-level extension, so existing v0.2 WAL headers do not require an in-place rewrite before new commits are appended.
+Each WAL begins with a fixed 64-byte database-bound file header (`CWLHDR01`, version 1.0). The header contains database GUID, first LSN, checksum algorithm, reserved bytes, and CRC32C. A WAL whose GUID differs from `chronicle.meta` is rejected.
 
-| Offset | Size | Field |
-| ---: | ---: | --- |
-| 0 | 8 | ASCII magic `CWLHDR01` |
-| 8 | 2 | major version (`1`) |
-| 10 | 2 | minor version (`0`) |
-| 12 | 4 | header size (`64`) |
-| 16 | 16 | database GUID bytes |
-| 32 | 8 | first LSN (`1`) |
-| 40 | 4 | checksum algorithm (`1` = CRC32C) |
-| 44 | 16 | reserved (zero) |
-| 60 | 4 | CRC32C of bytes `0..59` |
+## Record framing
 
-Records begin at offset `64` and use little-endian encoding.
+Records begin at byte 64 and have a 48-byte header. ChronicleDB reads record versions 1 and 2; new records are written as **version 2**.
+
+Common fields:
 
 | Offset | Size | Field |
 | ---: | ---: | --- |
-| 0 | 4 | ASCII magic `CWL1` |
-| 4 | 1 | record version (`1`) |
-| 5 | 1 | record type (`1` Begin, `2` Put, `3` Delete, `4` Commit, `5` Abort) |
-| 6 | 2 | flags (currently zero) |
-| 8 | 2 | header size (`48`) |
-| 10 | 2 | reserved (zero) |
+| 0 | 4 | `CWL1` |
+| 4 | 1 | record version |
+| 5 | 1 | type: Begin/Put/Delete/Commit/Abort |
+| 6 | 2 | flags, zero |
+| 8 | 2 | header size `48` |
+| 10 | 2 | reserved, zero |
 | 12 | 8 | contiguous LSN |
-| 20 | 16 | transaction GUID bytes |
+| 20 | 16 | transaction GUID |
 | 36 | 4 | payload length |
-| 40 | 4 | checksum algorithm (`1` = CRC32C) |
-| 44 | 4 | CRC32C of the complete record with this field zeroed |
+| 40 | 4 | version-dependent framing field |
+| 44 | 4 | record CRC32C |
 
-The record payload is limited to 65 MiB. Put values remain limited to 64 MiB; the extra envelope capacity guarantees room for the encoded key and length fields. A decoder requires exactly one complete record.
+Version 1 uses offset 40 as checksum-algorithm ID `1`. Version 2 fixes CRC32C by record version and stores `~payloadLength` at offset 40. The redundant value lets the scanner reject an internally inconsistent complete header rather than misclassifying some length-field corruption as a crash-truncated payload.
+
+LSNs must be exactly contiguous beginning at one. Merely increasing LSNs are insufficient because a missing complete record would otherwise be invisible.
+
+The record envelope supports 65 MiB so a maximum 64 MiB mutation value still has room for encoded key/length metadata.
 
 ## Commit payload
 
-The current Commit payload is 16 bytes:
+Current Commit payload is 16 bytes:
 
 | Offset | Size | Field |
 | ---: | ---: | --- |
 | 0 | 8 | non-zero logical commit sequence |
-| 8 | 8 | physical `chronicle.data` length before publication |
+| 8 | 8 | `chronicle.data` length before physical publication |
 
-Recovery also accepts an 8-byte sequence-only development payload and an empty legacy v0.2 Commit payload.
+Recovery also accepts empty legacy v0.2 Commit payloads and 8-byte sequence-only development payloads.
+
+## Durability
+
+The ChronicleDB facade opens the WAL with `FlushOnAppend = false`, appends the complete transaction, then executes one explicit stable-storage flush after Commit. A successful durable commit is never acknowledged before this barrier.
+
+A WAL instance faults after uncertain append/flush I/O. It cannot be reused; database recovery must reopen and scan the durable prefix/tail. Cleanup deliberately does not issue an extra explicit durability flush on a faulted WAL.

@@ -1,19 +1,27 @@
-# v0.3 transaction state and local writes
+# v0.5 transaction state and local writes
 
-Each transaction has a non-empty `TransactionId`, an immutable `StartSequence`, an optional final commit sequence, an explicit state, and a private write set.
+Each transaction has a non-empty `TransactionId`, an immutable `StartSequence`, an optional final `CommitSequence`, an explicit state, and a private write set. A public transaction handle is intended to be single-owner; concurrency is achieved through independent handles.
 
-`Begin` transitions `Created -> Active`. Mutations are accepted only while active. Repeated mutations to the same full binary key replace the earlier local mutation, so one transaction contributes at most one committed logical version per key.
+## State machine
 
-Commit preparation follows:
+Normal commit:
 
-`Active -> Preparing -> Committing -> DurableCommitted -> Committed`
+`Created -> Active -> Preparing -> Committing -> DurableCommitted -> Committed`
 
-`DurableCommitted` means the WAL Commit record containing the final commit sequence has crossed the explicit durability barrier. From that state abort is forbidden; failure requires recovery.
+Normal abort:
 
-Abort follows:
+`Created|Active|Preparing -> Aborting -> Aborted`
 
-`Created|Active|Preparing|Committing -> Aborting -> Aborted`
+Uncertain WAL outcome:
 
-Commit preparation atomically freezes the write set and moves the transaction to `Preparing`. First-committer-wins validation then runs in that state; a conflict aborts the transaction and writes no WAL records.
+`Preparing|Committing -> Indeterminate`
 
-Local reads return the transaction's newest local value first. A local delete behaves as absence. If the key has no local mutation, the facade reads committed MVCC history at the transaction's fixed `StartSequence`.
+`DurableCommitted` means the Commit record has crossed ChronicleDB's explicit WAL durability barrier. Abort is impossible from `Committing` once WAL publication has begun through the facade, and it is categorically impossible from `DurableCommitted`. `Indeterminate` is terminal for the in-process handle: only reopen/recovery is authoritative about whether the WAL transaction survived.
+
+## Write-set freeze
+
+Mutations are accepted only while `Active`. Repeated mutations of one full binary key replace the earlier local mutation. `PrepareAndGetWriteSet()` changes `Active -> Preparing` and snapshots the complete final write set while holding the transaction's own synchronization gate. A concurrent caller therefore cannot successfully add a write after the commit thread has frozen the transaction.
+
+## Reads
+
+The transaction always checks its local write set first. A local tombstone means absence. If a key has no local mutation, the database resolves committed history at the transaction's fixed `StartSequence`. Later commits never move that boundary.
