@@ -6,9 +6,13 @@ public enum TransactionState
     Active = 1,
     Preparing = 2,
     Committing = 3,
-    /// <summary> The WAL commit record has been flushed durably, but physical publication is not complete. </summary>
     DurableCommitted = 4,
     Committed = 5,
     Aborting = 6,
-    Aborted = 7
+    Aborted = 7,
+    /// <summary>
+    /// WAL I/O was touched but the caller cannot prove whether the durable commit
+    /// boundary was crossed. Reopen/recovery is authoritative; local abort is illegal.
+    /// </summary>
+    Indeterminate = 8
 }

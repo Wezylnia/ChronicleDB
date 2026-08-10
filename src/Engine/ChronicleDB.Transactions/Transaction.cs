@@ -188,14 +188,28 @@ public sealed class Transaction
         }
     }
 
+
+    public void MarkIndeterminate()
+    {
+        lock (_gate)
+        {
+            if (_state is not (TransactionState.Preparing or TransactionState.Committing))
+            {
+                throw InvalidTransition(TransactionState.Indeterminate);
+            }
+
+            _state = TransactionState.Indeterminate;
+            _writes.Clear();
+        }
+    }
+
     public void BeginAbort()
     {
         lock (_gate)
         {
             if (_state is not (TransactionState.Created
                 or TransactionState.Active
-                or TransactionState.Preparing
-                or TransactionState.Committing))
+                or TransactionState.Preparing))
             {
                 throw InvalidTransition(TransactionState.Aborting);
             }

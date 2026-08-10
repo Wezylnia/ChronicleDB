@@ -10,15 +10,18 @@ using ChronicleDB.Transactions.Writes;
 namespace ChronicleDB.Transactions.Mvcc;
 
 /// <summary>
-/// Managed v0.3 version-chain store. The index only locates chain heads; this type
-/// remains authoritative for MVCC visibility and immutable committed history.
+/// Managed version-chain store. The index only locates chain heads; this type remains
+/// authoritative for MVCC visibility and immutable committed history. A writer lock
+/// makes multi-key publication atomic to readers while allowing parallel read traversal.
 /// </summary>
-public sealed class CommittedVersionStore
+public sealed class CommittedVersionStore : IDisposable
 {
-    private readonly object _gate = new();
+    private readonly ReaderWriterLockSlim _gate = new(LockRecursionPolicy.NoRecursion);
     private readonly IVersionIndex _index;
     private readonly Dictionary<VersionHandle, CommittedVersionRecord> _versions = [];
     private ulong _nextHandle = 1;
+    private int _currentKeyCount;
+    private int _maximumChainLength;
 
     public CommittedVersionStore(IVersionIndex index)
     {
@@ -29,9 +32,30 @@ public sealed class CommittedVersionStore
     {
         get
         {
-            lock (_gate)
+            _gate.EnterReadLock();
+            try
             {
                 return _versions.Count;
+            }
+            finally
+            {
+                _gate.ExitReadLock();
+            }
+        }
+    }
+
+    public int CurrentKeyCount
+    {
+        get
+        {
+            _gate.EnterReadLock();
+            try
+            {
+                return _currentKeyCount;
+            }
+            finally
+            {
+                _gate.ExitReadLock();
             }
         }
     }
@@ -39,8 +63,8 @@ public sealed class CommittedVersionStore
     public bool TryRead(BinaryKey key, CommitSequence visibilityBoundary, out byte[] value)
     {
         ArgumentNullException.ThrowIfNull(key);
-
-        lock (_gate)
+        _gate.EnterReadLock();
+        try
         {
             if (!_index.TryGet(key, out var current))
             {
@@ -69,13 +93,17 @@ public sealed class CommittedVersionStore
             value = [];
             return false;
         }
+        finally
+        {
+            _gate.ExitReadLock();
+        }
     }
 
     public bool TryGetLatestCommitSequence(BinaryKey key, out CommitSequence commitSequence)
     {
         ArgumentNullException.ThrowIfNull(key);
-
-        lock (_gate)
+        _gate.EnterReadLock();
+        try
         {
             if (!_index.TryGet(key, out var head))
             {
@@ -85,6 +113,31 @@ public sealed class CommittedVersionStore
 
             commitSequence = GetVersion(head).Metadata.CommitSequence;
             return true;
+        }
+        finally
+        {
+            _gate.ExitReadLock();
+        }
+    }
+
+    public void ValidatePublicationCapacity(IReadOnlyList<TransactionWrite> writes)
+    {
+        ArgumentNullException.ThrowIfNull(writes);
+        _gate.EnterReadLock();
+        try
+        {
+            var keys = new HashSet<BinaryKey>();
+            foreach (var write in writes)
+            {
+                ArgumentNullException.ThrowIfNull(write);
+                keys.Add(write.Key);
+            }
+
+            ValidateCapacityCore(keys);
+        }
+        finally
+        {
+            _gate.ExitReadLock();
         }
     }
 
@@ -101,7 +154,8 @@ public sealed class CommittedVersionStore
         ArgumentNullException.ThrowIfNull(writes);
         EnsureCommittedSequence(commitSequence);
 
-        lock (_gate)
+        _gate.EnterWriteLock();
+        try
         {
             foreach (var write in writes)
             {
@@ -113,6 +167,31 @@ public sealed class CommittedVersionStore
                     write.IsDelete,
                     write.Value.Span);
             }
+        }
+        finally
+        {
+            _gate.ExitWriteLock();
+        }
+    }
+
+    public void ValidateReplayCapacity(IReadOnlyList<StorageMutation> mutations)
+    {
+        ArgumentNullException.ThrowIfNull(mutations);
+        _gate.EnterReadLock();
+        try
+        {
+            var finalKeys = new HashSet<BinaryKey>();
+            foreach (var mutation in mutations)
+            {
+                ArgumentNullException.ThrowIfNull(mutation);
+                finalKeys.Add(mutation.Key);
+            }
+
+            ValidateCapacityCore(finalKeys);
+        }
+        finally
+        {
+            _gate.ExitReadLock();
         }
     }
 
@@ -129,11 +208,10 @@ public sealed class CommittedVersionStore
         ArgumentNullException.ThrowIfNull(mutations);
         EnsureCommittedSequence(commitSequence);
 
-        lock (_gate)
+        _gate.EnterWriteLock();
+        try
         {
-            // Malformed or legacy WALs can contain repeated mutations for one key in a
-            // transaction. A transaction contributes one logical version per key: its
-            // final local write.
+            // A transaction contributes one logical version per key: its final local write.
             var finalMutations = new Dictionary<BinaryKey, StorageMutation>();
             foreach (var mutation in mutations)
             {
@@ -151,6 +229,50 @@ public sealed class CommittedVersionStore
                     mutation.Value.Span);
             }
         }
+        finally
+        {
+            _gate.ExitWriteLock();
+        }
+    }
+
+    public CommittedVersionStoreStatistics GetStatistics()
+    {
+        _gate.EnterReadLock();
+        try
+        {
+            var chainCount = _index.Count;
+            var averageChainLength = chainCount == 0 ? 0d : (double)_versions.Count / chainCount;
+            return new CommittedVersionStoreStatistics(
+                VersionCount: _versions.Count,
+                CurrentKeyCount: _currentKeyCount,
+                ChainCount: chainCount,
+                AverageChainLength: averageChainLength,
+                MaximumChainLength: _maximumChainLength,
+                Index: _index.GetStatistics());
+        }
+        finally
+        {
+            _gate.ExitReadLock();
+        }
+    }
+
+    private void ValidateCapacityCore(HashSet<BinaryKey> keys)
+    {
+        var requiredHandles = checked((ulong)keys.Count);
+        if (requiredHandles > ulong.MaxValue - _nextHandle)
+        {
+            throw new InvalidOperationException("The managed version-handle space cannot fit the complete publication.");
+        }
+
+        foreach (var key in keys)
+        {
+            if (_index.TryGet(key, out var currentHead)
+                && GetVersion(currentHead).ChainLength == int.MaxValue)
+            {
+                throw new InvalidOperationException(
+                    "The version chain length limit is exhausted for a publication key.");
+            }
+        }
     }
 
     private void PublishMutation(
@@ -163,6 +285,8 @@ public sealed class CommittedVersionStore
         var previous = _index.TryGet(key, out var currentHead)
             ? currentHead
             : VersionHandle.Invalid;
+        var previousPresent = previous.IsValid && !GetVersion(previous).Metadata.IsTombstone;
+        var chainLength = previous.IsValid ? checked(GetVersion(previous).ChainLength + 1) : 1;
         var handle = AllocateHandle();
         var metadata = VersionMetadata.Committed(commitSequence, isTombstone: isDelete);
         var record = new CommittedVersionRecord(
@@ -171,10 +295,24 @@ public sealed class CommittedVersionStore
             creatorTransaction,
             metadata,
             previous,
-            isDelete ? [] : value.ToArray());
+            isDelete ? [] : value.ToArray(),
+            chainLength);
 
         _versions.Add(handle, record);
         _index.Publish(key, handle);
+        _maximumChainLength = Math.Max(_maximumChainLength, chainLength);
+
+        if (isDelete)
+        {
+            if (previousPresent)
+            {
+                _currentKeyCount--;
+            }
+        }
+        else if (!previousPresent)
+        {
+            _currentKeyCount++;
+        }
     }
 
     private CommittedVersionRecord GetVersion(VersionHandle handle)
@@ -209,11 +347,22 @@ public sealed class CommittedVersionStore
         }
     }
 
+    public void Dispose() => _gate.Dispose();
+
     private sealed record CommittedVersionRecord(
         VersionHandle Handle,
         BinaryKey Key,
         TransactionId CreatorTransaction,
         VersionMetadata Metadata,
         VersionHandle Previous,
-        byte[] Value);
+        byte[] Value,
+        int ChainLength);
 }
+
+public readonly record struct CommittedVersionStoreStatistics(
+    int VersionCount,
+    int CurrentKeyCount,
+    int ChainCount,
+    double AverageChainLength,
+    int MaximumChainLength,
+    VersionIndexStatistics Index);

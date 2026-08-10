@@ -11,4 +11,6 @@ public interface IVersionIndex
     void Publish(BinaryKey key, VersionHandle head);
 
     bool TryRemove(BinaryKey key, out VersionHandle head);
+
+    VersionIndexStatistics GetStatistics();
 }

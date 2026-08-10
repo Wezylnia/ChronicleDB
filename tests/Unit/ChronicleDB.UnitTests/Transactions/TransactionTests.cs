@@ -125,4 +125,20 @@ public sealed class TransactionTests
         Assert.Throws<InvalidOperationException>(() => transaction.Delete([1]));
         transaction.Abort();
     }
+
+    [Fact]
+    public void IndeterminateWalOutcomeIsTerminalAndCannotBeAborted()
+    {
+        var transaction = new Transaction();
+        transaction.Begin();
+        transaction.Put([1], [2]);
+        transaction.Prepare();
+        transaction.MarkCommitting();
+        transaction.MarkIndeterminate();
+
+        Assert.Equal(TransactionState.Indeterminate, transaction.State);
+        Assert.Equal(0, transaction.WriteCount);
+        Assert.Throws<InvalidOperationException>(() => transaction.Abort());
+        Assert.Throws<InvalidOperationException>(() => transaction.Put([2], [3]));
+    }
 }
