@@ -9,6 +9,7 @@ namespace ChronicleDB.History.Roots;
 public sealed record HistoryRetentionRequirement(
     HistoryRootId RootId,
     HistoryRootKind Kind,
-    HistoryId HistoryId,
+    HistoryId OwnerHistoryId,
+    HistoryId ProtectedHistoryId,
     CommitSequence Boundary,
     HistoryRootState State);

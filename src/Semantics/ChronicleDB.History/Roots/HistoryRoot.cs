@@ -20,5 +20,13 @@ public sealed record HistoryRoot(
 {
     public bool IsRetaining => State is not HistoryRootState.Deleted;
 
+    /// <summary>
+    /// History whose versions are protected by this root. Snapshot roots protect
+    /// their own history. A branch-base root belongs to the child history but its
+    /// boundary is expressed in, and therefore protects, the parent history.
+    /// </summary>
+    public HistoryId ProtectedHistoryId
+        => Kind == HistoryRootKind.BranchBase ? ParentHistoryId : HistoryId;
+
     public HistoryRoot WithState(HistoryRootState state) => this with { State = state };
 }

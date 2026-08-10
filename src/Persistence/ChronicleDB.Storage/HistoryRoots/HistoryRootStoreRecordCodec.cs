@@ -115,9 +115,20 @@ public static class HistoryRootStoreRecordCodec
             throw new StorageFormatException("History-root create records must publish the Active state.");
         }
 
-        if (record.Type == HistoryRootStoreRecordType.Delete
-            && (record.RootState != 4
-                || !record.ParentHistoryId.IsValid && record.RootKind == 2))
+        if (record.RootKind == 2
+            && (!record.ParentHistoryId.IsValid || record.ParentHistoryId == record.HistoryId))
+        {
+            throw new StorageFormatException(
+                "Branch-base history-root records require a distinct valid parent history.");
+        }
+
+        if (record.RootKind != 2 && record.ParentHistoryId.IsValid)
+        {
+            throw new StorageFormatException(
+                "Only branch-base history-root records may identify a parent history.");
+        }
+
+        if (record.Type == HistoryRootStoreRecordType.Delete && record.RootState != 4)
         {
             throw new StorageFormatException("History-root delete record metadata is invalid.");
         }

@@ -70,6 +70,35 @@ public sealed class HistoryRootStoreTests
             () => PersistentHistoryRootStore.Open(directory.Path, databaseId, historyId));
     }
 
+
+    [Fact]
+    public void BranchBaseRecordRoundTripsAndRequiresDistinctParentHistory()
+    {
+        var databaseId = Guid.NewGuid();
+        var childHistory = HistoryId.New();
+        var parentHistory = HistoryId.New();
+        var record = new HistoryRootStoreRecord(
+            HistoryRootStoreRecordType.Create,
+            EventSequence: 7,
+            HistoryRootId.New(),
+            RootKind: 2,
+            RootState: 2,
+            databaseId,
+            childHistory,
+            parentHistory,
+            new CommitSequence(11),
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        var decoded = HistoryRootStoreRecordCodec.Decode(HistoryRootStoreRecordCodec.Encode(record));
+        Assert.Equal(childHistory, decoded.HistoryId);
+        Assert.Equal(parentHistory, decoded.ParentHistoryId);
+        Assert.Equal(new CommitSequence(11), decoded.Boundary);
+
+        var invalid = record with { ParentHistoryId = childHistory };
+        Assert.Throws<ChronicleDB.Storage.StorageFormatException>(
+            () => HistoryRootStoreRecordCodec.Encode(invalid));
+    }
+
     [Fact]
     public void PreWriteFaultDoesNotPublishARootOrFaultTheStore()
     {

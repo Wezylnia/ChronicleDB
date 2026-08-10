@@ -4,9 +4,10 @@ using ChronicleDB.Core.Sequences;
 namespace ChronicleDB.History.Roots;
 
 /// <summary>
-/// Thread-safe semantic registry for historical roots.
-/// It is deliberately independent of file I/O so storage implementations can
-/// publish the same lifecycle transitions through different durable protocols.
+/// Thread-safe semantic registry for historical roots and conservative per-history
+/// retention floors. It is deliberately independent of file I/O so persistence
+/// implementations can publish the same lifecycle transitions through different
+/// durable protocols.
 /// </summary>
 public sealed class HistoryRootRegistry
 {
@@ -14,6 +15,7 @@ public sealed class HistoryRootRegistry
 
     private readonly object _gate = new();
     private readonly Dictionary<HistoryRootId, HistoryRoot> _roots = [];
+    private readonly Dictionary<HistoryId, CommitSequence> _historyFloors = [];
     private readonly HistoryId _baselineHistoryId;
     private readonly CommitSequence _baselineFloor;
 
@@ -29,6 +31,7 @@ public sealed class HistoryRootRegistry
 
         _baselineHistoryId = baselineHistoryId;
         _baselineFloor = baselineFloor;
+        _historyFloors.Add(baselineHistoryId, baselineFloor);
 
         if (roots is null)
         {
@@ -53,6 +56,48 @@ public sealed class HistoryRootRegistry
             {
                 return _roots.Count(root => root.Value.State is not HistoryRootState.Deleted);
             }
+        }
+    }
+
+    /// <summary>
+    /// Registers an independently evolving history domain and the oldest local
+    /// boundary that can currently be reconstructed for it. Re-registering the
+    /// same domain with a different floor is an invariant violation.
+    /// </summary>
+    public void RegisterHistory(HistoryId historyId, CommitSequence retentionFloor)
+    {
+        if (!historyId.IsValid)
+        {
+            throw new ArgumentException("A history ID must be non-empty.", nameof(historyId));
+        }
+
+        lock (_gate)
+        {
+            if (_historyFloors.TryGetValue(historyId, out var existing))
+            {
+                if (existing != retentionFloor)
+                {
+                    throw new InvalidOperationException(
+                        $"History {historyId.Value} is already registered with retention floor {existing.Value}.");
+                }
+
+                return;
+            }
+
+            _historyFloors.Add(historyId, retentionFloor);
+        }
+    }
+
+    public bool IsHistoryRegistered(HistoryId historyId)
+    {
+        if (!historyId.IsValid)
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            return _historyFloors.ContainsKey(historyId);
         }
     }
 
@@ -137,19 +182,24 @@ public sealed class HistoryRootRegistry
         lock (_gate)
         {
             return _roots.Values
-                .OrderBy(root => root.Boundary.Value)
+                .OrderBy(root => root.ProtectedHistoryId.Value)
+                .ThenBy(root => root.Boundary.Value)
                 .ThenBy(root => root.RootId.Value)
                 .ToArray();
         }
     }
 
-    public IReadOnlyList<HistoryRoot> ListActive(HistoryId? historyId = null)
+    /// <summary>
+    /// Lists all roots that still retain history. The optional history filter is
+    /// applied to the protected history rather than the root owner's history.
+    /// </summary>
+    public IReadOnlyList<HistoryRoot> ListActive(HistoryId? protectedHistoryId = null)
     {
         lock (_gate)
         {
             return _roots.Values
                 .Where(root => root.IsRetaining)
-                .Where(root => historyId is null || root.HistoryId == historyId.Value)
+                .Where(root => protectedHistoryId is null || root.ProtectedHistoryId == protectedHistoryId.Value)
                 .OrderBy(root => root.Boundary.Value)
                 .ThenBy(root => root.RootId.Value)
                 .ToArray();
@@ -157,8 +207,9 @@ public sealed class HistoryRootRegistry
     }
 
     /// <summary>
-    /// Returns the conservative oldest sequence that must remain available for
-    /// the requested history. A history with no roots has no protected range.
+    /// Returns the conservative oldest sequence that must remain reconstructable
+    /// for a history. Registered history floors are always honored, then retaining
+    /// roots may move the protected boundary further into the past.
     /// </summary>
     public CommitSequence? GetRetentionFloor(HistoryId historyId)
     {
@@ -169,10 +220,12 @@ public sealed class HistoryRootRegistry
 
         lock (_gate)
         {
-            CommitSequence? floor = historyId == _baselineHistoryId ? _baselineFloor : null;
+            CommitSequence? floor = _historyFloors.TryGetValue(historyId, out var baseline)
+                ? baseline
+                : null;
             foreach (var root in _roots.Values)
             {
-                if (root.IsRetaining && root.HistoryId == historyId)
+                if (root.IsRetaining && root.ProtectedHistoryId == historyId)
                 {
                     floor = floor is null || root.Boundary < floor.Value
                         ? root.Boundary
@@ -184,21 +237,47 @@ public sealed class HistoryRootRegistry
         }
     }
 
-    public IReadOnlyList<HistoryRetentionRequirement> GetRetentionRequirements(HistoryId? historyId = null)
+    public IReadOnlyList<HistoryRetentionRequirement> GetRetentionRequirements(
+        HistoryId? protectedHistoryId = null)
     {
         lock (_gate)
         {
             return _roots.Values
                 .Where(root => root.IsRetaining)
-                .Where(root => historyId is null || root.HistoryId == historyId.Value)
-                .OrderBy(root => root.Boundary.Value)
+                .Where(root => protectedHistoryId is null || root.ProtectedHistoryId == protectedHistoryId.Value)
+                .OrderBy(root => root.ProtectedHistoryId.Value)
+                .ThenBy(root => root.Boundary.Value)
                 .ThenBy(root => root.RootId.Value)
                 .Select(root => new HistoryRetentionRequirement(
                     root.RootId,
                     root.Kind,
                     root.HistoryId,
+                    root.ProtectedHistoryId,
                     root.Boundary,
                     root.State))
+                .ToArray();
+        }
+    }
+
+    /// <summary>
+    /// Returns active branch-base roots whose child history depends on the
+    /// requested parent history. This becomes the ancestry/GC dependency query.
+    /// </summary>
+    public IReadOnlyList<HistoryRoot> GetBranchDependents(HistoryId parentHistoryId)
+    {
+        if (!parentHistoryId.IsValid)
+        {
+            throw new ArgumentException("A history ID must be non-empty.", nameof(parentHistoryId));
+        }
+
+        lock (_gate)
+        {
+            return _roots.Values
+                .Where(root => root.IsRetaining
+                    && root.Kind == HistoryRootKind.BranchBase
+                    && root.ParentHistoryId == parentHistoryId)
+                .OrderBy(root => root.Boundary.Value)
+                .ThenBy(root => root.RootId.Value)
                 .ToArray();
         }
     }
@@ -254,18 +333,26 @@ public sealed class HistoryRootRegistry
             throw new ArgumentOutOfRangeException(nameof(root), "The history root kind is invalid.");
         }
 
-        if (root.Kind == HistoryRootKind.BranchBase
-            && (!root.ParentHistoryId.IsValid || root.ParentHistoryId == root.HistoryId))
-        {
-            throw new ArgumentException(
-                "A branch base must identify a distinct valid parent history.",
-                nameof(root));
-        }
-
         if (root.OwnerDatabaseId == Guid.Empty || !root.HistoryId.IsValid)
         {
             throw new ArgumentException(
                 "A history root requires a valid owner database and history identity.",
+                nameof(root));
+        }
+
+        if (root.Kind == HistoryRootKind.BranchBase)
+        {
+            if (!root.ParentHistoryId.IsValid || root.ParentHistoryId == root.HistoryId)
+            {
+                throw new ArgumentException(
+                    "A branch base must identify a distinct valid parent history.",
+                    nameof(root));
+            }
+        }
+        else if (root.ParentHistoryId.IsValid)
+        {
+            throw new ArgumentException(
+                "Only branch-base roots may identify a parent history.",
                 nameof(root));
         }
 

@@ -10,17 +10,26 @@ public sealed class HistoryRootRegistryTests
     public void ActiveRootsAndBaselineContributeToHistorySpecificRetention()
     {
         var main = HistoryId.New();
-        var other = HistoryId.New();
+        var branchHistory = HistoryId.New();
         var registry = new HistoryRootRegistry(main, new CommitSequence(8));
+        registry.RegisterHistory(branchHistory, CommitSequence.Initial);
         var root = CreateRoot(main, new CommitSequence(12));
-        var otherRoot = CreateRoot(other, new CommitSequence(3), HistoryRootKind.BranchBase, HistoryId.New());
+        var branchBase = CreateRoot(
+            branchHistory,
+            new CommitSequence(3),
+            HistoryRootKind.BranchBase,
+            main);
 
         registry.RegisterActive(root);
-        registry.RegisterActive(otherRoot);
+        registry.RegisterActive(branchBase);
 
-        Assert.Equal(new CommitSequence(8), registry.GetRetentionFloor(main));
-        Assert.Equal(new CommitSequence(3), registry.GetRetentionFloor(other));
-        Assert.Single(registry.GetRetentionRequirements(main));
+        Assert.Equal(new CommitSequence(3), registry.GetRetentionFloor(main));
+        Assert.Equal(CommitSequence.Initial, registry.GetRetentionFloor(branchHistory));
+        Assert.Equal(2, registry.GetRetentionRequirements(main).Count);
+        var requirement = registry.GetRetentionRequirements(main)
+            .Single(item => item.Kind == HistoryRootKind.BranchBase);
+        Assert.Equal(branchHistory, requirement.OwnerHistoryId);
+        Assert.Equal(main, requirement.ProtectedHistoryId);
     }
 
     [Fact]
