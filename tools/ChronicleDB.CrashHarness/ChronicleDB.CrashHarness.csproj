@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\ChronicleDB\ChronicleDB.csproj" />
+    <ProjectReference Include="..\..\src\Persistence\ChronicleDB.Storage\ChronicleDB.Storage.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

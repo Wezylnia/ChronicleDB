@@ -21,7 +21,9 @@ public sealed class PersistentKeyValueStore : IDisposable
     private readonly FileStream _data;
     private readonly bool _allowIncompleteFinalPage;
     private readonly Dictionary<BinaryKey, StoredRecord> _records = [];
-    private bool _hasUntrustedTail;
+    private long? _untrustedTailOffset;
+    private bool _untrustedTailIsFinalAppend;
+    private bool _untrustedTailIsPartialPage;
     private bool _disposed;
 
     private PersistentKeyValueStore(
@@ -42,9 +44,118 @@ public sealed class PersistentKeyValueStore : IDisposable
 
     public Guid DatabaseId => Header.DatabaseId;
 
-    internal bool HasUntrustedTail => _hasUntrustedTail;
+    internal bool HasUntrustedTail
+    {
+        get
+        {
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                return _untrustedTailOffset.HasValue;
+            }
+        }
+    }
 
-    internal void DiscardUntrustedTail() => _hasUntrustedTail = false;
+    internal long? UntrustedTailOffset
+    {
+        get
+        {
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                return _untrustedTailOffset;
+            }
+        }
+    }
+
+    internal bool UntrustedTailIsFinalAppend
+    {
+        get
+        {
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                return _untrustedTailIsFinalAppend;
+            }
+        }
+    }
+
+    internal bool UntrustedTailIsPartialPage
+    {
+        get
+        {
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                return _untrustedTailIsPartialPage;
+            }
+        }
+    }
+
+    internal long DataLength
+    {
+        get
+        {
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                return _data.Length;
+            }
+        }
+    }
+
+    internal bool CanRepairFrom(long baseDataLength)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            return baseDataLength >= 0
+                   && baseDataLength % _options.PageSize == 0
+                   && baseDataLength <= _data.Length
+                   && _untrustedTailOffset is { } tailOffset
+                   && baseDataLength <= tailOffset;
+        }
+    }
+
+    internal void DiscardUntrustedTail()
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (_untrustedTailOffset is not { } offset)
+            {
+                return;
+            }
+
+            DiscardUntrustedTailCore(offset);
+        }
+    }
+
+    internal void DiscardUntrustedTail(long safeBaseDataLength)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (!CanRepairFrom(safeBaseDataLength))
+            {
+                throw new StorageCorruptionException(
+                    "The WAL recovery base is not a valid prefix of the untrusted data tail.");
+            }
+
+            DiscardUntrustedTailCore(safeBaseDataLength);
+        }
+    }
+
+    private void DiscardUntrustedTailCore(long offset)
+    {
+        _data.SetLength(offset);
+        _data.Flush(flushToDisk: true);
+        _untrustedTailOffset = null;
+        _untrustedTailIsFinalAppend = false;
+        _untrustedTailIsPartialPage = false;
+        _records.Clear();
+        ScanDataFile();
+    }
 
     public int Count
     {
@@ -91,11 +202,11 @@ public sealed class PersistentKeyValueStore : IDisposable
                 allowIncompleteFinalPage);
             if (data.Length % validatedOptions.PageSize != 0)
             {
-                var completeLength = data.Length - (data.Length % validatedOptions.PageSize);
-                data.SetLength(completeLength);
-                data.Flush(flushToDisk: true);
-                store._hasUntrustedTail = true;
+                store._untrustedTailOffset = data.Length - (data.Length % validatedOptions.PageSize);
+                store._untrustedTailIsFinalAppend = true;
+                store._untrustedTailIsPartialPage = true;
             }
+
             store.ScanDataFile();
             return store;
         }
@@ -104,6 +215,24 @@ public sealed class PersistentKeyValueStore : IDisposable
             data?.Dispose();
             metadata?.Dispose();
             throw;
+        }
+    }
+
+    internal IReadOnlyList<StorageMutation> SnapshotCurrentState()
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            var snapshot = new List<StorageMutation>(_records.Count);
+            foreach (var (key, record) in _records)
+            {
+                var value = record.InlineValue.Length != 0 || record.ValueLength == 0
+                    ? record.InlineValue
+                    : ReadOverflow(record.OverflowHead, record.ValueLength);
+                snapshot.Add(new StorageMutation(key, isDelete: false, value));
+            }
+
+            return snapshot;
         }
     }
 
@@ -172,7 +301,8 @@ public sealed class PersistentKeyValueStore : IDisposable
     }
 
     /// <summary>
-    /// Publishes all mutations under the store lock. The caller must persist its transaction decision before calling this method.
+    /// Preflights deterministic storage limits and encodings before a transaction
+    /// is allowed to make its durable WAL decision.
     /// </summary>
     public void ValidateBatch(IReadOnlyList<StorageMutation> mutations)
     {
@@ -181,6 +311,7 @@ public sealed class PersistentKeyValueStore : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
+            long additionalPages = 0;
             foreach (var mutation in mutations)
             {
                 ArgumentNullException.ThrowIfNull(mutation);
@@ -198,6 +329,7 @@ public sealed class PersistentKeyValueStore : IDisposable
                         PageId.Invalid,
                         tombstone: true,
                         _options);
+                    additionalPages = checked(additionalPages + 1);
                     continue;
                 }
 
@@ -205,8 +337,11 @@ public sealed class PersistentKeyValueStore : IDisposable
                 if (usesOverflow)
                 {
                     var chunkCapacity = checked(_options.PageSize - PageCodec.Size - OverflowCodec.HeaderSize);
-                    _ = checked((mutation.Value.Length + chunkCapacity - 1) / chunkCapacity);
+                    var overflowPages = checked((mutation.Value.Length + chunkCapacity - 1) / chunkCapacity);
+                    additionalPages = checked(additionalPages + overflowPages);
                 }
+
+                additionalPages = checked(additionalPages + 1);
 
                 _ = RecordCodec.Encode(
                     mutation.Key,
@@ -214,6 +349,16 @@ public sealed class PersistentKeyValueStore : IDisposable
                     usesOverflow ? new PageId(1) : PageId.Invalid,
                     tombstone: false,
                     _options);
+            }
+
+            try
+            {
+                _ = checked(_data.Length + checked(additionalPages * (long)_options.PageSize));
+            }
+            catch (OverflowException)
+            {
+                throw new StorageLimitException(
+                    "The transaction would exceed the supported persistent file-length range.");
             }
         }
     }
@@ -389,60 +534,73 @@ public sealed class PersistentKeyValueStore : IDisposable
 
     private void ScanDataFile()
     {
-        var pageCount = GetPageCount();
+        var trustedLength = _untrustedTailOffset ?? _data.Length;
+        if (trustedLength % _options.PageSize != 0)
+        {
+            throw new StorageCorruptionException("Trusted data length is not page aligned.");
+        }
+
+        var pageCount = checked((ulong)(trustedLength / _options.PageSize));
         var page = new byte[_options.PageSize];
 
         for (ulong value = 1; value <= pageCount; value++)
         {
             var pageId = new PageId(value);
-            ReadExactly(_data, page, PageOffset(pageId));
-            var decoded = PageCodec.Decode(page, _options.PageSize);
-            if (decoded.Header.PageId != pageId)
+            try
             {
-                throw new StorageCorruptionException("Data file page IDs are not sequential.");
-            }
+                ReadExactly(_data, page, PageOffset(pageId));
+                var decoded = PageCodec.Decode(page, _options.PageSize);
+                if (decoded.Header.PageId != pageId)
+                {
+                    throw new StorageCorruptionException("Data file page IDs are not sequential.");
+                }
 
-            switch (decoded.Header.Type)
-            {
-                case PageType.Record:
-                    {
-                        var record = RecordCodec.Decode(decoded.Payload, _options);
-                        if (record.IsTombstone)
+                switch (decoded.Header.Type)
+                {
+                    case PageType.Record:
                         {
-                            _records.Remove(record.Key);
-                        }
-                        else
-                        {
-                            _records[record.Key] = new StoredRecord(
-                                pageId,
-                                record.ValueLength,
-                                record.OverflowHead,
-                                record.InlineValue);
-                        }
+                            var record = RecordCodec.Decode(decoded.Payload, _options);
+                            if (record.IsTombstone)
+                            {
+                                _records.Remove(record.Key);
+                            }
+                            else
+                            {
+                                _records[record.Key] = new StoredRecord(
+                                    pageId,
+                                    record.ValueLength,
+                                    record.OverflowHead,
+                                    record.InlineValue);
+                            }
 
-                        break;
-                    }
-                case PageType.Overflow:
-                    {
-                        var overflow = OverflowCodec.Decode(decoded.Payload, _options.PageSize);
-                        if (overflow.NextPage.IsValid && overflow.NextPage.Value > pageCount)
+                            break;
+                        }
+                    case PageType.Overflow:
                         {
-                            if (!_allowIncompleteFinalPage || pageId.Value != pageCount)
+                            var overflow = OverflowCodec.Decode(decoded.Payload, _options.PageSize);
+                            if (overflow.NextPage.IsValid && overflow.NextPage.Value > pageCount)
                             {
                                 throw new StorageCorruptionException(
                                     "Overflow chain points outside the data file.");
                             }
 
-                            _hasUntrustedTail = true;
-                        }
-                        else
-                        {
                             ValidateNextOverflowPage(pageId, overflow.NextPage, pageCount);
+                            break;
                         }
-                        break;
-                    }
-                default:
-                    throw new StorageCorruptionException("Data file contains an unknown page type.");
+                    default:
+                        throw new StorageCorruptionException("Data file contains an unknown page type.");
+                }
+            }
+            catch (StorageCorruptionException) when (_allowIncompleteFinalPage)
+            {
+                // In recovery mode, stop at the first corrupt append page without mutating
+                // the file. WAL recovery decides whether this offset belongs to the latest
+                // durable transaction and is therefore safe to rebuild.
+                MarkUntrustedTail(
+                    PageOffset(pageId),
+                    isFinalAppend: pageId.Value == pageCount,
+                    isPartialPage: false);
+                break;
             }
         }
 
@@ -452,6 +610,23 @@ public sealed class PersistentKeyValueStore : IDisposable
             {
                 _ = ReadOverflow(record.OverflowHead, record.ValueLength);
             }
+        }
+    }
+
+    private void MarkUntrustedTail(long offset, bool isFinalAppend, bool isPartialPage)
+    {
+        if (_untrustedTailOffset is null || offset < _untrustedTailOffset.Value)
+        {
+            _untrustedTailOffset = offset;
+            _untrustedTailIsFinalAppend = isFinalAppend;
+            _untrustedTailIsPartialPage = isPartialPage;
+            return;
+        }
+
+        if (offset == _untrustedTailOffset.Value)
+        {
+            _untrustedTailIsFinalAppend &= isFinalAppend;
+            _untrustedTailIsPartialPage &= isPartialPage;
         }
     }
 
@@ -552,12 +727,13 @@ public sealed class PersistentKeyValueStore : IDisposable
 
     private ulong GetPageCount()
     {
-        if (_data.Length % _options.PageSize != 0)
+        var length = _untrustedTailOffset ?? _data.Length;
+        if (length % _options.PageSize != 0)
         {
             throw new StorageCorruptionException("Data file length is not page aligned.");
         }
 
-        return checked((ulong)(_data.Length / _options.PageSize));
+        return checked((ulong)(length / _options.PageSize));
     }
 
     private long PageOffset(PageId pageId)

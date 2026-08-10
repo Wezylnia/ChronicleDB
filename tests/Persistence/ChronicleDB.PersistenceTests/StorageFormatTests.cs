@@ -117,7 +117,7 @@ public sealed class StorageFormatTests
         File.WriteAllBytes(dataPath, [1]);
 
         Assert.Throws<StorageCorruptionException>(
-            () => ChronicleDatabase.Open(directory.Path).Dispose());
+            () => PersistentKeyValueStore.Open(directory.Path).Dispose());
     }
 
     [Fact]
@@ -138,7 +138,7 @@ public sealed class StorageFormatTests
     }
 
     [Fact]
-    public void CorruptRecordPageIsRejectedOnOpen()
+    public void LowLevelStoreRejectsCorruptRecordPage()
     {
         using var directory = new StorageTestDirectory();
         using (var database = ChronicleDatabase.Open(directory.Path))
@@ -152,11 +152,11 @@ public sealed class StorageFormatTests
         File.WriteAllBytes(dataPath, bytes);
 
         Assert.Throws<StorageCorruptionException>(
-            () => ChronicleDatabase.Open(directory.Path).Dispose());
+            () => PersistentKeyValueStore.Open(directory.Path).Dispose());
     }
 
     [Fact]
-    public void CyclicOverflowChainIsRejectedOnOpen()
+    public void LowLevelStoreRejectsCyclicOverflowChain()
     {
         using var directory = new StorageTestDirectory();
         using (var database = ChronicleDatabase.Open(directory.Path))
@@ -175,7 +175,7 @@ public sealed class StorageFormatTests
         File.WriteAllBytes(dataPath, bytes);
 
         Assert.Throws<StorageCorruptionException>(
-            () => ChronicleDatabase.Open(directory.Path).Dispose());
+            () => PersistentKeyValueStore.Open(directory.Path).Dispose());
     }
 
     [Fact]
