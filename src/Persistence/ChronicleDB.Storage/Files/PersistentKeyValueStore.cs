@@ -171,6 +171,11 @@ public sealed class PersistentKeyValueStore : IDisposable
 
                 if (mutation.IsDelete)
                 {
+                    if (!_records.ContainsKey(mutation.Key))
+                    {
+                        continue;
+                    }
+
                     var payload = RecordCodec.Encode(
                         mutation.Key,
                         ReadOnlySpan<byte>.Empty,
@@ -179,6 +184,11 @@ public sealed class PersistentKeyValueStore : IDisposable
                         _options);
                     AppendPage(PageType.Record, payload);
                     staged.Add((mutation, null));
+                    continue;
+                }
+
+                if (MutationMatchesCurrent(mutation))
+                {
                     continue;
                 }
 
@@ -487,6 +497,19 @@ public sealed class PersistentKeyValueStore : IDisposable
         {
             throw new StorageLimitException("Key exceeds the configured maximum size.");
         }
+    }
+
+    private bool MutationMatchesCurrent(StorageMutation mutation)
+    {
+        if (!_records.TryGetValue(mutation.Key, out var current) || current.ValueLength != mutation.Value.Length)
+        {
+            return false;
+        }
+
+        var currentValue = current.InlineValue.Length != 0 || current.ValueLength == 0
+            ? current.InlineValue
+            : ReadOverflow(current.OverflowHead, current.ValueLength);
+        return currentValue.AsSpan().SequenceEqual(mutation.Value.Span);
     }
 
     private static void ValidateNextOverflowPage(PageId current, PageId next, ulong pageCount)

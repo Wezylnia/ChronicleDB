@@ -13,6 +13,8 @@ The repository currently contains the architecture baseline, owned-key/MVCC/inde
 - [v0.1 storage format](docs/architecture/STORAGE_FORMAT.md)
 - [v0.2 WAL format](docs/architecture/WAL_FORMAT.md)
 - [v0.2 transaction state](docs/architecture/TRANSACTION_STATE.md)
+- [v0.2 transaction commit](docs/architecture/TRANSACTION_COMMIT.md)
+- [v0.2 recovery](docs/architecture/RECOVERY.md)
 
 The detailed v0.5, v1.0, and v1.5 working plans are intentionally kept in the local, git-ignored `private-docs/` directory.
 

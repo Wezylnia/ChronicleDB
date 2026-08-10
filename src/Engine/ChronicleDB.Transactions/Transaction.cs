@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using ChronicleDB.Core.Identifiers;
 using ChronicleDB.Core.Keys;
 using ChronicleDB.Core.Sequences;
@@ -94,6 +95,24 @@ public sealed class Transaction
             }
 
             value = write.Value.ToArray();
+            return true;
+        }
+    }
+
+    public bool TryGetLocalWrite(
+        ReadOnlySpan<byte> key,
+        [NotNullWhen(true)] out TransactionWrite? write)
+    {
+        lock (_gate)
+        {
+            RequireReadable();
+            if (!_writes.TryGetValue(new BinaryKey(key), out var existing))
+            {
+                write = null;
+                return false;
+            }
+
+            write = existing.Clone();
             return true;
         }
     }

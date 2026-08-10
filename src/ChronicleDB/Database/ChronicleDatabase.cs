@@ -1,4 +1,5 @@
 using ChronicleDB.Core.Keys;
+using ChronicleDB.Recovery;
 using ChronicleDB.Storage;
 using ChronicleDB.Storage.Files;
 using ChronicleDB.Transactions;
@@ -33,12 +34,16 @@ public sealed class ChronicleDatabase : IDisposable
         StorageOptions? options = null)
     {
         var store = PersistentKeyValueStore.Open(directory, options);
+        WalLog? wal = null;
         try
         {
-            return new ChronicleDatabase(store, WalLog.Open(directory));
+            wal = WalLog.Open(directory);
+            WalRecovery.Reconcile(store, wal);
+            return new ChronicleDatabase(store, wal);
         }
         catch
         {
+            wal?.Dispose();
             store.Dispose();
             throw;
         }
@@ -60,7 +65,9 @@ public sealed class ChronicleDatabase : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
-            _store.Put(new BinaryKey(key), value);
+            using var transaction = BeginTransaction();
+            transaction.Put(key, value);
+            transaction.Commit();
         }
     }
 
@@ -78,7 +85,11 @@ public sealed class ChronicleDatabase : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
-            return _store.Delete(new BinaryKey(key));
+            var existed = _store.TryGet(new BinaryKey(key), out _);
+            using var transaction = BeginTransaction();
+            transaction.Delete(key);
+            transaction.Commit();
+            return existed;
         }
     }
 
