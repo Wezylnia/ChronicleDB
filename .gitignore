@@ -17,4 +17,6 @@ BenchmarkDotNet.Artifacts/
 *.dmp
 *.db
 *.wal
+!src/Persistence/ChronicleDB.Wal/
+!src/Persistence/ChronicleDB.Wal/**
 *.tmp

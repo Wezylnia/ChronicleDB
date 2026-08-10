@@ -11,6 +11,7 @@ The repository currently contains the architecture baseline, owned-key/MVCC/inde
 - [Architecture decisions](docs/adr/README.md)
 - [Reference repository review](docs/architecture/reference-repository-review.md)
 - [v0.1 storage format](docs/architecture/STORAGE_FORMAT.md)
+- [v0.2 WAL format](docs/architecture/WAL_FORMAT.md)
 
 The detailed v0.5, v1.0, and v1.5 working plans are intentionally kept in the local, git-ignored `private-docs/` directory.
 
