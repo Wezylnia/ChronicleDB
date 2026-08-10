@@ -17,6 +17,10 @@ public sealed class ChronicleTransaction : IDisposable
 
     public Guid TransactionId => _transaction.TransactionId.Value;
 
+    public ulong StartSequence => _transaction.StartSequence.Value;
+
+    public ulong? CommitSequence => _transaction.CommitSequence?.Value;
+
     public void Put(ReadOnlySpan<byte> key, ReadOnlySpan<byte> value)
     {
         ThrowIfDisposed();
@@ -44,20 +48,31 @@ public sealed class ChronicleTransaction : IDisposable
             return true;
         }
 
-        return _database.ReadCommitted(key, out value);
+        return _database.ReadAt(key, _transaction.StartSequence, out value);
     }
 
     public void Commit()
     {
         ThrowIfDisposed();
-        _database.Commit(_transaction);
-        _disposed = true;
+        try
+        {
+            _database.Commit(_transaction);
+        }
+        finally
+        {
+            if (_transaction.State is Transactions.State.TransactionState.Committed
+                or Transactions.State.TransactionState.Aborted
+                or Transactions.State.TransactionState.DurableCommitted)
+            {
+                _disposed = true;
+            }
+        }
     }
 
     public void Abort()
     {
         ThrowIfDisposed();
-        _transaction.Abort();
+        _database.Abort(_transaction, throwIfNotAbortable: true);
         _disposed = true;
     }
 
@@ -68,13 +83,7 @@ public sealed class ChronicleTransaction : IDisposable
             return;
         }
 
-        if (_transaction.State is Transactions.State.TransactionState.Created
-            or Transactions.State.TransactionState.Active
-            or Transactions.State.TransactionState.Preparing
-            or Transactions.State.TransactionState.Committing)
-        {
-            _transaction.Abort();
-        }
+        _database.Abort(_transaction, throwIfNotAbortable: false);
 
         _disposed = true;
     }
