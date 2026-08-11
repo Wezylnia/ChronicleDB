@@ -23,7 +23,7 @@ If the process dies between publication renames, open can restore the old file o
 
 ## Granularity and throttling
 
-v0.9 compacts whole physical history files, but one maintenance pass is incremental across histories. Candidate selection uses the exact page/overflow size that the replacement would occupy, not a key/value byte estimate. Options bound:
+v1.0 compacts whole physical history files, but one maintenance pass is incremental across histories. Candidate selection uses the exact page/overflow size that the replacement would occupy, not a key/value byte estimate. Options bound:
 
 - maximum histories per pass;
 - minimum reclaimable bytes;

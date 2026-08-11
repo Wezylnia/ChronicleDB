@@ -1,4 +1,4 @@
-# v0.9 testing methodology
+# v1.0 testing methodology
 
 ChronicleDB uses independent validation layers because no single kind of test is sufficient for a storage engine.
 
@@ -19,7 +19,7 @@ ChronicleDB uses independent validation layers because no single kind of test is
 
 ## Deterministic reproduction
 
-`ChronicleDB.WorkloadRunner [seed] [rounds] [workers]` reports all three values on failure. The operation grammar includes transactions, puts/deletes, conflicts, persistent snapshot create/delete, historical reads, restart, and a concurrent disjoint-write phase.
+`ChronicleDB.WorkloadRunner [seed] [rounds] [workers]` reports all three values on failure. The v1.0 operation grammar spans Main and multiple branch histories and includes transactions, puts/deletes, aborts, persistent Main/branch snapshot create/delete, branch creation (including from retained snapshots), leaf branch deletion, historical reads inside each retained generic floor, restart, GC, compaction, and a concurrent multi-history phase. Intermediate current state, retained snapshots, and topology are compared throughout; final-state-only validation is insufficient.
 
 The correctness test project separately runs seeded historical differential workloads across restart.
 
@@ -37,7 +37,7 @@ dotnet run --project tools/ChronicleDB.WorkloadRunner -- 42 10000 8
 dotnet run --project tools/ChronicleDB.CrashHarness -- run 100
 ```
 
-Release evidence should preserve failing seeds, raw logs, runtime/OS details, and benchmark JSON rather than reporting only a green summary.
+Release evidence should preserve failing seeds, raw logs, runtime/OS details, and benchmark JSON rather than reporting only a green summary. v1.0 also includes `V10ReleaseGateTests`, which drives one complete history graph through source-snapshot deletion, sibling divergence, tombstones, nested branching, branch snapshots, GC, compaction, restart, and branch deletion.
 
 
 ## v0.7 branch gate
@@ -51,3 +51,18 @@ Branch durability tests cover per-record history identity, incomplete transactio
 Maintenance tests separately cover retained-history checkpoint framing, generic-floor advancement, explicit snapshot/branch-base protection, active-reader pinning, lifecycle-journal compaction, strict compaction budgets, idempotent already-compacted state, and crash windows around checkpoint/WAL rotation and physical publication.
 
 `MaintenanceDifferentialTests` generates Main and sibling-branch histories against `ReferenceBranchingModel`, retains Main and branch snapshots plus recent branch historical views, then compares every observer before maintenance, after GC+compaction, and again after restart. Final-state-only comparison is intentionally insufficient.
+
+## v1.0 release freeze gate
+
+The release candidate is acceptable only when the full solution build succeeds and the architecture, unit, persistence, correctness, recovery, and process-crash suites pass together. `GetHistoryTopologyDiagnostics()` is tested as an observational API and must not be used by the engine to make retention or durability decisions. History-checkpoint corruption tests include impossible resource metadata so malformed files fail before large allocations. Recovery tests also inject checksummed WAL/checkpoint history that exceeds configured logical key/value limits and require rejection before physical redo; obsolete pre-reset WAL at/below an authoritative checkpoint is verified as non-replay input.
+
+Recommended local release sequence:
+
+```powershell
+dotnet restore ChronicleDB.slnx
+dotnet build ChronicleDB.slnx -c Release --no-restore
+dotnet test ChronicleDB.slnx -c Release --no-build
+dotnet run -c Release --project tools/ChronicleDB.WorkloadRunner -- 42 10000 8
+dotnet run -c Release --project tools/ChronicleDB.CrashHarness -- run 100
+dotnet run -c Release --project benchmarks/ChronicleDB.Benchmarks -- 1000 8 .artifacts/benchmarks/v10.json 42
+```

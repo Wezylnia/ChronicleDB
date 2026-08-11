@@ -1,6 +1,6 @@
 # Branch WAL
 
-ChronicleDB v0.8 gives every writable branch an independent logical WAL stream. The file is stored as `branches/<BranchId>/branch.wal`; it uses the common ChronicleDB WAL framing, LSN validation, CRC32C checksums, and durability barrier, but it is not interchangeable with Main WAL.
+ChronicleDB v1.0 retains the v0.8 rule that every writable branch has an independent logical WAL stream. The file is stored as `branches/<BranchId>/branch.wal`; it uses the common ChronicleDB WAL framing, LSN validation, CRC32C checksums, and durability barrier, but it is not interchangeable with Main WAL.
 
 ## Identity binding
 

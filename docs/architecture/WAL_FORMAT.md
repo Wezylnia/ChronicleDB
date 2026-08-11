@@ -1,4 +1,4 @@
-# v0.5 WAL format
+# v1.0 WAL format
 
 Each WAL begins with a fixed 64-byte database-bound file header (`CWLHDR01`, version 1.0). The header contains database GUID, first LSN, checksum algorithm, reserved bytes, and CRC32C. A WAL whose GUID differs from `chronicle.meta` is rejected.
 
@@ -26,7 +26,7 @@ Version 1 uses offset 40 as checksum-algorithm ID `1`. Version 2 fixes CRC32C by
 
 LSNs must be exactly contiguous beginning at one. Merely increasing LSNs are insufficient because a missing complete record would otherwise be invisible.
 
-The record envelope supports 65 MiB so a maximum 64 MiB mutation value still has room for encoded key/length metadata.
+The record envelope supports 65 MiB so a maximum 64 MiB mutation value still has room for encoded key/length metadata. These are **format envelope limits**, not permission to exceed the database's configured logical `MaxKeySize` / `MaxValueSize`. Recovery revalidates every committed mutation against the opened database limits before physical redo or MVCC publication; a checksummed record outside those limits is semantic corruption for that database configuration.
 
 ## Commit payload
 

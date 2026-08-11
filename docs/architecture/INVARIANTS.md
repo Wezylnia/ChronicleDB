@@ -1,4 +1,4 @@
-# v0.7 correctness invariants
+# v1.0 correctness invariants
 
 These invariants are the release contract. Performance work may change implementation mechanisms but may not weaken them.
 
@@ -36,7 +36,7 @@ These invariants are the release contract. Performance work may change implement
 
 **Snapshot lifecycle atomicity.** A crash during create/delete yields either the prior complete lifecycle state or the new complete lifecycle state; no partial root is exposed.
 
-**Conservative retention.** v0.5 never reclaims committed history needed by retained APIs; named-root deletion does not imply physical version deletion.
+**Observer-safe retention.** GC may reclaim obsolete history only when no generic retained range, explicit root, active transaction, open snapshot/historical handle, current state, or recovery requirement can still observe it.
 
 ## Storage and identity
 
@@ -67,7 +67,7 @@ These invariants are the release contract. Performance work may change implement
 
 **Branch historical stability.** A branch historical view or persistent branch snapshot resolves the same local boundary and inherited parent base regardless of later writes in Main, siblings, or the branch.
 
-**Committed-prefix integrity (v0.7).** Branch-local physical bytes are considered committed only through the latest durably published branch metadata prefix. Extra append bytes are orphan state and may be truncated; missing bytes inside a published prefix are corruption. This is a v0.7 baseline and is superseded by the independent branch WAL protocol in v0.8.
+**Legacy committed-prefix compatibility.** v0.7 branch metadata prefixes are accepted only on the legacy migration path. Once branch WAL is initialized, checkpoint + identity-bound branch WAL determine committed logical history; physical branch bytes are derived state and cannot independently establish a commit.
 
 ## v0.8 branch durability invariants
 

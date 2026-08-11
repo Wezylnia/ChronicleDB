@@ -1,6 +1,6 @@
 # Historical retention
 
-ChronicleDB v0.9 separates a history's generic time-travel range from explicit roots that protect isolated older states. This distinction prevents one ancient branch or snapshot from forcing the entire database to retain every unrelated intermediate version.
+ChronicleDB v1.0 retains the v0.9 design that separates a history's generic time-travel range from explicit roots that protect isolated older states. This distinction prevents one ancient branch or snapshot from forcing the entire database to retain every unrelated intermediate version.
 
 ## Generic history floor
 

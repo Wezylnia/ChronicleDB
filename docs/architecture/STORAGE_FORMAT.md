@@ -1,4 +1,4 @@
-# v0.9 storage format
+# v1.0 storage format
 
 This document describes the byte-level persistent storage owned by `ChronicleDB.Storage`. WAL framing is documented separately.
 
@@ -21,7 +21,7 @@ This document describes the byte-level persistent storage owned by `ChronicleDB.
 ## Limits
 
 - page size: exactly 16 KiB;
-- default maximum key: 1,024 bytes;
+- binary keys may be zero length; the default maximum key is 1,024 bytes;
 - default maximum value: 64 MiB;
 - configured storage value limit can never exceed 256 MiB, while ChronicleDB's WAL-backed facade is limited by the 64 MiB mutation protocol;
 - record pages contain one logical record payload in the current append-only layout;
@@ -29,7 +29,7 @@ This document describes the byte-level persistent storage owned by `ChronicleDB.
 - the current `FileStream`/`long` offset model limits `chronicle.data` to at most 562,949,953,421,311 full 16 KiB pages (largest aligned length below `Int64.MaxValue`);
 - persistent snapshot names are at most 1,024 valid UTF-8 bytes.
 
-All encoded lengths are validated before allocation/slicing/file access.
+All encoded lengths are validated before allocation/slicing/file access. Persistent WAL/checkpoint codecs intentionally use wider absolute framing limits than an individual database may configure; Main and branch recovery therefore reapply the effective database `MaxKeySize` and `MaxValueSize` before recovered logical history is replayed or used to rebuild physical state.
 
 ## Database metadata journal
 
@@ -63,7 +63,7 @@ Every 16 KiB page uses the existing 32-byte `CPG1` header with page type, one-ba
 
 Record payloads retain the v0.1 layout: key length, value length, flags, overflow head, inline length, full key bytes, and inline bytes. Overflow pages form forward-only chains and must reconstruct exactly the declared value length.
 
-The append-only page model deliberately retains old physical records in v0.5; current state is rebuilt by scanning newest record/tombstone state per key. Once the database metadata says WAL is initialized, the high-level engine requires every physical current key to have WAL-backed logical history; newly injected low-level keys are rejected as persistence divergence rather than silently adopted.
+The append-oriented page model may retain old physical records between maintenance passes; current physical state is rebuilt by scanning newest record/tombstone state per key. v0.9+ GC/compaction may replace that representation only after retained logical history is durably checkpointed. Once the database metadata says WAL is initialized, the high-level engine requires every physical current key to have WAL-backed logical history; newly injected low-level keys are rejected as persistence divergence rather than silently adopted.
 
 ## Persistent snapshot file
 
@@ -118,7 +118,7 @@ Each branch uses the standard 64-byte WAL file header and standard record framin
 
 ## v0.9 retained-history checkpoint
 
-`chronicle.history` is a complete immutable file for one history domain. Its checksummed header contains database/storage identity, `HistoryId`, checkpoint sequence, generic retention floor, and version count. Each version record contains transaction identity, commit sequence, full binary key, tombstone/value metadata, explicit lengths, and CRC32C. The entire file must parse exactly; unexplained trailing bytes are corruption.
+`chronicle.history` is a complete immutable file for one history domain. Its checksummed header contains database/storage identity, `HistoryId`, checkpoint sequence, generic retention floor, and version count. Each version record contains transaction identity, commit sequence, full binary key (including the valid zero-length key), tombstone/value metadata, explicit lengths, and CRC32C. Declared record counts and payload lengths must be physically possible for the containing file before variable-size allocations are attempted, and disk-declared counts do not directly determine unbounded collection capacity. The entire file must parse exactly; unexplained trailing bytes are corruption. After framing/CRC validation, the high-level recovery path also checks every retained key/value against the database's configured logical limits before admitting the checkpoint into MVCC history.
 
 Publication writes and fsyncs a temporary file, moves the previous checkpoint to `.previous`, publishes the replacement, re-reads it for validation, then retires the previous generation. A checkpoint becomes required only after the `HistoryCheckpointInitialized` database-header capability is durable.
 

@@ -1,48 +1,63 @@
-# v0.6 persistent snapshots and time travel
+# v1.0 persistent snapshots and time travel
 
-v0.5 exposes retained MVCC history as read-only public state. Branching is not part of this release.
+ChronicleDB exposes retained MVCC history through persistent named snapshots and fixed-boundary historical views in Main and branch histories. Snapshot creation is metadata-oriented: it does not copy the visible database state.
 
-## Persistent named snapshot
+## Persistent named snapshots
 
-A persistent snapshot contains:
+A Main snapshot contains:
 
 - stable `SnapshotId`;
-- owning `DatabaseId` through the snapshot-store header and public info;
+- owning `DatabaseId`;
 - unique case-sensitive name;
-- fixed commit-sequence boundary;
+- fixed Main commit-sequence boundary;
 - creation timestamp.
 
-Creating a snapshot does **not** copy database pages. The operation captures the current published commit sequence, persists one Create lifecycle record to `chronicle.snapshots`, persists the corresponding active history-root record to `chronicle.history-roots`, flushes both to the stable-storage boundary, registers the root and snapshot in memory, and only then returns the handle.
+A branch snapshot additionally belongs to one branch `HistoryId`; its sequence is interpreted only inside that branch's local commit namespace and its inherited parent state remains fixed by the branch base.
 
-The capture point is the snapshot's linearization boundary. A transaction that commits after that sequence is excluded even if it completes before snapshot creation returns.
+Creating a snapshot persists a lifecycle record and the corresponding history-root record before the handle is returned. The captured commit sequence is immutable: later Main, branch, or sibling commits cannot change the snapshot's logical view.
 
 ## Crash semantics
 
-- failure before any snapshot record write: no durable effect; database can remain usable;
-- after a write may have started but before durability: outcome is uncertain, snapshot metadata/database are faulted, reopen decides whether a complete record survived;
-- after snapshot metadata flush: the root is durable even if acknowledgement is lost;
-- a partial framed tail is discarded on reopen; complete corrupt metadata is rejected.
+- failure before persistence begins has no durable snapshot effect;
+- once a metadata write may have started, an uncertain outcome requires reopen/reconciliation rather than guessing;
+- a complete durable Create remains authoritative even if client acknowledgement is lost;
+- an incomplete framed tail is recoverable truncation, while complete corrupt metadata is rejected;
+- Delete uses the same durable lifecycle discipline and reconciliation rules.
 
-Delete follows the same durable lifecycle protocol with Delete records in both metadata streams. If a crash occurs between the two files, recovery reconciles the root registry with the authoritative snapshot catalog before exposing the database.
+## Open handles and deletion
 
-## Open and list
+Deleting a named snapshot makes future opens by ID/name fail, but an already-open snapshot handle remains valid until it is disposed. Open snapshot and historical handles register process-local retention boundaries, so v1.0 GC cannot reclaim the versions they still observe even after the persistent name/root has been deleted.
 
-Snapshots can be listed and reopened by ID or name after restart. Names are valid nonblank UTF-8 text, have no leading/trailing whitespace, are case-sensitive, and are limited to 1,024 encoded bytes.
+This distinction is intentional:
 
-Deleting a named snapshot makes future opens by that ID/name fail. An already-open handle remains usable because v0.5 performs no physical historical reclamation.
+- **persistent root lifetime** controls whether the snapshot can be reopened later;
+- **open handle lifetime** controls whether an already acquired observer may continue reading in the current process.
 
 ## Point-in-time views
 
-`OpenHistoricalView(sequence)` creates a read-only fixed-boundary handle. The sequence must satisfy:
+`OpenHistoricalView(sequence)` creates a read-only fixed-boundary handle in Main. Branches expose the equivalent branch-local historical view.
 
-`RetentionFloor <= sequence <= CurrentCommitSequence`
+For generic time travel, the requested sequence must be within the history's retained range:
 
-A historical read chooses the newest committed version at or before that boundary. Tombstones behave exactly as they do for transaction snapshots.
+`RetentionFloor <= sequence <= CurrentSequence`
 
-The API is database-scoped, so a raw sequence is interpreted only inside the database from which the view is opened. Persistent snapshot files themselves are explicitly bound to database identity.
+A read chooses the newest committed version visible at that sequence. Tombstones represent absence and, in branches, suppress inherited parent fallback.
 
-## Retention
+A raw sequence is always scoped to one `HistoryId`; Main sequence 100 and Branch A sequence 100 are unrelated logical boundaries.
 
-Fresh v0.5 databases start with retention floor zero and can time-travel through all WAL-reconstructable commits. When an older physical database lacks provable historical commit provenance, first v0.5 open establishes a conservative floor at the validated upgrade boundary rather than inventing history.
+## Retention and GC
 
-The floor remains conservative and is not advanced by snapshot deletion. v0.6 makes the retention roots queryable and durable; precise physical reclamation and branch-aware retention belong to later v1.0 stages.
+v1.0 separates the generic time-travel floor from explicit persistent roots. Maintenance may advance the generic floor and reclaim unreachable older versions, but it must preserve:
+
+- every active persistent snapshot boundary;
+- every branch base;
+- every persistent branch snapshot;
+- every active transaction start boundary;
+- every open snapshot/historical handle;
+- all recovery requirements.
+
+The retained MVCC projection is durably checkpointed before WAL rotation or physical compaction. Consequently snapshot deletion can eventually release history, but only after no other durable or process-local observer requires the same logical state.
+
+## Branch creation from snapshots
+
+An open Main or branch snapshot can be used as a branch source. Branch creation establishes its own durable `BranchBase` root, so the resulting branch is independent of the source snapshot lifecycle. Deleting the source snapshot later does not move or invalidate the branch base.

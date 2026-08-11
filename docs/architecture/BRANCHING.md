@@ -1,70 +1,62 @@
-# v0.7 core branch semantics
+# v1.0 branching semantics
 
-ChronicleDB v0.7 turns retained historical state into independently writable history domains. Branching is correctness-first: branch-local commits use conservative synchronization and append-only local storage; the independent branch WAL and full crash/lifecycle protocol remain v0.8 work.
+ChronicleDB v1.0 represents a branch as an independently writable `HistoryId` rooted at a fixed retained boundary in one parent history. Branch creation shares immutable historical state; it does not copy the parent's logical dataset. New branch-owned writes are persisted separately and parent state is never modified by branch commits.
 
 ## Identity and sequence namespaces
 
-Main and every writable branch have distinct `HistoryId` values. Commit sequences are local to a history domain, so a sequence is meaningful only as `(HistoryId, CommitSequence)`. Every branch also has a persistent `BranchId`, a stable parent history, and a fixed parent base sequence.
+Main and every writable branch have distinct `HistoryId` values. Commit sequences are local to a history domain, so a sequence is meaningful only as `(HistoryId, CommitSequence)`. Every branch also has a persistent `BranchId`, one immutable parent history, one fixed parent base sequence, a persistent base-retention root, and a bounded ancestry depth.
 
 ## Creation
 
-Creating a branch publishes three durable facts in order:
+Creating a branch publishes durable lifecycle state in this order:
 
-1. a `CreateIntent` in `chronicle.branches` reserves branch/history/name identity;
-2. an empty branch-local storage domain is created and a `BranchBase` history root retains the selected parent boundary;
-3. an `Activate` record publishes the local storage identity and makes the branch recoverably active.
+1. validate the requested parent history/boundary and reserve branch/history/name identity;
+2. persist a `CreateIntent` in `chronicle.branches`;
+3. create the branch-private storage domain;
+4. create a `BranchBase` history root that protects the selected parent boundary;
+5. persist `Activate`, binding the branch to its private storage identity;
+6. make the branch discoverable and acknowledge creation.
 
-A branch never copies the parent's logical dataset during creation. If creation is interrupted before activation, open reconciliation deletes any orphaned base root and partially initialized branch-local directory before durably abandoning the creation intent. If activation may have become durable, the database is faulted and reopen is authoritative.
+An interrupted create is reconciled during open. A branch is externally valid only after activation. Incomplete creation cannot leave an indefinitely retaining hidden root or a discoverable half-initialized branch.
 
 ## Read resolution
 
 All branch reads use one resolver. For a key at branch-local boundary `S`:
 
 1. transaction-local writes win for an active transaction;
-2. the newest branch-local committed version at or before `S` is resolved;
+2. resolve the newest branch-local committed version at or before `S`;
 3. a local value is returned;
 4. a local tombstone returns absence and **does not** fall back;
 5. only `NoVisibleVersion` falls back recursively to the immutable parent history at the branch's fixed `ParentBaseSequence`.
 
-This distinction is required to make local delete correct.
+This distinction is required for correct local deletion.
 
-## Snapshot Isolation
+## Snapshot Isolation and local commits
 
-A branch transaction records the branch's local current sequence as `StartSequence`. It reads that fixed local snapshot plus its own writes. Write/write conflicts are validated only against newer committed versions in the same writable history. Main, siblings, and descendants do not directly conflict after a branch point because they publish to different history domains.
+A branch transaction captures the branch local current sequence as `StartSequence`. It reads that fixed local snapshot plus its own writes. First-committer-wins conflicts are validated only against commits in the same branch history. Main, siblings, and descendants evolve independently after a branch point.
 
-Branch commits are serialized per branch in v0.7. Different branches do not share that commit gate. This is deliberately conventional synchronization; latch-free publication is not a v0.7 objective.
-
-## Branch-local commit publication
-
-v0.7 stores every branch-local logical version as a new append-only physical record. The branch metadata `AdvanceSequence` record publishes the committed local sequence and the exact branch-data prefix covered by that commit. On reopen, data beyond the latest published prefix is discarded and the local MVCC index is rebuilt from the published records.
-
-`AdvanceSequence` is a v0.7 committed-prefix protocol, **not** the branch WAL promised by v0.8. v0.8 will introduce logically independent WAL streams and the full branch durability/recovery contract.
+Each branch has its own commit coordinator and `branch.wal`. A durable branch commit validates/preflights before logging, appends identity-bound Begin/mutations/Commit records, fsyncs the branch WAL, crosses the one-way durable decision, then publishes branch-private physical versions, lifecycle/cache metadata, and the in-memory MVCC view. Failure after WAL durability is recovery-defined rather than abortable.
 
 ## Historical reads and snapshots
 
-A branch historical view is identified by `(branch HistoryId, local sequence)`. Local history is resolved at that sequence and unchanged keys fall back to the same fixed parent base.
+A branch historical boundary is `(branch HistoryId, local sequence)`. Local history resolves at that sequence and unchanged keys fall back to the same immutable parent base. Persistent snapshots inside a branch retain a fixed local boundary and remain unchanged by later branch, parent, or sibling writes.
 
-Persistent snapshots created inside a branch store a branch-local sequence and receive a `PersistentSnapshot` history root in that branch history. Later branch, parent, or sibling writes cannot change the snapshot.
+A branch created from a named snapshot acquires its own `BranchBase` root. Deleting the source snapshot therefore does not invalidate the branch, and deleting the branch does not invalidate an independent surviving snapshot.
 
 ## Nested branches
 
-Nested branches are supported recursively for correctness. A child fixes the complete parent-visible state at a selected parent-local sequence. v0.7 enforces a maximum depth of 16 to prevent unbounded recursive lookup; the limit is validated during creation and covered by tests.
+Nested branches are supported recursively for correctness. A child fixes the complete parent-visible state at a selected parent-local sequence. v1.0 enforces `ChronicleBranch.MaximumDepth` to bound recursive resolution; creation validates the limit and persistent ancestry validation rejects missing parents, self-parenting, inconsistent depth, and cycles.
 
-## Isolation invariants
+## Lifecycle and deletion
 
-- branch commits never modify Main;
-- sibling branches never modify one another;
-- later parent commits never move an existing branch base;
-- a local tombstone never exposes the inherited parent value;
-- a branch snapshot never drifts after later writes;
-- source snapshot deletion never invalidates a branch that has its own branch-base root.
+Deletion is conservative. It is rejected while the branch has open branch handles, active transactions, open historical/snapshot handles, persistent branch snapshots, or child branches. A durable `DeleteIntent` closes the history to new operations; after dependency-safe root release, `DeleteComplete` publishes logical deletion. Physical branch-directory removal is later reclamation: transient filesystem cleanup failures are reported as pending and retried by later GC passes without reviving the branch or faulting otherwise valid logical state.
 
-## v0.8 durability and lifecycle
+## Retention and maintenance
 
-v0.8 supersedes the v0.7 committed-prefix authority described above. `branch.wal` is now the branch transaction durability authority; `AdvanceSequence` remains a recoverable lifecycle/cache publication used to track local current sequence and physical data boundaries. A branch WAL commit that crossed fsync survives even when subsequent physical publication fails.
+A branch base remains an explicit root even when the parent generic time-travel floor advances past the branch point. GC protects only the per-key parent versions needed to reconstruct that exact base, rather than pinning every unrelated intermediate parent version. Branch-local snapshots and process-local readers similarly protect exact local boundaries.
 
-Branch deletion is explicit and conservative. Open branch handles, active transactions, historical/snapshot handles, persistent branch snapshots, and child branches block deletion. Delete intent is persisted before the base root is released; crash recovery completes an interrupted deletion deterministically.
+Before branch WAL history is rotated for GC or compaction, a complete checksummed retained-history checkpoint is made durable. Physical compaction rewrites only branch-private retained versions; inherited parent state remains shared.
 
-## v0.9 retention interaction
+## Compatibility note
 
-Branch bases remain explicit roots even when a parent generic time-travel floor advances beyond the branch point. GC retains exactly the parent versions needed to reconstruct that branch base. Branch-local snapshots similarly pin local historical versions without forcing every intermediate local version to remain alive.
+v0.7 used `AdvanceSequence` metadata as a committed-prefix authority. On first v0.8+ open, a legacy branch is validated and deterministically bootstrapped into an independent branch WAL before the `WalInitialized` capability becomes durable. In v1.0, checkpoint + branch WAL are transaction-history authority; `AdvanceSequence`/physical-boundary metadata are lifecycle and derived-storage publication state, not the commit decision.

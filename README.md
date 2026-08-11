@@ -1,12 +1,12 @@
 # ChronicleDB
 
-ChronicleDB is an experimental embedded, persistent, versioned key-value storage engine for .NET 10. The v0.9 baseline combines crash-safe MVCC and Snapshot Isolation with persistent historical roots, copy-on-write/shared-state branches, independent branch WAL/recovery, conservative branch lifecycle, retained-history garbage collection, and copy-and-publish physical compaction.
+ChronicleDB is an experimental embedded, persistent, versioned key-value storage engine for .NET 10. The v1.0 release architecture combines crash-safe MVCC and Snapshot Isolation with persistent historical roots, copy-on-write/shared-state branches, independent branch WAL/recovery, conservative branch lifecycle, retained-history garbage collection, and copy-and-publish physical compaction.
 
 The current release deliberately does **not** claim branch merge/rebase, cross-history transactions, latch-free indexing, epoch-based reclamation, native-memory hot paths, distributed operation, group commit, or SQL. Those remain later-release work.
 
-## v0.9 guarantees
+## v1.0 guarantees
 
-- binary keys use full structural identity and engine-owned bytes;
+- binary keys (including the zero-length binary key) use full structural identity and engine-owned bytes;
 - acknowledged durable commits have a recoverable WAL decision before publication;
 - multi-key transactions become logically visible as one committed unit;
 - transactions read one fixed `StartSequence` plus their own writes;
@@ -30,6 +30,12 @@ The current release deliberately does **not** claim branch merge/rebase, cross-h
 - lifecycle journals are compacted to canonical active state so bounded create/delete workloads do not leak metadata indefinitely;
 - complete persistent corruption is rejected rather than silently repaired;
 - only proven crash tails or derived state recoverable from authoritative history are repaired.
+- retained-history checkpoint framing rejects physically impossible record counts before allocating record collections;
+- WAL/checkpoint recovery revalidates configured logical key/value limits before replay or physical redo, while obsolete pre-checkpoint WAL generations remain structural evidence rather than replay input;
+- history-topology diagnostics expose Main/branch ancestry, local sequence/floor, version depth, snapshots, data/WAL bytes, open readers, and explainable persistent retention roots;
+- deleted branch-private directory cleanup is retryable physical reclamation and cannot fault a logically valid database solely because the host filesystem temporarily refuses deletion;
+- deterministic v1.0 workload replay covers Main and multiple branches, snapshots, historical reads, restart, GC, and compaction with intermediate differential validation;
+- the v1.0 research runner records reproducibility metadata and dedicated branch creation/read/write/scale, GC, compaction, and recovery measurements without claiming superiority from the runner itself.
 
 ## Start here
 
@@ -59,6 +65,7 @@ The current release deliberately does **not** claim branch merge/rebase, cross-h
 - [Crash harness](docs/architecture/CRASH_HARNESS.md)
 - [Testing methodology](docs/TESTING.md)
 - [Benchmarking methodology](docs/BENCHMARKING.md)
+- [Research evaluation contract](docs/RESEARCH_EVALUATION.md)
 
 The detailed v0.5, v1.0, and v1.5 working plans may be kept outside the repository; the checked-in architecture documents are the implementation contract.
 
@@ -85,7 +92,7 @@ dotnet run --project tools/ChronicleDB.CrashHarness -- run 100
 Run baseline measurements and retain raw JSON:
 
 ```powershell
-dotnet run -c Release --project benchmarks/ChronicleDB.Benchmarks -- 1000 8 .artifacts/benchmarks/v09.json
+dotnet run -c Release --project benchmarks/ChronicleDB.Benchmarks -- 1000 8 .artifacts/benchmarks/v10.json 42
 ```
 
 The SDK is pinned by `global.json`. Package versions, compiler settings, analyzer policy, artifact paths, and the default unsafe-code prohibition are centralized at the repository root.

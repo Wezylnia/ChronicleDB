@@ -1,6 +1,6 @@
-# v0.5 MVCC model
+# v1.0 MVCC model
 
-ChronicleDB v0.5 uses immutable managed committed-version chains as the semantic source for current, transactional, snapshot, and time-travel reads.
+ChronicleDB v1.0 uses immutable managed committed-version chains as the semantic source for current, transactional, snapshot, branch, and time-travel reads. The managed implementation remains the correctness baseline for later v1.5 index/reclamation optimization.
 
 ## Commit sequences
 
@@ -44,8 +44,8 @@ This is the conventional correctness baseline for later optimized indexes; it is
 
 ## Recovery and retention
 
-The WAL is currently the durable source for reconstructing committed MVCC history. Recovery replays committed transactions in commit order to rebuild chains. Persistent snapshot metadata records a durable `RetentionFloor`; historical APIs reject boundaries below that floor.
+Recovery reconstructs retained committed MVCC history from the latest valid retained-history checkpoint plus the newer WAL generation. Before a checkpoint exists, WAL history is the durable source. Each history domain has a monotonic generic retention floor; explicit roots and already-open process observers may retain exact older boundaries independently of that generic floor.
 
 When opening pre-MVCC physical state, ChronicleDB writes one durable synthetic bootstrap transaction to WAL for current keys that have no WAL-backed version. This assigns those keys a stable upgrade sequence exactly once; their apparent history cannot drift forward on later reopens.
 
-v0.5 intentionally performs no aggressive committed-history reclamation. Deleting a named snapshot does not physically delete versions, which also keeps already-open snapshot handles safe.
+v1.0 GC performs per-key retention analysis. It preserves versions required by the generic retained range, explicit snapshot/branch-base roots, already-open process observers, and latest current state. Deleting a named snapshot removes one persistent root but does not invalidate an already-open handle; physical reclamation is separated from logical root deletion.

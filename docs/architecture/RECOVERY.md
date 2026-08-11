@@ -1,4 +1,4 @@
-# v0.9 recovery
+# v1.0 recovery
 
 Opening a ChronicleDB database is a recovery operation. Application work is not exposed until storage metadata, WAL, current physical state, committed version history, persistent snapshot metadata, and the generalized history-root registry have all been validated and reconstructed.
 

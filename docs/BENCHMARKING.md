@@ -1,46 +1,56 @@
-# v0.5 benchmarking methodology
+# v1.0 benchmarking methodology
 
-v0.5 benchmarks establish reproducible baselines; they are not a claim that ChronicleDB outperforms mature engines.
+ChronicleDB benchmarks are reproducible research instrumentation, not a claim that the project outperforms mature database engines. Correctness and durability gates take precedence over benchmark results.
 
 ## Runner
 
 ```powershell
-dotnet run -c Release --project benchmarks/ChronicleDB.Benchmarks -- <operations> <workers> [json-output]
+dotnet run -c Release --project benchmarks/ChronicleDB.Benchmarks -- <operations> <workers> [json-output] [seed]
 ```
 
-The runner records:
+The report records:
 
+- ChronicleDB release label and Git commit hash (`CHRONICLEDB_COMMIT` can override automatic Git discovery);
+- build configuration;
 - UTC timestamp;
-- operating system;
-- process architecture;
+- operating system and process architecture;
 - .NET runtime;
 - logical CPU count;
-- operation and worker counts;
+- operation/worker counts and deterministic seed;
+- page, key, and value sizes used by the built-in scenarios;
+- durability mode;
 - operations/second;
 - P50/P95/P99 latency;
 - allocated bytes and Gen0/Gen1/Gen2 collection deltas;
-- subsystem-specific WAL, commit, index, version-chain, snapshot, recovery, and storage metrics.
+- scenario-specific WAL, history, root, branch, GC, compaction, recovery, and storage metrics.
 
-A warm-up invocation precedes the measured invocation. GC is collected between warm-up and measurement to reduce startup noise. Raw JSON should be preserved for research comparisons.
+Each scenario is invoked once for warm-up and then once for measurement. GC is explicitly collected between those invocations. Publishable experiments should run multiple independent processes and preserve every raw JSON file rather than treating one short invocation as evidence.
 
-## Current baseline cases
+## v1.0 scenario matrix
 
-- **B0 persistent KV write** — low-level append-only storage path;
-- **B2 MVCC durable write** — single-worker current v0.5 transactional path;
-- **B3 concurrent MVCC** — multiple independent writers through the v0.5 commit coordinator;
-- **B4 current-state read** — committed current boundary;
-- **B4 historical read** — fixed persistent snapshot boundary after later divergence;
-- **snapshot create** — metadata durability cost;
-- **recovery open** — reopen/replay cost after a configured committed history.
+- **Storage primitive write** — low-level append-oriented storage path; this is a microbenchmark, not the historical v0.5 B0 baseline.
+- **B2 Main durable write** — current transactional/WAL durability path without user branches.
+- **B2 Main concurrent write** — multiple independent writers through the semantic baseline commit coordinator.
+- **current-state read** — latest committed Main state.
+- **historical read** — fixed persistent snapshot boundary after later divergence.
+- **snapshot create** — persistent metadata/root publication cost.
+- **branch create** — creation of metadata-oriented fixed-base branches without copying Main user state; records metadata/private data/WAL growth.
+- **branch inherited read** — local-miss resolution through the immutable parent base after Main diverges.
+- **branch local write** — branch-local WAL + physical publication cost.
+- **B3 branch-scale-1 / 10** — inherited reads with small active sibling sets.
+- **B4 branch-scale-25 / 50 / 100** — the same shape at larger topology sizes to expose metadata and fallback-read overhead.
+- **B6 GC pass** — retained-history checkpoint/WAL rotation and managed version reclamation.
+- **B8 compaction pass** — checkpoint-before-rewrite plus physical copy/publish reclamation.
+- **recovery open** — reopen of Main plus multiple branches and persistent Main/branch snapshots.
 
-The original v0.2 transactional implementation is not maintained as a runtime-selectable production implementation. Historical B1 comparisons should therefore use the relevant tagged revision rather than duplicate an obsolete commit protocol inside benchmark code.
+The labels B2/B3/B4/B6/B8 correspond to current-tree v1.0 baseline families. **B0 means the actual v0.5 release** and is intentionally not fabricated inside the v1.0 executable; historical-release comparisons must check out the tagged v0.5 revision and run an equivalent workload with the same durability and machine settings. The low-level storage primitive microbenchmark is reported separately.
 
-## Interpretation
+## Required interpretations
 
-The commit coordinator intentionally serializes durability ordering. Contention counters make that cost visible rather than hiding it. A future optimized implementation should be compared against this semantic baseline using the same workload shape and durability mode.
+Branch creation must be described as **metadata-oriented / shared-state / without full logical database duplication** unless measured evidence justifies a stronger statement. Do not claim "zero-cost", "instant", or `O(1)` branch creation from one fixed-size microbenchmark.
 
-Do not compare runs unless machine, storage, runtime, build configuration, workload parameters, durability behavior, and background conditions are recorded. Prefer multiple sufficiently long runs and report raw distributions; one short run is not research evidence.
+GC results must report both effectiveness and interference. Compaction results must include bytes rewritten as well as bytes reclaimed. Recovery timing is meaningful only when the reopened Main, branches, ancestry, and persistent snapshots are also validated.
 
-## Checkpoint/recovery note
+The commit coordinator and conventional managed synchronization are intentional v1.0 semantic baselines. v1.5 optimizations should be compared against this release with unchanged logical semantics and equivalent durability.
 
-v0.5 keeps historical WAL because it is required to rebuild retained version chains. No benchmark is allowed to improve recovery time by truncating history and silently weakening snapshots/time travel. Checkpointing can be added only when an equivalent durable historical representation exists.
+See [RESEARCH_EVALUATION.md](RESEARCH_EVALUATION.md) for research questions and the metadata required for publication-quality experiments.
