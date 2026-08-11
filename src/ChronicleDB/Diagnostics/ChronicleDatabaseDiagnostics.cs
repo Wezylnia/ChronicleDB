@@ -41,4 +41,12 @@ public sealed record ChronicleDatabaseDiagnostics(
     long BranchMetadataBytes = 0,
     long BranchLocalDataBytes = 0,
     int BranchLocalVersionCount = 0,
-    int BranchSnapshotCount = 0);
+    int BranchSnapshotCount = 0,
+    long GarbageCollectionPasses = 0,
+    long GarbageCollectionReclaimedVersions = 0,
+    long GarbageCollectionCheckpointBytes = 0,
+    double GarbageCollectionMilliseconds = 0,
+    long CompactionPasses = 0,
+    long CompactionBytesRewritten = 0,
+    long CompactionBytesReclaimed = 0,
+    double CompactionMilliseconds = 0);
