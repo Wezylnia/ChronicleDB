@@ -49,4 +49,7 @@ public sealed record ChronicleDatabaseDiagnostics(
     long CompactionPasses = 0,
     long CompactionBytesRewritten = 0,
     long CompactionBytesReclaimed = 0,
-    double CompactionMilliseconds = 0);
+    double CompactionMilliseconds = 0,
+    long BranchLocalWalBytes = 0,
+    long HistoryRootMetadataBytes = 0,
+    long HistoryCheckpointBytes = 0);

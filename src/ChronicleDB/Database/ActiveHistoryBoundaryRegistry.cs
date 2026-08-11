@@ -60,6 +60,19 @@ internal sealed class ActiveHistoryBoundaryRegistry
         }
     }
 
+    public int CountForHistory(HistoryId historyId)
+    {
+        if (!historyId.IsValid)
+        {
+            return 0;
+        }
+
+        lock (_gate)
+        {
+            return _boundaries.Values.Count(item => item.HistoryId == historyId);
+        }
+    }
+
     public bool Contains(HistoryId historyId, CommitSequence boundary)
     {
         lock (_gate)

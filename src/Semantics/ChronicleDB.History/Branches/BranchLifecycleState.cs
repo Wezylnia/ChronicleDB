@@ -1,8 +1,8 @@
 namespace ChronicleDB.History.Branches;
 
 /// <summary>
-/// Persistent branch metadata lifecycle. v0.7 exposes only Active branches;
-/// Creating entries are durable intents resolved during open.
+/// Persistent branch lifecycle states used by the durable metadata journal.
+/// Only Active branches are externally openable; incomplete create/delete intents are reconciled during open.
 /// </summary>
 public enum BranchLifecycleState : byte
 {
