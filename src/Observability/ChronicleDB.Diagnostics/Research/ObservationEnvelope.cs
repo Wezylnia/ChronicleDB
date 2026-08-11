@@ -225,6 +225,8 @@ public sealed class ObservationEnvelope
         Error = error;
         Corruption = corruption;
         SafetyPredicates = safetyPredicates;
+
+        ValidateCanonicalState();
     }
 
     public LogicalDataObservation? LogicalData { get; }
@@ -244,4 +246,89 @@ public sealed class ObservationEnvelope
     public CorruptionObservation Corruption { get; }
 
     public SafetyPredicateObservation SafetyPredicates { get; }
+
+    private void ValidateCanonicalState()
+    {
+        ValidateHistories();
+        ValidateRoots();
+        ValidateSequences();
+
+        if (string.IsNullOrWhiteSpace(Authority.PublishedAuthority))
+        {
+            throw new ArgumentException("Published authority must not be empty.", nameof(Authority));
+        }
+
+        if (!Enum.IsDefined(Availability.State))
+        {
+            throw new ArgumentException("Availability state is not recognized.", nameof(Availability));
+        }
+
+        if (!Enum.IsDefined(Error.Kind))
+        {
+            throw new ArgumentException("Error kind is not recognized.", nameof(Error));
+        }
+
+    }
+
+    private void ValidateHistories()
+    {
+        var historyIds = new HashSet<HistoryId>();
+        foreach (var history in HistoryTopology)
+        {
+            if (!history.HistoryId.IsValid || !historyIds.Add(history.HistoryId))
+            {
+                throw new ArgumentException("History topology must contain unique valid history IDs.", nameof(HistoryTopology));
+            }
+
+            if (history.ParentHistoryId is { } parent
+                && (!parent.IsValid || parent == history.HistoryId))
+            {
+                throw new ArgumentException("A history parent must be valid and different from its child.", nameof(HistoryTopology));
+            }
+
+            if (!Enum.IsDefined(history.Lifecycle))
+            {
+                throw new ArgumentException("History lifecycle is not recognized.", nameof(HistoryTopology));
+            }
+        }
+    }
+
+    private void ValidateRoots()
+    {
+        var rootIds = new HashSet<HistoryRootId>();
+        foreach (var root in RootLifecycle)
+        {
+            if (!root.RootId.IsValid || !rootIds.Add(root.RootId))
+            {
+                throw new ArgumentException("Root lifecycle must contain unique valid root IDs.", nameof(RootLifecycle));
+            }
+
+            if (!root.OwnerHistoryId.IsValid || !root.ProtectedHistoryId.IsValid)
+            {
+                throw new ArgumentException("A root must reference valid owner and protected histories.", nameof(RootLifecycle));
+            }
+
+            if (!Enum.IsDefined(root.Kind) || !Enum.IsDefined(root.Lifecycle))
+            {
+                throw new ArgumentException("Root kind and lifecycle must be recognized.", nameof(RootLifecycle));
+            }
+        }
+    }
+
+    private void ValidateSequences()
+    {
+        var historyIds = new HashSet<HistoryId>();
+        foreach (var sequence in Sequences)
+        {
+            if (!sequence.HistoryId.IsValid || !historyIds.Add(sequence.HistoryId))
+            {
+                throw new ArgumentException("Sequence observations must contain unique valid history IDs.", nameof(Sequences));
+            }
+
+            if (sequence.RetentionFloor > sequence.CommittedSequence)
+            {
+                throw new ArgumentException("Retention floor cannot exceed committed sequence.", nameof(Sequences));
+            }
+        }
+    }
 }

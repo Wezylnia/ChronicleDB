@@ -91,4 +91,43 @@ public sealed class ObservationEnvelopeTests
         Assert.Equal([0x01], entry.Key.ToArray());
         Assert.Equal([0x10], entry.Value.ToArray());
     }
+
+    [Fact]
+    public void ObservationEnvelopeRejectsDuplicateHistoryTopology()
+    {
+        var history = HistoryId.New();
+
+        Assert.Throws<ArgumentException>(() => CreateEnvelope(
+            historyTopology:
+            [
+                new HistoryTopologyObservation(history, null, null, ObservedHistoryLifecycle.Active),
+                new HistoryTopologyObservation(history, null, null, ObservedHistoryLifecycle.Active),
+            ]));
+    }
+
+    [Fact]
+    public void ObservationEnvelopeRejectsRetentionFloorAfterCommittedSequence()
+    {
+        var history = HistoryId.New();
+
+        Assert.Throws<ArgumentException>(() => CreateEnvelope(
+            sequences: [new SequenceObservation(history, new CommitSequence(2), new CommitSequence(3))]));
+    }
+
+    private static ObservationEnvelope CreateEnvelope(
+        IEnumerable<HistoryTopologyObservation>? historyTopology = null,
+        IEnumerable<SequenceObservation>? sequences = null)
+    {
+        var history = HistoryId.New();
+        return new ObservationEnvelope(
+            logicalData: null,
+            historyTopology ?? [new HistoryTopologyObservation(history, null, null, ObservedHistoryLifecycle.Active)],
+            rootLifecycle: [],
+            new AuthorityObservation(1, 1, "checkpoint+wal"),
+            sequences ?? [new SequenceObservation(history, new CommitSequence(1), new CommitSequence(0))],
+            new AvailabilityObservation(ObservationAvailability.Ready),
+            new ErrorObservation(ObservationErrorKind.None, null),
+            new CorruptionObservation(false, null),
+            new SafetyPredicateObservation(true, true, true, true, true, true));
+    }
 }
