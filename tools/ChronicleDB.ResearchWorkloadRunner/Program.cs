@@ -1,6 +1,18 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using ChronicleDB;
 using ChronicleDB.Diagnostics.Research;
+using ChronicleDB.Transactions.Faults;
+
+if (args.Length > 0 && args[0].Equals("crash", StringComparison.OrdinalIgnoreCase))
+{
+    return await RunCrashParentAsync(args[1..]);
+}
+
+if (args.Length > 0 && args[0].Equals("child", StringComparison.OrdinalIgnoreCase))
+{
+    return RunCrashChild(args[1..]);
+}
 
 if (args.Length < 3
     || !TryParseFamily(args[0], out var family)
@@ -88,7 +100,8 @@ static void Execute(
     ChronicleDatabase database,
     IDictionary<int, ChronicleBranch> branches,
     ICollection<IDisposable> snapshots,
-    ResearchWorkloadOperation operation)
+    ResearchWorkloadOperation operation,
+    IDictionary<int, Guid>? branchIds = null)
 {
     switch (operation.Kind)
     {
@@ -103,6 +116,7 @@ static void Execute(
                 ? database.CreateBranch(name)
                 : branches[operation.ParentHistorySlot].CreateBranch(name);
             branches.Add(operation.HistorySlot, branch);
+            branchIds?.Add(operation.HistorySlot, branch.BranchId);
             break;
         case ResearchWorkloadOperationKind.Put:
             ResolveBranch(branches, operation.HistorySlot)?.Put(Key(operation), Value(operation));
@@ -267,4 +281,201 @@ static ExperimentManifest CreateManifest(
         TelemetryMode = ResearchTelemetryMode.Trace,
         UtcStartedAt = DateTimeOffset.UtcNow,
     };
+}
+
+static async Task<int> RunCrashParentAsync(string[] args)
+{
+    if (args.Length < 3
+        || !TryParseFamily(args[0], out var family)
+        || !int.TryParse(args[1], out var seed)
+        || !int.TryParse(args[2], out var operationCount)
+        || operationCount < 0)
+    {
+        Console.Error.WriteLine(
+            "Usage: crash <S5|S7> <seed> <operation-count> [output-directory]");
+        return 2;
+    }
+
+    if (family is not (ResearchWorkloadFamily.S5RecoveryHeavy or ResearchWorkloadFamily.S7MixedAdversarialSoak))
+    {
+        Console.Error.WriteLine("Crash mode is reserved for S5 and S7 workload families.");
+        return 2;
+    }
+
+    var outputDirectory = args.Length >= 4
+        ? Path.GetFullPath(args[3])
+        : Path.Combine(
+            Environment.CurrentDirectory,
+            "artifacts",
+            "research-crash",
+            $"{family}-{seed}-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(outputDirectory);
+    var databaseDirectory = Path.Combine(outputDirectory, "database");
+    var artifactDirectory = Path.Combine(outputDirectory, "artifacts");
+
+    var operations = DeterministicResearchWorkloadGenerator.Generate(family, seed, operationCount);
+    var profile = ResearchWorkloadProfiler.Analyze(operations);
+    var crashPlan = ResearchCrashPlanFactory.Create(operations, seed);
+    if (crashPlan.Injections.Count == 0)
+    {
+        Console.Error.WriteLine("Crash mode requires at least one Crash operation in the generated workload.");
+        return 2;
+    }
+
+    var injection = crashPlan.Injections[0];
+    var session = new ResearchExperimentSession(
+        new ResearchArtifactWriter(artifactDirectory),
+        CreateManifest(family, seed, profile),
+        operations,
+        crashPlan);
+
+    using var process = StartCrashChild(
+        databaseDirectory,
+        family,
+        seed,
+        operationCount,
+        injection);
+    await process.WaitForExitAsync();
+    if (process.ExitCode == 0)
+    {
+        Console.Error.WriteLine("Crash child exited normally; the configured fault point was not reached.");
+        return 1;
+    }
+
+    var sink = new TraceResearchEventSink();
+    using (var recovered = ChronicleDatabase.Open(databaseDirectory, researchEventSink: sink))
+    {
+        _ = recovered.GetDiagnostics();
+    }
+
+    var recoveryEvents = sink.Snapshot();
+    ResearchTraceValidator.Validate(recoveryEvents);
+    var traceArtifact = session.Complete(recoveryEvents);
+    Console.WriteLine(
+        $"PASS crash-recovery family={family} seed={seed} step={injection.OperationStep} " +
+        $"fault={injection.FaultPoint} child-exit={process.ExitCode} recovery-events={recoveryEvents.Count} " +
+        $"crash-plan={session.CrashPlanArtifact!.Sha256} recovery-trace={traceArtifact.Sha256} output={outputDirectory}");
+    return 0;
+}
+
+static Process StartCrashChild(
+    string databaseDirectory,
+    ResearchWorkloadFamily family,
+    int seed,
+    int operationCount,
+    ResearchCrashInjection injection)
+{
+    var startInfo = new ProcessStartInfo
+    {
+        FileName = Environment.ProcessPath!,
+        UseShellExecute = false,
+        CreateNoWindow = true,
+    };
+    var processName = Path.GetFileNameWithoutExtension(Environment.ProcessPath ?? string.Empty);
+    if (processName.Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+    {
+        startInfo.ArgumentList.Add(typeof(CrashInjector).Assembly.Location);
+    }
+
+    startInfo.ArgumentList.Add("child");
+    startInfo.ArgumentList.Add(databaseDirectory);
+    startInfo.ArgumentList.Add(family.ToString());
+    startInfo.ArgumentList.Add(seed.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    startInfo.ArgumentList.Add(operationCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    startInfo.ArgumentList.Add(injection.OperationStep.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    startInfo.ArgumentList.Add(injection.FaultPoint);
+    return Process.Start(startInfo)
+        ?? throw new InvalidOperationException("Could not start research crash child process.");
+}
+
+static int RunCrashChild(string[] args)
+{
+    if (args.Length != 6
+        || !TryParseFamily(args[1], out var family)
+        || !int.TryParse(args[2], out var seed)
+        || !int.TryParse(args[3], out var operationCount)
+        || !int.TryParse(args[4], out var crashStep)
+        || !Enum.TryParse<TransactionFaultPoint>(args[5], ignoreCase: true, out var faultPoint))
+    {
+        Console.Error.WriteLine("Usage: child <database-directory> <family> <seed> <operation-count> <crash-step> <fault-point>");
+        return 2;
+    }
+
+    var operations = DeterministicResearchWorkloadGenerator.Generate(family, seed, operationCount);
+    var crashOperation = operations.SingleOrDefault(operation => operation.Step == crashStep);
+    if (crashOperation is null || crashOperation.Kind != ResearchWorkloadOperationKind.Crash)
+    {
+        Console.Error.WriteLine("Crash step does not identify a Crash workload operation.");
+        return 2;
+    }
+
+    var branches = new Dictionary<int, ChronicleBranch>();
+    var branchIds = new Dictionary<int, Guid>();
+    var snapshots = new List<IDisposable>();
+    var database = ChronicleDatabase.Open(args[0]);
+    try
+    {
+        foreach (var operation in operations.Where(operation => operation.Step < crashStep))
+        {
+            Execute(database, branches, snapshots, operation, branchIds);
+        }
+
+        foreach (var branch in branches.Values)
+        {
+            branch.Dispose();
+        }
+        branches.Clear();
+        database.Dispose();
+
+        database = ChronicleDatabase.Open(
+            args[0],
+            faultInjector: new CrashInjector(faultPoint));
+        foreach (var (slot, branchId) in branchIds)
+        {
+            branches.Add(slot, database.OpenBranch(branchId));
+        }
+
+        ExecuteCrashOperation(database, branches, crashOperation);
+        return 0;
+    }
+    finally
+    {
+        foreach (var snapshot in snapshots)
+        {
+            snapshot.Dispose();
+        }
+
+        foreach (var branch in branches.Values)
+        {
+            branch.Dispose();
+        }
+
+        database.Dispose();
+    }
+}
+
+static void ExecuteCrashOperation(
+    ChronicleDatabase database,
+    IReadOnlyDictionary<int, ChronicleBranch> branches,
+    ResearchWorkloadOperation operation)
+{
+    if (operation.HistorySlot == 0)
+    {
+        database.Put(Key(operation), Value(operation));
+    }
+    else
+    {
+        branches[operation.HistorySlot].Put(Key(operation), Value(operation));
+    }
+}
+
+file sealed class CrashInjector(TransactionFaultPoint target) : ITransactionFaultInjector
+{
+    public void Hit(TransactionFaultPoint point)
+    {
+        if (point == target)
+        {
+            Environment.FailFast($"Injected research crash at {point}.");
+        }
+    }
 }
