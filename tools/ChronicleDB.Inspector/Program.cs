@@ -68,7 +68,7 @@ else
     foreach (var snapshot in mainSnapshots)
     {
         Console.WriteLine(
-            $"  {snapshot.SnapshotId} name={snapshot.Name} sequence={snapshot.Sequence} created={snapshot.CreatedAt:O}");
+            $"  {snapshot.SnapshotId} name={EscapeText(snapshot.Name)} sequence={snapshot.Sequence} created={snapshot.CreatedAt:O}");
     }
 }
 
@@ -79,18 +79,18 @@ if (key is not null)
     foreach (var snapshot in mainSnapshots)
     {
         using var handle = database.OpenSnapshot(snapshot.SnapshotId);
-        PrintValue($"main:snapshot:{snapshot.Name}@{snapshot.Sequence}", handle.TryGet(key, out var value), value);
+        PrintValue($"main:snapshot:{EscapeText(snapshot.Name)}@{snapshot.Sequence}", handle.TryGet(key, out var value), value);
     }
 
     foreach (var branchInfo in database.ListBranches())
     {
         using var branch = database.OpenBranch(branchInfo.BranchId);
-        PrintValue($"branch:{branchInfo.Name}:current", branch.TryGet(key, out var branchValue), branchValue);
+        PrintValue($"branch:{EscapeText(branchInfo.Name)}:current", branch.TryGet(key, out var branchValue), branchValue);
         foreach (var snapshot in branch.ListSnapshots())
         {
             using var handle = branch.OpenSnapshot(snapshot.SnapshotId);
             PrintValue(
-                $"branch:{branchInfo.Name}:snapshot:{snapshot.Name}@{snapshot.Sequence}",
+                $"branch:{EscapeText(branchInfo.Name)}:snapshot:{EscapeText(snapshot.Name)}@{snapshot.Sequence}",
                 handle.TryGet(key, out var value),
                 value);
         }
@@ -105,13 +105,48 @@ static void PrintHistory(ChronicleDB.ChronicleHistoryDiagnostics history)
         ? "root"
         : $"parent={history.ParentHistoryId} base={history.ParentBaseSequence}";
     Console.WriteLine(
-        $"  {history.Kind} {history.Name} history={history.HistoryId} branch={history.BranchId?.ToString() ?? "-"} " +
+        $"  {history.Kind} {EscapeText(history.Name ?? "<unnamed>")} history={history.HistoryId} branch={history.BranchId?.ToString() ?? "-"} " +
         $"depth={history.Depth} {ancestry} current={history.CurrentSequence} floor={history.RetentionFloor} " +
         $"keys={history.LocalCurrentKeyCount} versions={history.VersionCount} chains={history.VersionChainCount} " +
         $"max-chain={history.MaximumVersionChainLength} snapshots={history.SnapshotCount} " +
         $"data={history.DataFileBytes} wal={history.WalFileBytes} active-tx={history.ActiveTransactionCount} " +
         $"open-branch={history.OpenBranchHandleCount} open-history={history.OpenHistoricalHandleCount} " +
         $"retention-handles={history.OpenRetentionBoundaryCount}");
+}
+
+static string EscapeText(string value)
+{
+    ArgumentNullException.ThrowIfNull(value);
+    var builder = new System.Text.StringBuilder(value.Length);
+    foreach (var character in value)
+    {
+        switch (character)
+        {
+            case '\r':
+                builder.Append("\\r");
+                break;
+            case '\n':
+                builder.Append("\\n");
+                break;
+            case '\t':
+                builder.Append("\\t");
+                break;
+            default:
+                var category = char.GetUnicodeCategory(character);
+                if (char.IsControl(character) || category == System.Globalization.UnicodeCategory.Format)
+                {
+                    builder.Append("\\u");
+                    builder.Append(((int)character).ToString("X4", System.Globalization.CultureInfo.InvariantCulture));
+                }
+                else
+                {
+                    builder.Append(character);
+                }
+                break;
+        }
+    }
+
+    return builder.ToString();
 }
 
 static void PrintValue(string label, bool found, byte[] value)

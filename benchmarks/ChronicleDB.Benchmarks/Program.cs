@@ -49,6 +49,8 @@ Run("snapshot create", () => BenchmarkSnapshotCreation(Math.Min(operations, 250)
 Run("branch create", () => BenchmarkBranchCreation(Math.Min(operations, 100)), results);
 Run("branch inherited read", () => BenchmarkBranchInheritedRead(operations), results);
 Run("branch local write", () => BenchmarkBranchLocalWrite(operations), results);
+Run("branch storage amplification", () => BenchmarkBranchStorageAmplification(Math.Max(operations, 64), 10), results);
+Run("snapshot retention amplification", () => BenchmarkSnapshotRetentionAmplification(Math.Max(operations, 64)), results);
 Run("B3 branch-scale-1", () => BenchmarkBranchScale(operations, 1, seed), results);
 Run("B3 branch-scale-10", () => BenchmarkBranchScale(operations, 10, seed), results);
 Run("B4 branch-scale-25", () => BenchmarkBranchScale(operations, 25, seed), results);
@@ -376,6 +378,115 @@ static BenchmarkSample BenchmarkBranchLocalWrite(int operations)
             ("branch_versions", history.VersionCount),
             ("branch_data_bytes", history.DataFileBytes),
             ("branch_wal_bytes", history.WalFileBytes)));
+    }
+    finally
+    {
+        DeleteDirectory(directory);
+    }
+}
+
+static BenchmarkSample BenchmarkBranchStorageAmplification(int operations, int branchCount)
+{
+    var directory = NewDirectory();
+    try
+    {
+        using var database = ChronicleDB.ChronicleDatabase.Open(directory);
+        var keyCount = Math.Clamp(operations, 64, 256);
+        for (var index = 0; index < keyCount; index++)
+        {
+            database.Put(BitConverter.GetBytes(index), BitConverter.GetBytes(index));
+        }
+
+        var branches = Enumerable.Range(0, branchCount)
+            .Select(index => database.CreateBranch($"amplification-{index}"))
+            .ToArray();
+        try
+        {
+            var before = database.GetDiagnostics();
+            var writesPerBranch = Math.Max(1, keyCount / 4);
+            var totalWrites = checked(writesPerBranch * branchCount);
+            var latencies = new long[totalWrites];
+            var sampleIndex = 0;
+            var overall = Stopwatch.GetTimestamp();
+            for (var branchIndex = 0; branchIndex < branches.Length; branchIndex++)
+            {
+                for (var write = 0; write < writesPerBranch; write++)
+                {
+                    var keyIndex = (branchIndex * writesPerBranch + write) % keyCount;
+                    var started = Stopwatch.GetTimestamp();
+                    branches[branchIndex].Put(
+                        BitConverter.GetBytes(keyIndex),
+                        BitConverter.GetBytes(branchIndex + keyIndex + 1));
+                    latencies[sampleIndex++] = Stopwatch.GetTimestamp() - started;
+                }
+            }
+
+            var after = database.GetDiagnostics();
+            var privateDelta = after.BranchLocalDataBytes - before.BranchLocalDataBytes;
+            return new BenchmarkSample(totalWrites, Stopwatch.GetTimestamp() - overall, latencies, Metrics(
+                ("branch_count", branchCount),
+                ("main_data_bytes", after.DataFileBytes),
+                ("branch_private_data_bytes_before", before.BranchLocalDataBytes),
+                ("branch_private_data_bytes_after", after.BranchLocalDataBytes),
+                ("branch_private_data_delta_bytes", privateDelta),
+                ("branch_wal_bytes", after.BranchLocalWalBytes),
+                ("logical_branch_writes", totalWrites),
+                ("private_bytes_per_logical_write", totalWrites == 0 ? 0 : privateDelta / (double)totalWrites)));
+        }
+        finally
+        {
+            foreach (var branch in branches)
+            {
+                branch.Dispose();
+            }
+        }
+    }
+    finally
+    {
+        DeleteDirectory(directory);
+    }
+}
+
+static BenchmarkSample BenchmarkSnapshotRetentionAmplification(int operations)
+{
+    var directory = NewDirectory();
+    try
+    {
+        using var database = ChronicleDB.ChronicleDatabase.Open(directory);
+        var firstPhase = Math.Max(1, operations / 4);
+        for (var index = 0; index < firstPhase; index++)
+        {
+            database.Put([1], BitConverter.GetBytes(index));
+        }
+        using var oldSnapshot = database.CreateSnapshot("retention-old");
+        for (var index = firstPhase; index < operations; index++)
+        {
+            database.Put([1], BitConverter.GetBytes(index));
+        }
+
+        var before = database.GetDiagnostics();
+        var started = Stopwatch.GetTimestamp();
+        var gc = database.RunGarbageCollection(new GarbageCollectionOptions
+        {
+            RetainRecentCommits = 2,
+            IncludeBranches = true,
+        });
+        var elapsed = Stopwatch.GetTimestamp() - started;
+        if (!oldSnapshot.TryGet([1], out var historical)
+            || BitConverter.ToInt32(historical) != firstPhase - 1)
+        {
+            throw new InvalidOperationException("GC changed an old retained snapshot during the retention benchmark.");
+        }
+
+        var after = database.GetDiagnostics();
+        return new BenchmarkSample(1, elapsed, [elapsed], Metrics(
+            ("snapshot_age_commits", operations - firstPhase),
+            ("versions_before_gc", before.VersionCount),
+            ("versions_after_gc", after.VersionCount),
+            ("versions_reclaimed", gc.VersionsReclaimed),
+            ("retaining_roots", after.RetainingRootCount),
+            ("history_checkpoint_bytes", after.HistoryCheckpointBytes),
+            ("data_file_bytes", after.DataFileBytes)));
     }
     finally
     {
