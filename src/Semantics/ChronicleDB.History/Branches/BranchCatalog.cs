@@ -207,6 +207,18 @@ public sealed class BranchCatalog
         }
     }
 
+    public BranchDefinition RemoveRequired(BranchId branchId)
+    {
+        lock (_gate)
+        {
+            var branch = GetRequiredLocked(branchId);
+            _byId.Remove(branchId);
+            _byHistory.Remove(branch.HistoryId);
+            _byName.Remove(branch.Name);
+            return branch;
+        }
+    }
+
     public IReadOnlyList<BranchDefinition> List()
     {
         lock (_gate)

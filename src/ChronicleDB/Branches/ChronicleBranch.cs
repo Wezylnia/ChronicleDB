@@ -84,6 +84,12 @@ public sealed class ChronicleBranch : IDisposable
         return _database.OpenBranchSnapshot(new BranchId(BranchId), snapshotId);
     }
 
+    public void DeleteSnapshot(Guid snapshotId)
+    {
+        ThrowIfDisposed();
+        _database.DeleteBranchSnapshot(new BranchId(BranchId), snapshotId);
+    }
+
     public ChronicleBranchHistoricalView OpenHistoricalView(ulong sequence)
     {
         ThrowIfDisposed();
@@ -102,7 +108,13 @@ public sealed class ChronicleBranch : IDisposable
         return _database.CreateBranchFromBranch(new BranchId(BranchId), sequence, name);
     }
 
-    public void Dispose() => Interlocked.Exchange(ref _disposed, 1);
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) == 0)
+        {
+            _database.BranchHandleClosed(new BranchId(BranchId));
+        }
+    }
 
     private void ThrowIfDisposed()
         => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);

@@ -13,9 +13,11 @@ using ChronicleDB.Storage.Files;
 using ChronicleDB.Storage.HistoryRoots;
 using ChronicleDB.Storage.Snapshots;
 using ChronicleDB.Transactions;
+using ChronicleDB.Transactions.Faults;
 using ChronicleDB.Transactions.Mvcc;
 using ChronicleDB.Transactions.State;
 using ChronicleDB.Transactions.Writes;
+using ChronicleDB.Wal.Records;
 
 namespace ChronicleDB;
 
@@ -66,11 +68,42 @@ public sealed partial class ChronicleDatabase
                     throw new SnapshotNotFoundException(snapshotId.ToString());
                 }
 
-                // Serialize source-root lookup with snapshot deletion. Once this call
-                // establishes its own BranchBase root, the source snapshot may be
-                // deleted independently without changing the branch base.
-                return CreateBranchCore(_mainHistoryId, snapshot.Sequence, parentDepth: 0, name);
+                // Serialize source-root lookup with snapshot deletion. A named snapshot
+                // may intentionally live below the generic time-travel floor after v0.9
+                // GC, so temporarily register its already-retained boundary as an active
+                // observer while the independent BranchBase root is durably established.
+                // Once that root exists, the source snapshot may be deleted independently.
+                var boundaryToken = _activeHistoryBoundaries.Register(_mainHistoryId, snapshot.Sequence);
+                try
+                {
+                    return CreateBranchCore(_mainHistoryId, snapshot.Sequence, parentDepth: 0, name);
+                }
+                finally
+                {
+                    _activeHistoryBoundaries.Release(boundaryToken);
+                }
             }
+        }
+        finally
+        {
+            ExitOperation();
+        }
+    }
+
+    internal ChronicleBranch CreateBranchFromPinnedMainBoundary(CommitSequence boundary, string name)
+    {
+        EnterOperation();
+        try
+        {
+            var current = GetCurrentCommitSequence();
+            if (boundary > current || !_activeHistoryBoundaries.Contains(_mainHistoryId, boundary))
+            {
+                throw new HistoricalStateUnavailableException(
+                    boundary.Value,
+                    GetHistoryRetentionFloor().Value,
+                    current.Value);
+            }
+            return CreateBranchCore(_mainHistoryId, boundary, parentDepth: 0, name);
         }
         finally
         {
@@ -96,14 +129,18 @@ public sealed partial class ChronicleDatabase
         EnterOperation();
         try
         {
-            var id = new BranchId(branchId);
-            if (!id.IsValid || !_branches.TryGet(id, out var definition) || definition is null)
+            lock (_historyGate)
             {
-                throw new BranchNotFoundException(branchId.ToString());
-            }
+                var id = new BranchId(branchId);
+                if (!id.IsValid || !_branches.TryGet(id, out var definition) || definition is null)
+                {
+                    throw new BranchNotFoundException(branchId.ToString());
+                }
 
-            GetBranchRuntime(id);
-            return new ChronicleBranch(this, ToBranchInfo(definition));
+                var runtime = GetBranchRuntime(id);
+                runtime.AcquireBranchHandle();
+                return new ChronicleBranch(this, ToBranchInfo(definition));
+            }
         }
         finally
         {
@@ -116,13 +153,17 @@ public sealed partial class ChronicleDatabase
         EnterOperation();
         try
         {
-            if (!_branches.TryGet(name, out var definition) || definition is null)
+            lock (_historyGate)
             {
-                throw new BranchNotFoundException($"named '{name}'");
-            }
+                if (!_branches.TryGet(name, out var definition) || definition is null)
+                {
+                    throw new BranchNotFoundException($"named '{name}'");
+                }
 
-            GetBranchRuntime(definition.BranchId);
-            return new ChronicleBranch(this, ToBranchInfo(definition));
+                var runtime = GetBranchRuntime(definition.BranchId);
+                runtime.AcquireBranchHandle();
+                return new ChronicleBranch(this, ToBranchInfo(definition));
+            }
         }
         finally
         {
@@ -138,6 +179,33 @@ public sealed partial class ChronicleDatabase
             var parent = _branches.GetRequired(parentBranchId);
             var boundary = new CommitSequence(sequence);
             ValidateBranchHistoricalBoundary(parent, boundary);
+            return CreateBranchCore(parent.HistoryId, boundary, parent.Depth, name);
+        }
+        finally
+        {
+            ExitOperation();
+        }
+    }
+
+    internal ChronicleBranch CreateBranchFromPinnedBranchBoundary(
+        BranchId parentBranchId,
+        CommitSequence boundary,
+        string name)
+    {
+        EnterOperation();
+        try
+        {
+            var parent = _branches.GetRequired(parentBranchId);
+            if (boundary > parent.LocalCurrentSequence
+                || !_activeHistoryBoundaries.Contains(parent.HistoryId, boundary))
+            {
+                var floor = GetBranchRuntime(parent.BranchId).HistoryFloor;
+                throw new BranchHistoricalStateUnavailableException(
+                    parent.BranchId.Value,
+                    boundary.Value,
+                    floor.Value,
+                    parent.LocalCurrentSequence.Value);
+            }
             return CreateBranchCore(parent.HistoryId, boundary, parent.Depth, name);
         }
         finally
@@ -164,14 +232,19 @@ public sealed partial class ChronicleDatabase
         EnterOperation();
         try
         {
-            var definition = _branches.GetRequired(branchId);
-            GetBranchRuntime(branchId);
-            var transaction = new Transaction(
-                startSequence: definition.LocalCurrentSequence,
-                historyId: definition.HistoryId);
-            transaction.Begin();
-            _counters.TransactionStarted();
-            return new ChronicleTransaction(new BranchTransactionHost(this, branchId), transaction);
+            lock (_historyGate)
+            {
+                var definition = _branches.GetRequired(branchId);
+                var runtime = GetBranchRuntime(branchId);
+                var transaction = new Transaction(
+                    startSequence: definition.LocalCurrentSequence,
+                    historyId: definition.HistoryId);
+                transaction.Begin();
+                var boundaryToken = _activeHistoryBoundaries.Register(definition.HistoryId, transaction.StartSequence);
+                runtime.TransactionStarted();
+                _counters.TransactionStarted();
+                return new ChronicleTransaction(new BranchTransactionHost(this, branchId, boundaryToken), transaction);
+            }
         }
         finally
         {
@@ -185,7 +258,26 @@ public sealed partial class ChronicleDatabase
         try
         {
             var definition = _branches.GetRequired(branchId);
-            return ResolveHistoryRead(definition.HistoryId, definition.LocalCurrentSequence, new BinaryKey(key), out value);
+            var binaryKey = new BinaryKey(key);
+            var runtime = GetBranchRuntime(branchId);
+            var resolution = runtime.Versions.ResolveLatest(binaryKey);
+            switch (resolution.Kind)
+            {
+                case CommittedVersionResolutionKind.Value:
+                    value = resolution.Value;
+                    return true;
+                case CommittedVersionResolutionKind.Tombstone:
+                    value = [];
+                    return false;
+                case CommittedVersionResolutionKind.NoVisibleVersion:
+                    return ResolveHistoryRead(
+                        definition.ParentHistoryId,
+                        definition.ParentBaseSequence,
+                        binaryKey,
+                        out value);
+                default:
+                    throw new InvalidOperationException("Unknown committed-version resolution result.");
+            }
         }
         finally
         {
@@ -212,22 +304,55 @@ public sealed partial class ChronicleDatabase
         }
     }
 
+    internal bool ReadBranchPinnedAt(
+        BranchId branchId,
+        ReadOnlySpan<byte> key,
+        CommitSequence visibilityBoundary,
+        out byte[] value)
+    {
+        EnterOperation();
+        try
+        {
+            var definition = _branches.GetRequired(branchId);
+            if (visibilityBoundary > definition.LocalCurrentSequence)
+            {
+                var floor = GetBranchRuntime(definition.BranchId).HistoryFloor;
+                throw new BranchHistoricalStateUnavailableException(
+                    definition.BranchId.Value,
+                    visibilityBoundary.Value,
+                    floor.Value,
+                    definition.LocalCurrentSequence.Value);
+            }
+            return ResolveHistoryRead(definition.HistoryId, visibilityBoundary, new BinaryKey(key), out value);
+        }
+        finally
+        {
+            ExitOperation();
+        }
+    }
+
     internal bool ReadBranchHistorical(
         BranchId branchId,
         ReadOnlySpan<byte> key,
         CommitSequence visibilityBoundary,
         out byte[] value)
-        => ReadBranchAt(branchId, key, visibilityBoundary, out value);
+        => ReadBranchPinnedAt(branchId, key, visibilityBoundary, out value);
 
     internal ChronicleBranchHistoricalView OpenBranchHistoricalView(BranchId branchId, ulong sequence)
     {
         EnterOperation();
         try
         {
-            var definition = _branches.GetRequired(branchId);
-            var boundary = new CommitSequence(sequence);
-            ValidateBranchHistoricalBoundary(definition, boundary);
-            return new ChronicleBranchHistoricalView(this, branchId, sequence);
+            lock (_historyGate)
+            {
+                var definition = _branches.GetRequired(branchId);
+                var boundary = new CommitSequence(sequence);
+                ValidateBranchHistoricalBoundary(definition, boundary);
+                var runtime = GetBranchRuntime(branchId);
+                var boundaryToken = _activeHistoryBoundaries.Register(definition.HistoryId, boundary);
+                runtime.HistoricalHandleOpened();
+                return new ChronicleBranchHistoricalView(this, branchId, sequence, boundaryToken);
+            }
         }
         finally
         {
@@ -267,7 +392,9 @@ public sealed partial class ChronicleDatabase
                     _historyRootStore.AppendCreate(ToHistoryRootStoreRecord(root));
                     _historyRoots.RegisterActive(root);
                     runtime.Snapshots.RegisterPersisted(snapshot, definition.LocalCurrentSequence);
-                    return new ChronicleBranchSnapshot(this, ToBranchSnapshotInfo(snapshot, definition));
+                    var boundaryToken = _activeHistoryBoundaries.Register(definition.HistoryId, snapshot.Sequence);
+                    runtime.HistoricalHandleOpened();
+                    return new ChronicleBranchSnapshot(this, ToBranchSnapshotInfo(snapshot, definition), boundaryToken);
                 }
                 catch
                 {
@@ -305,19 +432,193 @@ public sealed partial class ChronicleDatabase
         EnterOperation();
         try
         {
-            var definition = _branches.GetRequired(branchId);
-            var runtime = GetBranchRuntime(branchId);
-            var id = new SnapshotId(snapshotId);
-            if (!id.IsValid || !runtime.Snapshots.TryGet(id, out var snapshot) || snapshot is null)
+            lock (_historyGate)
             {
-                throw new SnapshotNotFoundException(snapshotId.ToString());
-            }
+                var definition = _branches.GetRequired(branchId);
+                var runtime = GetBranchRuntime(branchId);
+                var id = new SnapshotId(snapshotId);
+                if (!id.IsValid || !runtime.Snapshots.TryGet(id, out var snapshot) || snapshot is null)
+                {
+                    throw new SnapshotNotFoundException(snapshotId.ToString());
+                }
 
-            return new ChronicleBranchSnapshot(this, ToBranchSnapshotInfo(snapshot, definition));
+                var boundaryToken = _activeHistoryBoundaries.Register(definition.HistoryId, snapshot.Sequence);
+                runtime.HistoricalHandleOpened();
+                return new ChronicleBranchSnapshot(this, ToBranchSnapshotInfo(snapshot, definition), boundaryToken);
+            }
         }
         finally
         {
             ExitOperation();
+        }
+    }
+
+    internal void DeleteBranchSnapshot(BranchId branchId, Guid snapshotId)
+    {
+        EnterOperation();
+        try
+        {
+            lock (_historyGate)
+            {
+                var runtime = GetBranchRuntime(branchId);
+                var id = new SnapshotId(snapshotId);
+                if (!id.IsValid || !runtime.Snapshots.TryGet(id, out var snapshot) || snapshot is null)
+                {
+                    throw new SnapshotNotFoundException(snapshotId.ToString());
+                }
+
+                var rootId = new HistoryRootId(id.Value);
+                var deletionStarted = false;
+                var metadataAppended = false;
+                try
+                {
+                    _historyRoots.BeginDelete(rootId);
+                    deletionStarted = true;
+                    runtime.SnapshotStore.AppendDelete(id);
+                    metadataAppended = true;
+                    _historyRootStore.AppendDelete(rootId);
+                    runtime.Snapshots.RemoveRequired(id);
+                    _historyRoots.CompleteDelete(rootId);
+                }
+                catch
+                {
+                    if (deletionStarted && !metadataAppended)
+                    {
+                        _historyRoots.CancelDelete(rootId);
+                    }
+                    if (runtime.SnapshotStore.IsFaulted || _historyRootStore.IsFaulted || metadataAppended)
+                    {
+                        MarkFaulted();
+                    }
+                    throw;
+                }
+            }
+        }
+        finally
+        {
+            ExitOperation();
+        }
+    }
+
+    internal void BranchHandleClosed(BranchId branchId)
+    {
+        if (_branchRuntimes.TryGetValue(branchId, out var runtime))
+        {
+            runtime.ReleaseBranchHandle();
+        }
+    }
+
+    internal void BranchTransactionHandleCompleted(BranchId branchId, long boundaryToken)
+    {
+        _activeHistoryBoundaries.Release(boundaryToken);
+        if (_branchRuntimes.TryGetValue(branchId, out var runtime))
+        {
+            runtime.TransactionCompleted();
+        }
+        _counters.TransactionFinished();
+    }
+
+    internal void BranchHistoricalHandleClosed(BranchId branchId, long boundaryToken)
+    {
+        _activeHistoryBoundaries.Release(boundaryToken);
+        if (_branchRuntimes.TryGetValue(branchId, out var runtime))
+        {
+            runtime.HistoricalHandleClosed();
+        }
+    }
+
+    public void DeleteBranch(Guid branchId)
+    {
+        EnterOperation();
+        try
+        {
+            lock (_historyGate)
+            {
+                var id = new BranchId(branchId);
+                if (!id.IsValid || !_branches.TryGet(id, out var definition) || definition is null)
+                {
+                    throw new BranchNotFoundException(branchId.ToString());
+                }
+                DeleteBranchCore(definition);
+            }
+        }
+        finally
+        {
+            ExitOperation();
+        }
+    }
+
+    public void DeleteBranch(string name)
+    {
+        EnterOperation();
+        try
+        {
+            lock (_historyGate)
+            {
+                if (!_branches.TryGet(name, out var definition) || definition is null)
+                {
+                    throw new BranchNotFoundException($"named '{name}'");
+                }
+                DeleteBranchCore(definition);
+            }
+        }
+        finally
+        {
+            ExitOperation();
+        }
+    }
+
+    private void DeleteBranchCore(BranchDefinition definition)
+    {
+        var id = definition.BranchId;
+        var runtime = GetBranchRuntime(id);
+        EnsureBranchDeletionAllowed(definition, runtime);
+        var intentPublished = false;
+        try
+        {
+            _branchStore.AppendDeleteIntent(id);
+            intentPublished = true;
+            _historyRootStore.AppendDelete(definition.BaseRootId);
+            _historyRoots.BeginDelete(definition.BaseRootId);
+            _historyRoots.CompleteDelete(definition.BaseRootId);
+            _branchStore.AppendDeleteComplete(id);
+
+            _branches.RemoveRequired(id);
+            _branchRuntimes.TryRemove(id, out _);
+            _historyRoots.UnregisterHistory(definition.HistoryId);
+            runtime.Dispose();
+        }
+        catch
+        {
+            if (intentPublished || _branchStore.IsFaulted || _historyRootStore.IsFaulted)
+            {
+                MarkFaulted();
+            }
+            throw;
+        }
+    }
+
+    private void EnsureBranchDeletionAllowed(BranchDefinition definition, BranchRuntime runtime)
+    {
+        if (runtime.OpenBranchHandles != 0)
+        {
+            throw new BranchInUseException(definition.BranchId.Value, "one or more branch handles are open");
+        }
+        if (runtime.ActiveTransactions != 0)
+        {
+            throw new BranchInUseException(definition.BranchId.Value, "transactions are still active");
+        }
+        if (runtime.OpenHistoricalHandles != 0)
+        {
+            throw new BranchInUseException(definition.BranchId.Value, "historical or snapshot handles are still open");
+        }
+        if (runtime.Snapshots.Count != 0)
+        {
+            throw new BranchInUseException(definition.BranchId.Value, "persistent snapshots still depend on the branch history");
+        }
+        if (_branches.List().Any(branch => branch.ParentHistoryId == definition.HistoryId))
+        {
+            throw new BranchInUseException(definition.BranchId.Value, "one or more child branches depend on it");
         }
     }
 
@@ -344,6 +645,8 @@ public sealed partial class ChronicleDatabase
                 CommitSequence commitSequence;
                 List<StorageMutation> logicalMutations;
                 List<StorageMutation> physicalMutations;
+                List<(WalRecordType Type, byte[] Payload)> walPayloads;
+                byte[] commitPayload;
                 long startingDataLength;
                 try
                 {
@@ -361,7 +664,6 @@ public sealed partial class ChronicleDatabase
                         write.Key,
                         write.IsDelete,
                         write.Value.Span)).ToList();
-                    // Reuse the authoritative user key/value limits without changing Main.
                     _store.ValidateBatch(logicalMutations);
                     runtime.Versions.ValidatePublicationCapacity(writes);
                     physicalMutations = EncodeBranchVersionMutations(definition, transaction, commitSequence, writes);
@@ -373,6 +675,22 @@ public sealed partial class ChronicleDatabase
                         transaction.TransactionId,
                         writes.Count,
                         startingDataLength);
+
+                    walPayloads = new List<(WalRecordType Type, byte[] Payload)>(writes.Count);
+                    foreach (var write in writes)
+                    {
+                        var inner = write.IsDelete
+                            ? WalMutationCodec.EncodeDelete(write.Key)
+                            : WalMutationCodec.EncodePut(write.Key, write.Value.Span);
+                        var wrapped = BranchRuntime.WrapPayload(definition, inner);
+                        ValidateWalPayload(wrapped);
+                        walPayloads.Add((write.IsDelete ? WalRecordType.Delete : WalRecordType.Put, wrapped));
+                    }
+                    commitPayload = BranchRuntime.WrapPayload(
+                        definition,
+                        WalCommitCodec.Encode(commitSequence, startingDataLength));
+                    ValidateWalPayload(commitPayload);
+                    ValidateWalCapacity(runtime.Wal, walPayloads.Count + 2);
                 }
                 catch (TransactionConflictException)
                 {
@@ -393,9 +711,29 @@ public sealed partial class ChronicleDatabase
                     throw;
                 }
 
-                var metadataPublished = false;
+                var walTouched = false;
                 try
                 {
+                    _faultInjector?.Hit(TransactionFaultPoint.BeforeWalAppend);
+                    walTouched = true;
+                    runtime.Wal.Append(
+                        WalRecordType.Begin,
+                        transaction.TransactionId,
+                        BranchRuntime.WrapPayload(definition, []));
+                    foreach (var (type, payload) in walPayloads)
+                    {
+                        runtime.Wal.Append(type, transaction.TransactionId, payload);
+                    }
+
+                    transaction.MarkCommitting();
+                    runtime.Wal.Append(WalRecordType.Commit, transaction.TransactionId, commitPayload);
+                    _faultInjector?.Hit(TransactionFaultPoint.AfterWalAppend);
+                    _faultInjector?.Hit(TransactionFaultPoint.BeforeWalFlush);
+                    runtime.Wal.Flush();
+                    transaction.MarkDurableCommitted(commitSequence);
+                    _faultInjector?.Hit(TransactionFaultPoint.AfterWalFlush);
+
+                    _faultInjector?.Hit(TransactionFaultPoint.BeforePhysicalPublication);
                     runtime.Store.ApplyBatch(physicalMutations);
                     var dataLengthAfterCommit = runtime.Store.DataLength;
                     _branchStore.AppendAdvance(
@@ -404,13 +742,8 @@ public sealed partial class ChronicleDatabase
                         transaction.TransactionId,
                         writes.Count,
                         dataLengthAfterCommit);
-                    metadataPublished = true;
+                    _faultInjector?.Hit(TransactionFaultPoint.AfterPhysicalPublication);
 
-                    // Branch metadata publication is the v0.7 durable decision point.
-                    // The independent write-ahead log required by v0.8 is intentionally
-                    // not implemented or claimed here.
-                    transaction.MarkCommitting();
-                    transaction.MarkDurableCommitted(commitSequence);
                     runtime.Versions.PublishCommitted(transaction.TransactionId, commitSequence, writes);
                     var updated = _branches.PublishCommit(
                         branchId,
@@ -419,43 +752,26 @@ public sealed partial class ChronicleDatabase
                     runtime.PublishDefinition(updated);
                     transaction.MarkCommitted();
                     _counters.CommitSucceeded(Stopwatch.GetTimestamp() - started);
+                    _faultInjector?.Hit(TransactionFaultPoint.BeforeAcknowledgement);
                 }
                 catch
                 {
-                    // Once the metadata commit descriptor may have reached stable storage,
-                    // recovery is the only authority that may decide the transaction outcome.
-                    // Never report such a transaction as aborted merely because in-memory
-                    // publication failed after the durable decision point.
-                    if (metadataPublished || _branchStore.IsFaulted)
+                    if (walTouched)
                     {
                         MarkFaulted();
                         if (transaction.State is TransactionState.Preparing or TransactionState.Committing)
                         {
+                            runtime.Wal.MarkFaultedAfterUncertainWrite();
                             transaction.MarkIndeterminate();
                         }
-                    }
-                    else if (runtime.Store.IsFaulted)
-                    {
-                        // The local append may be uncertain, but no branch commit metadata was
-                        // published. The logical transaction is therefore definitely uncommitted;
-                        // the database still requires reopen before the append tail can be trusted.
-                        MarkFaulted();
-                        if (transaction.State == TransactionState.Preparing)
+                        else if (transaction.State == TransactionState.DurableCommitted)
                         {
-                            transaction.Abort();
-                            _counters.AbortRecorded();
+                            // The durable decision is already final. In-memory/physical
+                            // publication must be reconstructed from branch WAL on reopen.
                         }
                     }
                     else if (transaction.State == TransactionState.Preparing)
                     {
-                        try
-                        {
-                            runtime.Store.RecoverAppendOnlyPrefix(startingDataLength);
-                        }
-                        catch
-                        {
-                            MarkFaulted();
-                        }
                         transaction.Abort();
                         _counters.AbortRecorded();
                     }
@@ -558,7 +874,9 @@ public sealed partial class ChronicleDatabase
                 var runtime = BranchRuntime.Open(
                     _databaseDirectory,
                     definition,
+                    activeRecord,
                     _branchStore.ListCommits(branchId),
+                    _branchStore,
                     _storageOptions);
 
                 _branches.RegisterActive(definition);
@@ -570,7 +888,8 @@ public sealed partial class ChronicleDatabase
                     throw new InvalidOperationException("Branch runtime identity was published twice.");
                 }
 
-                return new ChronicleBranch(this, ToBranchInfo(definition));
+                runtime.AcquireBranchHandle();
+                return new ChronicleBranch(this, ToBranchInfo(runtime.Definition));
             }
             catch
             {
@@ -639,6 +958,18 @@ public sealed partial class ChronicleDatabase
     {
         if (historyId == _mainHistoryId)
         {
+            if (_activeHistoryBoundaries.Contains(historyId, boundary))
+            {
+                if (boundary > GetCurrentCommitSequence())
+                {
+                    throw new HistoricalStateUnavailableException(
+                        boundary.Value,
+                        GetHistoryRetentionFloor().Value,
+                        GetCurrentCommitSequence().Value);
+                }
+                return;
+            }
+
             ValidateHistoricalBoundary(boundary);
             return;
         }
@@ -647,16 +978,31 @@ public sealed partial class ChronicleDatabase
         {
             throw new BranchNotFoundException($"for history {historyId.Value}");
         }
+        if (_activeHistoryBoundaries.Contains(historyId, boundary))
+        {
+            if (boundary > definition.LocalCurrentSequence)
+            {
+                var floor = GetBranchRuntime(definition.BranchId).HistoryFloor;
+                throw new BranchHistoricalStateUnavailableException(
+                    definition.BranchId.Value,
+                    boundary.Value,
+                    floor.Value,
+                    definition.LocalCurrentSequence.Value);
+            }
+            return;
+        }
         ValidateBranchHistoricalBoundary(definition, boundary);
     }
 
-    private static void ValidateBranchHistoricalBoundary(BranchDefinition definition, CommitSequence boundary)
+    private void ValidateBranchHistoricalBoundary(BranchDefinition definition, CommitSequence boundary)
     {
-        if (boundary > definition.LocalCurrentSequence)
+        var floor = GetBranchRuntime(definition.BranchId).HistoryFloor;
+        if (boundary < floor || boundary > definition.LocalCurrentSequence)
         {
             throw new BranchHistoricalStateUnavailableException(
                 definition.BranchId.Value,
                 boundary.Value,
+                floor.Value,
                 definition.LocalCurrentSequence.Value);
         }
     }
@@ -710,7 +1056,7 @@ public sealed partial class ChronicleDatabase
         return result;
     }
 
-    private static BinaryKey CreateBranchPhysicalVersionKey(
+    internal static BinaryKey CreateBranchPhysicalVersionKey(
         CommitSequence sequence,
         TransactionId transactionId,
         int mutationIndex)
@@ -758,7 +1104,10 @@ public sealed partial class ChronicleDatabase
 
     internal static BranchDefinition ToBranchDefinition(BranchStoreRecord record, Guid databaseId)
     {
-        if (record.Type is not (BranchStoreRecordType.Activate or BranchStoreRecordType.AdvanceSequence))
+        if (record.Type is not (BranchStoreRecordType.Activate
+            or BranchStoreRecordType.AdvanceSequence
+            or BranchStoreRecordType.PublishPhysicalBoundary
+            or BranchStoreRecordType.RestoreActive))
         {
             throw new StorageFormatException("Only active branch metadata can become a branch definition.");
         }
@@ -790,6 +1139,40 @@ public sealed partial class ChronicleDatabase
             root.ParentHistoryId,
             root.Boundary,
             root.CreatedUnixMilliseconds);
+
+    internal static void ReconcileIncompleteBranchDeletions(
+        PersistentBranchMetadataStore branchStore,
+        PersistentHistoryRootStore rootStore)
+    {
+        var active = branchStore.ListActive();
+        var retainingRoots = rootStore.ListRetaining();
+
+        foreach (var deleting in branchStore.ListDeleting())
+        {
+            if (active.Any(branch => branch.ParentHistoryId == deleting.HistoryId))
+            {
+                throw new StorageCorruptionException(
+                    $"Branch {deleting.BranchId.Value} has a durable delete intent while an active child still depends on it.");
+            }
+
+            if (retainingRoots.Any(root =>
+                    root.RootKind == (byte)HistoryRootKind.PersistentSnapshot
+                    && root.HistoryId == deleting.HistoryId))
+            {
+                throw new StorageCorruptionException(
+                    $"Branch {deleting.BranchId.Value} has a durable delete intent while a persistent snapshot still depends on it.");
+            }
+
+            if (rootStore.TryGet(deleting.BaseRootId, out var baseRoot)
+                && baseRoot is not null
+                && baseRoot.RootState != (byte)HistoryRootState.Deleted)
+            {
+                rootStore.AppendDelete(deleting.BaseRootId);
+            }
+
+            branchStore.AppendDeleteComplete(deleting.BranchId);
+        }
+    }
 
     internal static void ReconcileIncompleteBranchCreations(
         string databaseDirectory,
@@ -965,10 +1348,16 @@ public sealed partial class ChronicleDatabase
         {
             foreach (var branch in branches)
             {
+                if (!branchStore.TryGet(branch.BranchId, out var publishedState) || publishedState is null)
+                {
+                    throw new StorageCorruptionException("Active branch has no persistent lifecycle state.");
+                }
                 var runtime = BranchRuntime.Open(
                     databaseDirectory,
                     branch,
+                    publishedState,
                     branchStore.ListCommits(branch.BranchId),
+                    branchStore,
                     options);
                 ReconcileBranchSnapshotRoots(rootStore, branch, runtime.SnapshotStore.ListActive(), databaseId);
                 if (!runtimes.TryAdd(branch.BranchId, runtime))

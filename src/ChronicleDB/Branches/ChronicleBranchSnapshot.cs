@@ -6,11 +6,16 @@ namespace ChronicleDB;
 public sealed class ChronicleBranchSnapshot : IDisposable
 {
     private readonly ChronicleDatabase _database;
+    private readonly long _boundaryToken;
     private int _disposed;
 
-    internal ChronicleBranchSnapshot(ChronicleDatabase database, ChronicleBranchSnapshotInfo info)
+    internal ChronicleBranchSnapshot(
+        ChronicleDatabase database,
+        ChronicleBranchSnapshotInfo info,
+        long boundaryToken)
     {
         _database = database;
+        _boundaryToken = boundaryToken;
         Info = info;
     }
 
@@ -29,10 +34,19 @@ public sealed class ChronicleBranchSnapshot : IDisposable
     public ChronicleBranch CreateBranch(string name)
     {
         ThrowIfDisposed();
-        return _database.CreateBranchFromBranch(new BranchId(Info.BranchId), Info.Sequence, name);
+        return _database.CreateBranchFromPinnedBranchBoundary(
+            new BranchId(Info.BranchId),
+            new CommitSequence(Info.Sequence),
+            name);
     }
 
-    public void Dispose() => Interlocked.Exchange(ref _disposed, 1);
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) == 0)
+        {
+            _database.BranchHistoricalHandleClosed(new BranchId(Info.BranchId), _boundaryToken);
+        }
+    }
 
     private void ThrowIfDisposed()
         => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
