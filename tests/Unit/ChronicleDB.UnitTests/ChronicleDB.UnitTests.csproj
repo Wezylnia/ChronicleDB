@@ -22,6 +22,7 @@
     <ProjectReference Include="..\..\..\src\Foundation\ChronicleDB.Core\ChronicleDB.Core.csproj" />
     <ProjectReference Include="..\..\..\src\Semantics\ChronicleDB.Mvcc\ChronicleDB.Mvcc.csproj" />
     <ProjectReference Include="..\..\..\src\Semantics\ChronicleDB.History\ChronicleDB.History.csproj" />
+    <ProjectReference Include="..\..\..\src\Observability\ChronicleDB.Diagnostics\ChronicleDB.Diagnostics.csproj" />
     <ProjectReference Include="..\..\..\src\Indexing\ChronicleDB.Indexing.Baseline\ChronicleDB.Indexing.Baseline.csproj" />
     <ProjectReference Include="..\..\..\src\Engine\ChronicleDB.Transactions\ChronicleDB.Transactions.csproj" />
   </ItemGroup>
