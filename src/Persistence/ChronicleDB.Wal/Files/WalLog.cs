@@ -166,6 +166,31 @@ public sealed class WalLog : IDisposable
         }
     }
 
+    /// <summary>
+    /// Starts a new WAL generation after a durable external recovery checkpoint has
+    /// made every earlier record unnecessary. Callers must publish and fsync that
+    /// checkpoint before invoking this method.
+    /// </summary>
+    public void ResetToHeader()
+    {
+        lock (_gate)
+        {
+            ThrowIfUsable();
+            try
+            {
+                _stream.SetLength(WalFileHeaderCodec.Size);
+                _stream.Position = _stream.Length;
+                _stream.Flush(flushToDisk: true);
+                _nextLsn = 1;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                _faulted = true;
+                throw new WalException("WAL reset failed and the log must be reopened before reuse.", exception);
+            }
+        }
+    }
+
     internal void MarkFaultedAfterUncertainWrite()
     {
         lock (_gate)
