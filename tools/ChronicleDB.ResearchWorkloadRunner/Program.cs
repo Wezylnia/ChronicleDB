@@ -9,14 +9,16 @@ if (args.Length < 3
     || operationCount < 0)
 {
     Console.Error.WriteLine(
-        "Usage: ChronicleDB.ResearchWorkloadRunner <S0|S1|S2|S3> <seed> <operation-count> [output-directory]");
+        "Usage: ChronicleDB.ResearchWorkloadRunner <S0|S1|S2|S3|S4|S6> <seed> <operation-count> [output-directory]");
     return 2;
 }
 
 if (family is not (ResearchWorkloadFamily.S0Control
     or ResearchWorkloadFamily.S1OldThinBranch
     or ResearchWorkloadFamily.S2OverlappingRoots
-    or ResearchWorkloadFamily.S3DeepInheritance))
+    or ResearchWorkloadFamily.S3DeepInheritance
+    or ResearchWorkloadFamily.S4WideIndependentHistories
+    or ResearchWorkloadFamily.S6ErasureConflict))
 {
     Console.Error.WriteLine("This baseline runner currently supports only S0-S3; S4-S7 need family-specific execution semantics.");
     return 2;
