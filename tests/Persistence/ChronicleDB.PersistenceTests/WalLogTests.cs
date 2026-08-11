@@ -147,6 +147,7 @@ public sealed class WalLogTests
         using var directory = new StorageTestDirectory();
 
         Assert.Throws<WalFormatException>(() => WalLog.Open(directory.Path, new WalOptions { FileName = "..\\escape.wal" }));
+        Assert.Throws<WalFormatException>(() => WalLog.Open(directory.Path, new WalOptions { FileName = "../escape.wal" }));
         Assert.Throws<WalFormatException>(() => WalLog.Open(directory.Path, new WalOptions { FileName = "wal.bin" }));
     }
 

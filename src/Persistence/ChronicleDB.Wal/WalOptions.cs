@@ -15,8 +15,8 @@ public sealed record WalOptions
         ArgumentException.ThrowIfNullOrWhiteSpace(FileName);
         if (Path.IsPathRooted(FileName)
             || FileName is "." or ".."
-            || FileName.Contains(Path.DirectorySeparatorChar)
-            || FileName.Contains(Path.AltDirectorySeparatorChar)
+            || FileName.Contains('/')
+            || FileName.Contains('\\')
             || FileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
         {
             throw new WalFormatException("WAL file name must be a single relative file name.");

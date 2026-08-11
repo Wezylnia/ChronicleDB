@@ -5,6 +5,7 @@
 ChronicleDB is an embedded storage engine. Security is therefore split between engine-level input hardening and the host application's operating-system boundary.
 
 The engine treats persistent files as untrusted binary input when parsing them. It validates framing, lengths, counts, checksums, identities, sequence continuity, lifecycle transitions, and cross-history relationships before durable data is admitted into logical state.
+File-name configuration owned by persistence components is constrained to single relative names and rejects both Unix and Windows directory separators independent of the host operating system.
 
 ## What ChronicleDB protects against
 
