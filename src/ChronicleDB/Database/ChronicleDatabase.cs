@@ -4,6 +4,7 @@ using ChronicleDB.Core.Identifiers;
 using ChronicleDB.Core.Keys;
 using ChronicleDB.Core.Sequences;
 using ChronicleDB.Diagnostics;
+using ChronicleDB.Diagnostics.Research;
 using ChronicleDB.History.Branches;
 using ChronicleDB.History.Roots;
 using ChronicleDB.History.Snapshots;
@@ -47,6 +48,8 @@ public sealed partial class ChronicleDatabase : IDisposable
     private readonly ActiveHistoryBoundaryRegistry _activeHistoryBoundaries = new();
     private readonly ITransactionFaultInjector? _faultInjector;
     private readonly EngineCounters _counters;
+    private readonly ResearchEventPublisher _researchEvents;
+    private readonly Guid _researchOperationId;
     private readonly Guid _databaseId;
     private readonly HistoryId _mainHistoryId;
     private CommitSequence _currentCommitSequence;
@@ -67,7 +70,9 @@ public sealed partial class ChronicleDatabase : IDisposable
         CommittedVersionStore versions,
         CommitSequence currentCommitSequence,
         ITransactionFaultInjector? faultInjector,
-        EngineCounters counters)
+        EngineCounters counters,
+        ResearchEventPublisher researchEvents,
+        Guid researchOperationId)
     {
         _store = store;
         _wal = wal;
@@ -84,6 +89,8 @@ public sealed partial class ChronicleDatabase : IDisposable
         _currentCommitSequence = currentCommitSequence;
         _faultInjector = faultInjector;
         _counters = counters;
+        _researchEvents = researchEvents;
+        _researchOperationId = researchOperationId;
         _databaseId = store.DatabaseId;
         _mainHistoryId = new HistoryId(_databaseId);
     }
@@ -152,7 +159,8 @@ public sealed partial class ChronicleDatabase : IDisposable
     public static ChronicleDatabase Open(
         string directory,
         StorageOptions? options = null,
-        ITransactionFaultInjector? faultInjector = null)
+        ITransactionFaultInjector? faultInjector = null,
+        IResearchEventSink? researchEventSink = null)
     {
         if (options is { MaxValueSize: > WalMutationCodec.MaxValueSize })
         {
@@ -162,6 +170,8 @@ public sealed partial class ChronicleDatabase : IDisposable
 
         var validatedOptions = options ?? new StorageOptions();
         var fullDirectory = Path.GetFullPath(directory);
+        var researchEvents = new ResearchEventPublisher(researchEventSink);
+        var researchOperationId = Guid.NewGuid();
         var store = PersistentKeyValueStore.Open(fullDirectory, validatedOptions, allowIncompleteFinalPage: true);
         WalLog? wal = null;
         PersistentSnapshotStore? snapshotStore = null;
@@ -180,6 +190,24 @@ public sealed partial class ChronicleDatabase : IDisposable
             wal = WalLog.Open(fullDirectory, store.DatabaseId, new WalOptions { FlushOnAppend = false });
 
             var mainHistoryId = new HistoryId(store.DatabaseId);
+            researchEvents.TryPublish(
+                logicalEventId => new ResearchEvent(
+                    logicalEventId,
+                    logicalEventId,
+                    ResearchEventKind.RecoveryStarted,
+                    mainHistoryId,
+                    parentHistoryId: null,
+                    researchOperationId,
+                    transactionId: null,
+                    ["catalog", "main"],
+                    ResearchDurabilityPhase.None,
+                    authorityGeneration: 0,
+                    dependencyEventIds: [],
+                    logicalKeyId: null,
+                    versionId: null,
+                    offset: null,
+                    bytes: null),
+                out var recoveryStartedEventId);
             HistoryCheckpoint? mainCheckpoint = null;
             var checkpointPath = Path.Combine(fullDirectory, PersistentHistoryCheckpoint.FileName);
             if (store.HasFormatFlag(DatabaseHeader.HistoryCheckpointInitializedFlag))
@@ -375,7 +403,7 @@ public sealed partial class ChronicleDatabase : IDisposable
 
             var counters = new EngineCounters();
             counters.RecoveryReplayed(recovery.CommittedTransactionCount);
-            return new ChronicleDatabase(
+            var database = new ChronicleDatabase(
                 store,
                 wal,
                 snapshotStore,
@@ -390,7 +418,23 @@ public sealed partial class ChronicleDatabase : IDisposable
                 versions,
                 currentCommitSequence,
                 faultInjector,
-                counters);
+                counters,
+                researchEvents,
+                researchOperationId);
+
+            var historyReadyEventId = database.PublishResearchEvent(
+                ResearchEventKind.HistoryReady,
+                ResearchDurabilityPhase.AuthorityPublished,
+                ["catalog", "history-roots", "main"],
+                recoveryStartedEventId > 0 ? [recoveryStartedEventId] : []);
+            database.PublishResearchEvent(
+                ResearchEventKind.RecoveryCompleted,
+                ResearchDurabilityPhase.AuthorityPublished,
+                ["catalog", "main"],
+                historyReadyEventId > 0
+                    ? [historyReadyEventId]
+                    : recoveryStartedEventId > 0 ? [recoveryStartedEventId] : []);
+            return database;
         }
         catch
         {
@@ -899,6 +943,34 @@ public sealed partial class ChronicleDatabase : IDisposable
         {
             ExitOperation();
         }
+    }
+
+    private long PublishResearchEvent(
+        ResearchEventKind eventKind,
+        ResearchDurabilityPhase durabilityPhase,
+        IReadOnlyList<string> resources,
+        IReadOnlyList<long> dependencies)
+    {
+        return _researchEvents.TryPublish(
+                logicalEventId => new ResearchEvent(
+                    logicalEventId,
+                    logicalEventId,
+                    eventKind,
+                    _mainHistoryId,
+                    parentHistoryId: null,
+                    _researchOperationId,
+                    transactionId: null,
+                    resources,
+                    durabilityPhase,
+                    authorityGeneration: 0,
+                    dependencies,
+                    logicalKeyId: null,
+                    versionId: null,
+                    offset: null,
+                    bytes: null),
+                out var logicalEventId)
+            ? logicalEventId
+            : 0;
     }
 
     public void Dispose()
