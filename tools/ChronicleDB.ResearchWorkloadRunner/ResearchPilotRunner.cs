@@ -24,6 +24,7 @@ internal static class ResearchPilotRunner
         {
             "P1" => Task.FromResult(RunRetentionPilot(args[1..])),
             "P1C" => Task.FromResult(RunRetentionControlPilot(args[1..])),
+            "P1B" => Task.FromResult(RunRetentionBaselinePilot(args[1..])),
             "P2" => Task.FromResult(RunCrashPorPilot(args[1..])),
             "P2R" => Task.FromResult(RunRealTraceCrashPorPilot(args[1..])),
             "P3" => Task.FromResult(RunAncestryPilot(args[1..])),
@@ -915,6 +916,102 @@ internal static class ResearchPilotRunner
         }
     }
 
+    private static int RunRetentionBaselinePilot(string[] args)
+    {
+        if (args.Length < 4
+            || !int.TryParse(args[0], out var seed)
+            || !int.TryParse(args[1], out var baseKeyCount)
+            || !int.TryParse(args[2], out var valueBytes)
+            || !int.TryParse(args[3], out var churnRounds)
+            || baseKeyCount <= 0
+            || valueBytes <= 0
+            || churnRounds <= 0)
+        {
+            Console.Error.WriteLine(
+                "Usage: pilot P1B <seed> <base-key-count> <value-bytes> <churn-rounds> [output-directory]");
+            return 2;
+        }
+
+        var outputDirectory = args.Length >= 5
+            ? Path.GetFullPath(args[4])
+            : Path.Combine(
+                Environment.CurrentDirectory,
+                "artifacts",
+                "research-pilots",
+                $"p1b-{seed}-{churnRounds}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outputDirectory);
+        var databaseDirectory = Path.Combine(outputDirectory, "database");
+
+        try
+        {
+            var random = new Random(seed);
+            using var database = ChronicleDatabase.Open(databaseDirectory);
+            for (var keyId = 0; keyId < baseKeyCount; keyId++)
+            {
+                database.Put(Key(keyId), Payload(valueBytes, random, salt: keyId));
+            }
+
+            using var branch = database.CreateBranch("p1-baseline-old-branch");
+            branch.Put(Key(baseKeyCount + 1), Payload(Math.Min(valueBytes, 4096), random, salt: 0xB5));
+
+            for (var round = 1; round <= churnRounds; round++)
+            {
+                for (var keyId = 0; keyId < baseKeyCount; keyId++)
+                {
+                    database.Put(
+                        Key(keyId),
+                        Payload(valueBytes, random, salt: checked(keyId + (round * 100_000))));
+                }
+            }
+
+            // Capture before exact GC removes intermediate versions. Model the same
+            // RetainRecentCommits=0 target by raising each generic floor to the current
+            // sequence in the observational snapshot. This lets the coarse baseline
+            // reveal versions it would retain but root-exact GC would reclaim.
+            var rawSnapshot = database.CaptureResearchRetentionSnapshot();
+            var evaluationSnapshot = rawSnapshot with
+            {
+                Histories = rawSnapshot.Histories
+                    .Select(history => history with { RetentionFloor = history.CurrentSequence })
+                    .ToArray(),
+            };
+            var branchRoot = database.GetHistoryTopologyDiagnostics().RetentionRoots.Single(root =>
+                root.Kind.Equals("BranchBase", StringComparison.Ordinal)
+                && root.OwnerHistoryId == branch.HistoryId);
+            var exact = new RetentionInspector(evaluationSnapshot).WhatIfDrop(branchRoot.RootId);
+            var coarse = CoarseOldestRootRetentionAnalyzer.Analyze(evaluationSnapshot);
+            var amplification = exact.MarginalPayloadBytes <= 0
+                ? 0d
+                : (double)coarse.RootInducedPayloadBytes / exact.MarginalPayloadBytes;
+
+            var result = new RetentionBaselinePilotResult(
+                Pilot: "P1B",
+                Seed: seed,
+                BaseKeyCount: baseKeyCount,
+                ValueBytes: valueBytes,
+                ChurnRounds: churnRounds,
+                ExactRootMarginalPayloadBytes: exact.MarginalPayloadBytes,
+                ExactRootMarginalVersionCount: exact.ProtectedVersionCount - exact.ProtectedVersionCountAfterDrop,
+                CoarseRootInducedPayloadBytes: coarse.RootInducedPayloadBytes,
+                CoarseRootInducedVersionCount: coarse.RootInducedVersionCount,
+                CoarseToExactRetentionAmplification: amplification,
+                CoarseDominatesOrMatchesExact: coarse.RootInducedPayloadBytes >= exact.MarginalPayloadBytes);
+            File.WriteAllText(
+                Path.Combine(outputDirectory, "p1b-result.json"),
+                JsonSerializer.Serialize(result, JsonOptions));
+            Console.WriteLine(
+                $"P1B {(result.CoarseDominatesOrMatchesExact ? "PASS" : "FAIL")} rounds={churnRounds} " +
+                $"exact={result.ExactRootMarginalPayloadBytes} coarse={result.CoarseRootInducedPayloadBytes} " +
+                $"amp={result.CoarseToExactRetentionAmplification:F2} output={outputDirectory}");
+            return result.CoarseDominatesOrMatchesExact ? 0 : 1;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"P1B FAIL: {exception}");
+            return 1;
+        }
+    }
+
     private static (Guid RootA, Guid RootB) FindBranchBaseRoots(
         ChronicleDatabase database,
         Guid historyA,
@@ -1140,6 +1237,7 @@ internal static class ResearchPilotRunner
         Console.Error.WriteLine("Research pilots:");
         Console.Error.WriteLine("  pilot P1 <seed> <base-key-count> <value-bytes> <private-bytes> [output-directory]");
         Console.Error.WriteLine("  pilot P1C <seed> <base-key-count> <value-bytes> [output-directory]");
+        Console.Error.WriteLine("  pilot P1B <seed> <base-key-count> <value-bytes> <churn-rounds> [output-directory]");
         Console.Error.WriteLine("  pilot P2 <history-count:2..4> [output-directory]");
         Console.Error.WriteLine("  pilot P2R <history-count:2..3> [siblings|chain] [output-directory]");
         Console.Error.WriteLine("  pilot P3 <seed> <reads-per-depth>=10+ [output-directory]");
@@ -1182,6 +1280,19 @@ internal static class ResearchPilotRunner
         long ChurnDropBothMarginalBytes,
         bool NonAdditiveOverlapObserved,
         bool NoChurnNullControlPassed);
+
+    private sealed record RetentionBaselinePilotResult(
+        string Pilot,
+        int Seed,
+        int BaseKeyCount,
+        int ValueBytes,
+        int ChurnRounds,
+        long ExactRootMarginalPayloadBytes,
+        int ExactRootMarginalVersionCount,
+        long CoarseRootInducedPayloadBytes,
+        int CoarseRootInducedVersionCount,
+        double CoarseToExactRetentionAmplification,
+        bool CoarseDominatesOrMatchesExact);
 
     private sealed record RetentionPilotResult(
         string Pilot,
