@@ -27,7 +27,13 @@ public sealed class PersistenceLifecycleTests
         Assert.True(store.HasFormatFlag(DatabaseHeader.SnapshotStoreInitializedFlag));
         Assert.True(store.HasFormatFlag(DatabaseHeader.HistoryRootStoreInitializedFlag));
         Assert.True(store.HasFormatFlag(DatabaseHeader.BranchStoreInitializedFlag));
-        Assert.Equal(DatabaseHeader.SupportedFormatFlags, store.Header.FormatFlags);
+        Assert.Equal(
+            DatabaseHeader.WalInitializedFlag
+            | DatabaseHeader.SnapshotStoreInitializedFlag
+            | DatabaseHeader.HistoryRootStoreInitializedFlag
+            | DatabaseHeader.BranchStoreInitializedFlag,
+            store.Header.FormatFlags);
+        Assert.False(store.HasFormatFlag(DatabaseHeader.HistoryCheckpointInitializedFlag));
         Assert.True(File.Exists(Path.Combine(directory.Path, PersistentHistoryRootStore.FileName)));
         Assert.True(File.Exists(Path.Combine(directory.Path, PersistentBranchMetadataStore.FileName)));
     }
@@ -114,7 +120,12 @@ public sealed class PersistenceLifecycleTests
         Assert.True(File.Exists(Path.Combine(directory.Path, PersistentHistoryRootStore.FileName)));
         Assert.True(File.Exists(Path.Combine(directory.Path, PersistentBranchMetadataStore.FileName)));
         using var store = PersistentKeyValueStore.Open(directory.Path);
-        Assert.Equal(DatabaseHeader.SupportedFormatFlags, store.Header.FormatFlags);
+        Assert.Equal(
+            DatabaseHeader.WalInitializedFlag
+            | DatabaseHeader.SnapshotStoreInitializedFlag
+            | DatabaseHeader.HistoryRootStoreInitializedFlag
+            | DatabaseHeader.BranchStoreInitializedFlag,
+            store.Header.FormatFlags);
     }
     [Fact]
     public void OutOfBandPhysicalKeyAfterWalInitializationIsRejectedAsCorruption()
@@ -171,6 +182,30 @@ public sealed class PersistenceLifecycleTests
         Assert.Equal(new byte[] { 10 }, legacyValue);
         Assert.False(upgraded.TryGet([2], out _));
         Assert.Equal(upgraded.CurrentCommitSequence.Value, upgraded.HistoricalRetentionFloor);
+    }
+
+    [Fact]
+    public void MissingInitializedHistoryCheckpointIsRejectedAfterGarbageCollection()
+    {
+        using var directory = new StorageTestDirectory();
+        using (var database = ChronicleDB.ChronicleDatabase.Open(directory.Path))
+        {
+            for (byte value = 1; value < 8; value++)
+            {
+                database.Put([1], [value]);
+            }
+            _ = database.RunGarbageCollection(new ChronicleDB.Maintenance.GarbageCollectionOptions
+            {
+                RetainRecentCommits = 1,
+            });
+        }
+
+        File.Delete(Path.Combine(
+            directory.Path,
+            ChronicleDB.Storage.History.PersistentHistoryCheckpoint.FileName));
+
+        Assert.Throws<StorageCorruptionException>(
+            () => ChronicleDB.ChronicleDatabase.Open(directory.Path).Dispose());
     }
 
 }

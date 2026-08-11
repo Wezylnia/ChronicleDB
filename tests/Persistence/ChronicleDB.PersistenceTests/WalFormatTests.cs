@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using ChronicleDB.Core.Identifiers;
+using ChronicleDB.Wal.Branches;
 using ChronicleDB.Wal.Errors;
 using ChronicleDB.Wal.Formats;
 using ChronicleDB.Wal.Records;
@@ -139,4 +140,22 @@ public sealed class WalFormatTests
         => BinaryPrimitives.WriteUInt32LittleEndian(
             encoded.AsSpan(44, 4),
             Crc32C.ComputeWithZeroedRange(encoded, 44, 4));
+
+    [Fact]
+    public void BranchWalEnvelopeRoundTripBindsEveryPayloadToBranchAndHistory()
+    {
+        var branchId = new BranchId(Guid.NewGuid());
+        var historyId = new HistoryId(Guid.NewGuid());
+        var encoded = BranchWalEnvelopeCodec.Encode(branchId, historyId, [1, 2, 3]);
+
+        var decoded = BranchWalEnvelopeCodec.Decode(encoded, branchId, historyId);
+
+        Assert.Equal(branchId, decoded.BranchId);
+        Assert.Equal(historyId, decoded.HistoryId);
+        Assert.Equal(new byte[] { 1, 2, 3 }, decoded.Payload.ToArray());
+        Assert.Throws<WalCorruptionException>(() =>
+            BranchWalEnvelopeCodec.Decode(encoded, new BranchId(Guid.NewGuid()), historyId));
+        Assert.Throws<WalCorruptionException>(() =>
+            BranchWalEnvelopeCodec.Decode(encoded, branchId, new HistoryId(Guid.NewGuid())));
+    }
 }

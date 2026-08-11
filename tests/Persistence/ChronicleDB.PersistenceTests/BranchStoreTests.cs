@@ -192,6 +192,47 @@ public sealed class BranchStoreTests
     }
 
     [Fact]
+    public void JournalCompactionDropsLegacyCommitCacheAndPreservesActiveState()
+    {
+        using var directory = new StorageTestDirectory();
+        var databaseId = Guid.NewGuid();
+        var main = new HistoryId(databaseId);
+        var branchId = BranchId.New();
+        var historyId = HistoryId.New();
+        var rootId = HistoryRootId.New();
+        var storageId = Guid.NewGuid();
+
+        using (var store = PersistentBranchMetadataStore.Open(directory.Path, databaseId, main))
+        {
+            store.AppendCreateIntent(
+                branchId,
+                historyId,
+                main,
+                rootId,
+                CommitSequence.Initial,
+                100,
+                1,
+                "compact-cache");
+            store.AppendActivate(branchId, storageId);
+            store.AppendAdvance(branchId, new CommitSequence(1), TransactionId.New(), 1, 16 * 1024);
+            Assert.Single(store.ListCommits(branchId));
+
+            store.CompactJournal();
+
+            Assert.Empty(store.ListCommits(branchId));
+            var active = Assert.Single(store.ListActive());
+            Assert.Equal(new CommitSequence(1), active.LocalCommitSequence);
+            Assert.Equal(16 * 1024, active.DataLengthAfterCommit);
+        }
+
+        using var reopened = PersistentBranchMetadataStore.Open(directory.Path, databaseId, main);
+        Assert.Empty(reopened.ListCommits(branchId));
+        var recovered = Assert.Single(reopened.ListActive());
+        Assert.Equal(new CommitSequence(1), recovered.LocalCommitSequence);
+        Assert.Equal(storageId, recovered.LocalStorageId);
+    }
+
+    [Fact]
     public void BranchVersionEnvelopeRoundTripsValueAndTombstone()
     {
         var valueRecord = new BranchVersionRecord(

@@ -64,6 +64,26 @@ public sealed class HistoryRootRegistryTests
     }
 
     [Fact]
+    public void RetiredHistoryCanBeUnregisteredOnlyAfterItsDependenciesAreReleased()
+    {
+        var main = HistoryId.New();
+        var branch = HistoryId.New();
+        var registry = new HistoryRootRegistry(main, CommitSequence.Initial);
+        registry.RegisterHistory(branch, CommitSequence.Initial);
+        var snapshot = CreateRoot(branch, CommitSequence.Initial);
+        registry.RegisterActive(snapshot);
+
+        Assert.Throws<InvalidOperationException>(() => registry.UnregisterHistory(branch));
+        registry.BeginDelete(snapshot.RootId);
+        registry.CompleteDelete(snapshot.RootId);
+
+        registry.UnregisterHistory(branch);
+
+        Assert.False(registry.IsHistoryRegistered(branch));
+        Assert.Throws<InvalidOperationException>(() => registry.UnregisterHistory(main));
+    }
+
+    [Fact]
     public void RecoveredCreatingRootIsRetainedConservatively()
     {
         var history = HistoryId.New();

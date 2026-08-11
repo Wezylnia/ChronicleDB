@@ -36,12 +36,30 @@ public sealed class SnapshotCatalogTests
     }
 
     [Fact]
-    public void RecoveredSnapshotOutsideRetainedRangeIsRejected()
+    public void RecoveredSnapshotBelowGenericFloorRemainsAvailableAsAnExplicitRoot()
     {
         var definition = new SnapshotDefinition(
             SnapshotId.New(),
             "too-old",
             new CommitSequence(4),
+            1);
+
+        var catalog = new SnapshotCatalog(
+            new CommitSequence(5),
+            new CommitSequence(10),
+            [definition]);
+
+        Assert.True(catalog.TryGet(definition.SnapshotId, out var recovered));
+        Assert.Equal(definition, recovered);
+    }
+
+    [Fact]
+    public void RecoveredSnapshotBeyondCurrentHistoryIsRejected()
+    {
+        var definition = new SnapshotDefinition(
+            SnapshotId.New(),
+            "future",
+            new CommitSequence(11),
             1);
 
         Assert.Throws<ArgumentOutOfRangeException>(
