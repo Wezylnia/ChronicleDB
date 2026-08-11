@@ -979,6 +979,23 @@ public sealed partial class ChronicleDatabase : IDisposable
         ResearchDurabilityPhase durabilityPhase,
         CommitSequence commitSequence,
         IReadOnlyList<long> dependencies)
+        => PublishResearchTransactionEvent(
+            _mainHistoryId,
+            ["main-data", "main-wal"],
+            transaction,
+            eventKind,
+            durabilityPhase,
+            commitSequence,
+            dependencies);
+
+    private long PublishResearchTransactionEvent(
+        HistoryId historyId,
+        IReadOnlyList<string> resources,
+        Transaction transaction,
+        ResearchEventKind eventKind,
+        ResearchDurabilityPhase durabilityPhase,
+        CommitSequence commitSequence,
+        IReadOnlyList<long> dependencies)
     {
         if (_researchEvents.Mode == ResearchTelemetryMode.Disabled)
         {
@@ -990,11 +1007,11 @@ public sealed partial class ChronicleDatabase : IDisposable
                     logicalEventId,
                     logicalEventId,
                     eventKind,
-                    _mainHistoryId,
+                    historyId,
                     parentHistoryId: null,
                     transaction.TransactionId.Value,
                     transaction.TransactionId.Value,
-                    ["main-data", "main-wal"],
+                    resources,
                     durabilityPhase,
                     (ulong)commitSequence.Value,
                     dependencies,

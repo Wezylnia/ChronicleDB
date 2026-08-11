@@ -4,6 +4,7 @@ using System.Diagnostics;
 using ChronicleDB.Core.Identifiers;
 using ChronicleDB.Core.Keys;
 using ChronicleDB.Core.Sequences;
+using ChronicleDB.Diagnostics.Research;
 using ChronicleDB.History.Branches;
 using ChronicleDB.History.Roots;
 using ChronicleDB.History.Snapshots;
@@ -714,6 +715,14 @@ public sealed partial class ChronicleDatabase
                 var walTouched = false;
                 try
                 {
+                    var operationStartedEventId = PublishResearchTransactionEvent(
+                        definition.HistoryId,
+                        [$"branch-{definition.BranchId.Value:N}-data", $"branch-{definition.BranchId.Value:N}-wal"],
+                        transaction,
+                        ResearchEventKind.OperationStarted,
+                        ResearchDurabilityPhase.Prepared,
+                        commitSequence,
+                        []);
                     _faultInjector?.Hit(TransactionFaultPoint.BeforeWalAppend);
                     walTouched = true;
                     runtime.Wal.Append(
@@ -731,6 +740,14 @@ public sealed partial class ChronicleDatabase
                     _faultInjector?.Hit(TransactionFaultPoint.BeforeWalFlush);
                     runtime.Wal.Flush();
                     transaction.MarkDurableCommitted(commitSequence);
+                    var barrierEventId = PublishResearchTransactionEvent(
+                        definition.HistoryId,
+                        [$"branch-{definition.BranchId.Value:N}-data", $"branch-{definition.BranchId.Value:N}-wal"],
+                        transaction,
+                        ResearchEventKind.DurabilityBarrier,
+                        ResearchDurabilityPhase.StableStorageBarrier,
+                        commitSequence,
+                        operationStartedEventId > 0 ? [operationStartedEventId] : []);
                     _faultInjector?.Hit(TransactionFaultPoint.AfterWalFlush);
 
                     _faultInjector?.Hit(TransactionFaultPoint.BeforePhysicalPublication);
@@ -751,8 +768,24 @@ public sealed partial class ChronicleDatabase
                         commitSequence);
                     runtime.PublishDefinition(updated);
                     transaction.MarkCommitted();
+                    var authorityEventId = PublishResearchTransactionEvent(
+                        definition.HistoryId,
+                        [$"branch-{definition.BranchId.Value:N}-data", $"branch-{definition.BranchId.Value:N}-wal", "branch-catalog"],
+                        transaction,
+                        ResearchEventKind.AuthorityPublished,
+                        ResearchDurabilityPhase.AuthorityPublished,
+                        commitSequence,
+                        barrierEventId > 0 ? [barrierEventId] : []);
                     _counters.CommitSucceeded(Stopwatch.GetTimestamp() - started);
                     _faultInjector?.Hit(TransactionFaultPoint.BeforeAcknowledgement);
+                    PublishResearchTransactionEvent(
+                        definition.HistoryId,
+                        [$"branch-{definition.BranchId.Value:N}-data", $"branch-{definition.BranchId.Value:N}-wal", "branch-catalog"],
+                        transaction,
+                        ResearchEventKind.OperationCompleted,
+                        ResearchDurabilityPhase.AuthorityPublished,
+                        commitSequence,
+                        authorityEventId > 0 ? [authorityEventId] : []);
                 }
                 catch
                 {

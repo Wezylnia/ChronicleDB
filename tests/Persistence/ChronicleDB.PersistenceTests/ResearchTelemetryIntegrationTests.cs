@@ -76,6 +76,35 @@ public sealed class ResearchTelemetryIntegrationTests
         Assert.All(commitEvents, researchEvent => Assert.Equal(1UL, researchEvent.AuthorityGeneration));
     }
 
+    [Fact]
+    public void BranchCommitTraceUsesBranchHistoryAndResources()
+    {
+        using var directory = new StorageTestDirectory();
+        var sink = new TraceResearchEventSink();
+
+        using (var database = ChronicleDatabase.Open(directory.Path, researchEventSink: sink))
+        using (var branch = database.CreateBranch("trace-branch"))
+        {
+            branch.Put([0x01], [0x02]);
+        }
+
+        var branchEvents = sink
+            .Snapshot()
+            .Where(researchEvent => researchEvent.EventKind == ResearchEventKind.OperationStarted
+                && researchEvent.ResourceSet.Any(resource => resource.StartsWith("branch-", StringComparison.Ordinal)))
+            .ToArray();
+
+        Assert.Single(branchEvents);
+        var branchHistoryId = branchEvents[0].HistoryId;
+        Assert.NotEqual(Guid.Empty, branchHistoryId.Value);
+        Assert.Contains(
+            branchEvents[0].ResourceSet,
+            resource => resource.EndsWith("-data", StringComparison.Ordinal));
+        Assert.Contains(
+            branchEvents[0].ResourceSet,
+            resource => resource.EndsWith("-wal", StringComparison.Ordinal));
+    }
+
     private sealed class ThrowingResearchEventSink : IResearchEventSink
     {
         public ResearchTelemetryMode Mode => ResearchTelemetryMode.Trace;
