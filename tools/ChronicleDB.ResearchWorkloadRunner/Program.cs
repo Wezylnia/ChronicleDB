@@ -9,6 +9,11 @@ if (args.Length > 0 && args[0].Equals("crash", StringComparison.OrdinalIgnoreCas
     return await RunCrashParentAsync(args[1..]);
 }
 
+if (args.Length > 0 && args[0].Equals("campaign", StringComparison.OrdinalIgnoreCase))
+{
+    return await RunCrashCampaignAsync(args[1..]);
+}
+
 if (args.Length > 0 && args[0].Equals("child", StringComparison.OrdinalIgnoreCase))
 {
     return RunCrashChild(args[1..]);
@@ -323,6 +328,17 @@ static async Task<int> RunCrashParentAsync(string[] args)
     }
 
     var injection = crashPlan.Injections[0];
+    if (args.Length >= 5)
+    {
+        if (!int.TryParse(args[4], out var selectedStep))
+        {
+            Console.Error.WriteLine("The optional crash step must be an integer.");
+            return 2;
+        }
+
+        injection = crashPlan.Injections.SingleOrDefault(item => item.OperationStep == selectedStep)
+            ?? throw new InvalidOperationException($"Crash plan has no injection at operation step {selectedStep}.");
+    }
     var session = new ResearchExperimentSession(
         new ResearchArtifactWriter(artifactDirectory),
         CreateManifest(family, seed, profile),
@@ -356,6 +372,66 @@ static async Task<int> RunCrashParentAsync(string[] args)
         $"fault={injection.FaultPoint} child-exit={process.ExitCode} recovery-events={recoveryEvents.Count} " +
         $"crash-plan={session.CrashPlanArtifact!.Sha256} recovery-trace={traceArtifact.Sha256} output={outputDirectory}");
     return 0;
+}
+
+static async Task<int> RunCrashCampaignAsync(string[] args)
+{
+    if (args.Length < 3
+        || !TryParseFamily(args[0], out var family)
+        || !int.TryParse(args[1], out var seed)
+        || !int.TryParse(args[2], out var operationCount)
+        || operationCount < 0)
+    {
+        Console.Error.WriteLine("Usage: campaign <S5|S7> <seed> <operation-count> [output-directory]");
+        return 2;
+    }
+
+    if (family is not (ResearchWorkloadFamily.S5RecoveryHeavy or ResearchWorkloadFamily.S7MixedAdversarialSoak))
+    {
+        Console.Error.WriteLine("Crash campaigns are reserved for S5 and S7 workload families.");
+        return 2;
+    }
+
+    var outputDirectory = args.Length >= 4
+        ? Path.GetFullPath(args[3])
+        : Path.Combine(
+            Environment.CurrentDirectory,
+            "artifacts",
+            "research-crash-campaign",
+            $"{family}-{seed}-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(outputDirectory);
+
+    var operations = DeterministicResearchWorkloadGenerator.Generate(family, seed, operationCount);
+    var crashPlan = ResearchCrashPlanFactory.Create(operations, seed);
+    if (crashPlan.Injections.Count == 0)
+    {
+        Console.Error.WriteLine("Crash campaign requires at least one Crash operation in the generated workload.");
+        return 2;
+    }
+
+    var failures = 0;
+    foreach (var injection in crashPlan.Injections)
+    {
+        var runDirectory = Path.Combine(
+            outputDirectory,
+            $"step-{injection.OperationStep:D6}-{injection.FaultPoint}");
+        var result = await RunCrashParentAsync(
+        [
+            family.ToString(),
+            seed.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            operationCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            runDirectory,
+            injection.OperationStep.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        ]);
+        if (result != 0)
+        {
+            failures++;
+        }
+    }
+
+    Console.WriteLine(
+        $"CAMPAIGN family={family} seed={seed} injections={crashPlan.Injections.Count} failures={failures} output={outputDirectory}");
+    return failures == 0 ? 0 : 1;
 }
 
 static Process StartCrashChild(

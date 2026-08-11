@@ -23,6 +23,13 @@ dotnet run --project tools/ChronicleDB.ResearchWorkloadRunner \
   --configuration Release -- crash S5 7 200 C:\\research\\runs\\s5-crash-7
 ```
 
+Run every crash injection in a generated plan:
+
+```text
+dotnet run --project tools/ChronicleDB.ResearchWorkloadRunner \
+  --configuration Release -- campaign S5 7 200 C:\\research\\runs\\s5-campaign-7
+```
+
 Crash mode starts a child process, applies the first deterministic crash-plan
 injection, waits for the fail-fast exit, and reopens the database in the parent. The
 resulting `trace.json` is explicitly a post-crash recovery trace: it proves recovery
