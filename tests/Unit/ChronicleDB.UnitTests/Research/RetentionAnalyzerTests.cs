@@ -79,4 +79,57 @@ public sealed class RetentionAnalyzerTests
         Assert.Equal(0, result.MarginalPayloadBytes);
         Assert.Equal(8, result.MarginalSerializedBytes);
     }
+    [Fact]
+    public void ObserverExactInspectorComputesNonAdditiveRootDebt()
+    {
+        var historyId = Guid.Parse("10000000-0000-0000-0000-000000000001");
+        var rootA = Guid.Parse("20000000-0000-0000-0000-000000000001");
+        var rootB = Guid.Parse("20000000-0000-0000-0000-000000000002");
+        var versions = new[]
+        {
+            new ResearchCommittedVersionSnapshot("v1", Guid.NewGuid(), 1, "key", 1, 100, false),
+            new ResearchCommittedVersionSnapshot("v2", Guid.NewGuid(), 10, "key", 1, 100, false),
+        };
+        var snapshot = new ResearchRetentionSnapshot(
+            [new ResearchHistoryRetentionSnapshot(historyId, 10, 10, versions)],
+            [
+                new ResearchPersistentRetentionRootSnapshot(rootA, "Snapshot", historyId, historyId, 1),
+                new ResearchPersistentRetentionRootSnapshot(rootB, "Snapshot", historyId, historyId, 1),
+            ],
+            []);
+
+        var inspector = new RetentionInspector(snapshot);
+
+        var dropA = inspector.WhatIfDrop(rootA);
+        var dropBoth = inspector.WhatIfDrop([rootA, rootB]);
+
+        Assert.Equal(0, dropA.MarginalPayloadBytes);
+        Assert.Equal(100, dropBoth.MarginalPayloadBytes);
+        Assert.Equal(2, dropBoth.ProtectedVersionCount);
+        Assert.Equal(1, dropBoth.ProtectedVersionCountAfterDrop);
+    }
+
+    [Fact]
+    public void ActiveBoundaryPreventsFalseCounterfactualReclaim()
+    {
+        var historyId = Guid.Parse("10000000-0000-0000-0000-000000000001");
+        var rootId = Guid.Parse("20000000-0000-0000-0000-000000000001");
+        var versions = new[]
+        {
+            new ResearchCommittedVersionSnapshot("v1", Guid.NewGuid(), 1, "key", 1, 100, false),
+            new ResearchCommittedVersionSnapshot("v2", Guid.NewGuid(), 10, "key", 1, 100, false),
+        };
+        var snapshot = new ResearchRetentionSnapshot(
+            [new ResearchHistoryRetentionSnapshot(historyId, 10, 10, versions)],
+            [new ResearchPersistentRetentionRootSnapshot(rootId, "Snapshot", historyId, historyId, 1)],
+            [new ResearchActiveRetentionBoundarySnapshot(historyId, 1)]);
+
+        var inspector = new RetentionInspector(snapshot);
+
+        var result = inspector.WhatIfDrop(rootId);
+
+        Assert.Equal(0, result.MarginalPayloadBytes);
+        Assert.Equal(2, result.ProtectedVersionCountAfterDrop);
+    }
+
 }

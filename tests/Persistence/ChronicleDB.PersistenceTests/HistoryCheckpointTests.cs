@@ -272,4 +272,33 @@ public sealed class HistoryCheckpointTests
     }
 
 
+    [Fact]
+    public void InspectReadsPrimaryWithoutPromotingBackupOrDeletingIt()
+    {
+        using var directory = new StorageTestDirectory();
+        var databaseId = Guid.NewGuid();
+        var historyId = new HistoryId(Guid.NewGuid());
+        var checkpoint = new HistoryCheckpoint(
+            databaseId,
+            historyId,
+            new CommitSequence(1),
+            CommitSequence.Initial,
+            [new HistoryCheckpointVersion(
+                new TransactionId(Guid.NewGuid()),
+                new CommitSequence(1),
+                new BinaryKey([1]),
+                false,
+                new byte[] { 1 })]);
+        _ = PersistentHistoryCheckpoint.Publish(directory.Path, checkpoint);
+        var path = Path.Combine(directory.Path, PersistentHistoryCheckpoint.FileName);
+        var backup = path + ".previous";
+        File.Copy(path, backup);
+
+        var inspected = PersistentHistoryCheckpoint.Inspect(directory.Path, databaseId, historyId);
+
+        Assert.NotNull(inspected);
+        Assert.True(File.Exists(path));
+        Assert.True(File.Exists(backup));
+    }
+
 }

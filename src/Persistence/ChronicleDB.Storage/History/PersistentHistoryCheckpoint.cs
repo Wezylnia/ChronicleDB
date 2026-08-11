@@ -25,6 +25,26 @@ public static class PersistentHistoryCheckpoint
     private static ReadOnlySpan<byte> HeaderMagic => "CHHIST01"u8;
     private static ReadOnlySpan<byte> RecordMagic => "HVR1"u8;
 
+    /// <summary>
+    /// Reads the currently published primary checkpoint without performing recovery
+    /// repair, backup promotion, or cleanup. Intended for diagnostics/research tools
+    /// that must not mutate recovery authority while observing it.
+    /// </summary>
+    public static HistoryCheckpoint? Inspect(
+        string directory,
+        Guid expectedDatabaseId,
+        HistoryId expectedHistoryId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directory);
+        if (expectedDatabaseId == Guid.Empty || !expectedHistoryId.IsValid)
+        {
+            throw new ArgumentException("History checkpoint inspection requires valid database and history identities.");
+        }
+
+        var path = Path.Combine(Path.GetFullPath(directory), FileName);
+        return File.Exists(path) ? Read(path, expectedDatabaseId, expectedHistoryId) : null;
+    }
+
     public static HistoryCheckpoint? TryLoad(
         string directory,
         Guid expectedDatabaseId,
