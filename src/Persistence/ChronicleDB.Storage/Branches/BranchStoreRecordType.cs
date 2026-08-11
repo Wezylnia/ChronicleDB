@@ -6,4 +6,8 @@ public enum BranchStoreRecordType : byte
     Activate = 2,
     AdvanceSequence = 3,
     AbandonCreate = 4,
+    DeleteIntent = 5,
+    DeleteComplete = 6,
+    PublishPhysicalBoundary = 7,
+    RestoreActive = 8,
 }

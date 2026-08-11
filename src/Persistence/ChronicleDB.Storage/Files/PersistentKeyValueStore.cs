@@ -18,7 +18,7 @@ public sealed class PersistentKeyValueStore : IDisposable
     private readonly object _gate = new();
     private readonly StorageOptions _options;
     private readonly FileStream _metadata;
-    private readonly FileStream _data;
+    private FileStream _data;
     private readonly bool _allowIncompleteFinalPage;
     private readonly Guid _databaseId;
     private readonly Dictionary<BinaryKey, StoredRecord> _records = [];
@@ -343,37 +343,73 @@ public sealed class PersistentKeyValueStore : IDisposable
 
         var metadataPath = Path.Combine(fullDirectory, MetadataFileName);
         var dataPath = Path.Combine(fullDirectory, DataFileName);
-        FileStream? metadata = null;
-        FileStream? data = null;
+        var backupPath = dataPath + ".previous";
+        RecoverInterruptedCompaction(dataPath);
 
-        try
+        // If copy-and-publish compaction crashed after the replacement became visible
+        // but before retiring .previous, validate the replacement before discarding
+        // the known-good prior generation. A corrupt or torn replacement falls back
+        // exactly once to the previous physical representation.
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            EnsureMetadataCreatedAtomically(metadataPath, dataPath, validatedOptions);
-            metadata = OpenExclusive(metadataPath);
-            data = OpenExclusive(dataPath);
-            var header = OpenOrCreateHeader(metadata, data, validatedOptions, allowIncompleteFinalPage);
-            var store = new PersistentKeyValueStore(
-                validatedOptions,
-                metadata,
-                data,
-                header,
-                allowIncompleteFinalPage);
-            if (data.Length % validatedOptions.PageSize != 0)
+            FileStream? metadata = null;
+            FileStream? data = null;
+            PersistentKeyValueStore? store = null;
+            try
             {
-                store._untrustedTailOffset = data.Length - (data.Length % validatedOptions.PageSize);
-                store._untrustedTailIsFinalAppend = true;
-                store._untrustedTailIsPartialPage = true;
-            }
+                EnsureMetadataCreatedAtomically(metadataPath, dataPath, validatedOptions);
+                metadata = OpenExclusive(metadataPath);
+                data = OpenExclusive(dataPath);
+                var header = OpenOrCreateHeader(metadata, data, validatedOptions, allowIncompleteFinalPage);
+                store = new PersistentKeyValueStore(
+                    validatedOptions,
+                    metadata,
+                    data,
+                    header,
+                    allowIncompleteFinalPage);
+                metadata = null;
+                data = null;
 
-            store.ScanDataFile();
-            return store;
+                if (store._data.Length % validatedOptions.PageSize != 0)
+                {
+                    store._untrustedTailOffset = store._data.Length - (store._data.Length % validatedOptions.PageSize);
+                    store._untrustedTailIsFinalAppend = true;
+                    store._untrustedTailIsPartialPage = true;
+                }
+
+                store.ScanDataFile();
+                if (File.Exists(backupPath) && store._untrustedTailOffset.HasValue)
+                {
+                    store.Dispose();
+                    store = null;
+                    RestoreCompactionBackup(dataPath, backupPath);
+                    continue;
+                }
+
+                TryDeleteCompactionBackup(backupPath);
+                return store;
+            }
+            catch (StorageCorruptionException) when (attempt == 0 && File.Exists(backupPath))
+            {
+                store?.Dispose();
+                data?.Dispose();
+                metadata?.Dispose();
+                store = null;
+                data = null;
+                metadata = null;
+                RestoreCompactionBackup(dataPath, backupPath);
+            }
+            catch
+            {
+                store?.Dispose();
+                data?.Dispose();
+                metadata?.Dispose();
+                throw;
+            }
         }
-        catch
-        {
-            data?.Dispose();
-            metadata?.Dispose();
-            throw;
-        }
+
+        throw new StorageCorruptionException(
+            "Neither the published compacted data nor its previous generation could be opened safely.");
     }
 
     internal IReadOnlyList<StorageMutation> SnapshotCurrentState()
@@ -622,6 +658,208 @@ public sealed class PersistentKeyValueStore : IDisposable
         }
     }
 
+    /// <summary>
+    /// Computes the exact data-file length produced by <see cref="RewriteState"/> for
+    /// the supplied surviving logical state under this store's page/overflow layout.
+    /// This is used by v0.9 compaction planning so an already compacted file is not
+    /// repeatedly rewritten because of a byte-level heuristic.
+    /// </summary>
+    public long EstimateRewriteDataLength(IReadOnlyList<StorageMutation> desiredState)
+    {
+        ArgumentNullException.ThrowIfNull(desiredState);
+        lock (_gate)
+        {
+            ThrowIfUsable();
+            var normalized = NormalizeRewriteState(desiredState);
+            long pageCount = 0;
+            var overflowChunkCapacity = checked(_options.PageSize - PageHeader.Size - OverflowCodec.HeaderSize);
+            foreach (var mutation in normalized)
+            {
+                pageCount = checked(pageCount + 1); // one record page
+                if (mutation.Value.Length > _options.InlineValueCapacity(mutation.Key.Length))
+                {
+                    var overflowPages = checked(
+                        (mutation.Value.Length + overflowChunkCapacity - 1L) / overflowChunkCapacity);
+                    pageCount = checked(pageCount + overflowPages);
+                }
+            }
+
+            return checked(pageCount * _options.PageSize);
+        }
+    }
+
+    /// <summary>
+    /// Rewrites the complete logical current map into a fresh data file and publishes
+    /// it with a recoverable two-rename protocol. Callers must already have established
+    /// that the supplied state is the complete physical representation they intend to keep.
+    /// </summary>
+    public StorageRewriteResult RewriteState(IReadOnlyList<StorageMutation> desiredState)
+        => RewriteStateCore(desiredState, injectPublicationFaults: true);
+
+    /// <summary>
+    /// Rebuilds a derived physical representation from an independently authoritative
+    /// recovery source. Recovery must not accidentally trigger foreground compaction
+    /// fault points, so publication injection is disabled on this path.
+    /// </summary>
+    internal StorageRewriteResult RewriteStateForRecovery(IReadOnlyList<StorageMutation> desiredState)
+        => RewriteStateCore(desiredState, injectPublicationFaults: false);
+
+    private StorageRewriteResult RewriteStateCore(
+        IReadOnlyList<StorageMutation> desiredState,
+        bool injectPublicationFaults)
+    {
+        ArgumentNullException.ThrowIfNull(desiredState);
+        lock (_gate)
+        {
+            ThrowIfUsable();
+            var state = NormalizeRewriteState(desiredState);
+            var oldLength = _data.Length;
+            var dataPath = _data.Name;
+            var directory = Path.GetDirectoryName(dataPath)
+                ?? throw new StorageException("Persistent data file has no parent directory.");
+            var backupPath = dataPath + ".previous";
+            var dataClosed = false;
+            var publicationTouched = false;
+            var tempDirectory = Path.Combine(directory, ".compact-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDirectory);
+            var tempMetadata = Path.Combine(tempDirectory, MetadataFileName);
+            var tempData = Path.Combine(tempDirectory, DataFileName);
+
+            try
+            {
+                File.WriteAllBytes(tempMetadata, DatabaseHeaderCodec.Encode(_header));
+                var tempOptions = _options with { FlushOnWrite = false };
+                using (var temporary = Open(tempDirectory, tempOptions))
+                {
+                    temporary.ValidateBatch(state);
+                    temporary.ApplyBatch(state);
+                    temporary.Flush();
+                    var actual = temporary.SnapshotCurrentState();
+                    if (!StateEquals(state, actual))
+                    {
+                        throw new StorageCorruptionException("Compaction output failed logical self-validation.");
+                    }
+                }
+
+                if (injectPublicationFaults)
+                {
+                    _options.FaultInjector?.Hit(StorageFaultPoint.BeforeCompactionPublish, PageId.Invalid);
+                }
+                // From this point onward the authoritative file publication protocol has
+                // begun. Any exception requires reopen before this store instance may be
+                // trusted again, even when recovery can deterministically choose a file.
+                publicationTouched = true;
+                _data.Flush(flushToDisk: true);
+                _data.Dispose();
+                dataClosed = true;
+                if (File.Exists(backupPath))
+                {
+                    File.Delete(backupPath);
+                }
+                File.Move(dataPath, backupPath, overwrite: true);
+                try
+                {
+                    File.Move(tempData, dataPath, overwrite: true);
+                }
+                catch
+                {
+                    if (!File.Exists(dataPath) && File.Exists(backupPath))
+                    {
+                        File.Move(backupPath, dataPath, overwrite: true);
+                    }
+                    throw;
+                }
+
+                _data = OpenExclusive(dataPath);
+                dataClosed = false;
+                _untrustedTailOffset = null;
+                _untrustedTailIsFinalAppend = false;
+                _untrustedTailIsPartialPage = false;
+                ScanDataFile();
+                if (!StateEquals(state, SnapshotCurrentStateLocked()))
+                {
+                    _faulted = true;
+                    throw new StorageCorruptionException("Published compacted data does not match the requested state.");
+                }
+                if (injectPublicationFaults)
+                {
+                    _options.FaultInjector?.Hit(StorageFaultPoint.AfterCompactionPublish, PageId.Invalid);
+                    _options.FaultInjector?.Hit(StorageFaultPoint.BeforeCompactionCleanup, PageId.Invalid);
+                }
+                if (File.Exists(backupPath))
+                {
+                    File.Delete(backupPath);
+                }
+                if (injectPublicationFaults)
+                {
+                    _options.FaultInjector?.Hit(StorageFaultPoint.AfterCompactionCleanup, PageId.Invalid);
+                }
+                return new StorageRewriteResult(oldLength, _data.Length);
+            }
+            catch
+            {
+                if (dataClosed)
+                {
+                    if (!File.Exists(dataPath) && File.Exists(backupPath))
+                    {
+                        File.Move(backupPath, dataPath, overwrite: true);
+                    }
+                    if (File.Exists(dataPath))
+                    {
+                        _data = OpenExclusive(dataPath);
+                        dataClosed = false;
+                        _untrustedTailOffset = null;
+                        _untrustedTailIsFinalAppend = false;
+                        _untrustedTailIsPartialPage = false;
+                        ScanDataFile();
+                    }
+                }
+                if (publicationTouched)
+                {
+                    _faulted = true;
+                }
+                throw;
+            }
+            finally
+            {
+                try
+                {
+                    if (Directory.Exists(tempDirectory))
+                    {
+                        Directory.Delete(tempDirectory, recursive: true);
+                    }
+                }
+                catch (IOException)
+                {
+                    // Orphaned temporary output is never authoritative.
+                }
+            }
+        }
+    }
+
+    private StorageMutation[] NormalizeRewriteState(IReadOnlyList<StorageMutation> desiredState)
+    {
+        var normalized = new Dictionary<BinaryKey, StorageMutation>();
+        foreach (var mutation in desiredState)
+        {
+            ArgumentNullException.ThrowIfNull(mutation);
+            if (mutation.IsDelete)
+            {
+                throw new ArgumentException(
+                    "Compacted state must contain only surviving put records.",
+                    nameof(desiredState));
+            }
+
+            ValidateKey(mutation.Key);
+            if (mutation.Value.Length > _options.MaxValueSize)
+            {
+                throw new StorageLimitException("Compacted value exceeds the configured maximum size.");
+            }
+            normalized[mutation.Key] = mutation;
+        }
+        return normalized.Values.ToArray();
+    }
+
     public void Flush()
     {
         lock (_gate)
@@ -663,6 +901,80 @@ public sealed class PersistentKeyValueStore : IDisposable
                 _metadata.Dispose();
                 _disposed = true;
             }
+        }
+    }
+
+    private List<StorageMutation> SnapshotCurrentStateLocked()
+    {
+        var snapshot = new List<StorageMutation>(_records.Count);
+        foreach (var (key, record) in _records)
+        {
+            var value = record.InlineValue.Length != 0 || record.ValueLength == 0
+                ? record.InlineValue
+                : ReadOverflow(record.OverflowHead, record.ValueLength);
+            snapshot.Add(new StorageMutation(key, isDelete: false, value));
+        }
+        return snapshot;
+    }
+
+    private static bool StateEquals(
+        StorageMutation[] expected,
+        IReadOnlyList<StorageMutation> actual)
+    {
+        if (expected.Length != actual.Count)
+        {
+            return false;
+        }
+        var map = expected.ToDictionary(item => item.Key, item => item.Value.ToArray());
+        foreach (var item in actual)
+        {
+            if (!map.TryGetValue(item.Key, out var value) || !value.AsSpan().SequenceEqual(item.Value.Span))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static void RecoverInterruptedCompaction(string dataPath)
+    {
+        var backupPath = dataPath + ".previous";
+        if (File.Exists(backupPath) && !File.Exists(dataPath))
+        {
+            File.Move(backupPath, dataPath, overwrite: true);
+        }
+        // When both generations exist, Open validates the new primary before
+        // retiring the previous generation. Do not delete recovery evidence here.
+    }
+
+    private static void RestoreCompactionBackup(string dataPath, string backupPath)
+    {
+        if (!File.Exists(backupPath))
+        {
+            throw new StorageCorruptionException(
+                "Compaction recovery requires a previous data generation, but it is missing.");
+        }
+
+        File.Move(backupPath, dataPath, overwrite: true);
+    }
+
+    private static void TryDeleteCompactionBackup(string backupPath)
+    {
+        try
+        {
+            if (File.Exists(backupPath))
+            {
+                File.Delete(backupPath);
+            }
+        }
+        catch (IOException)
+        {
+            // A validated primary remains authoritative. Leaving the backup is safe
+            // and the next open/compaction pass may retire it.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Same as above: cleanup failure must not invalidate a verified primary.
         }
     }
 
@@ -1121,4 +1433,9 @@ public sealed class PersistentKeyValueStore : IDisposable
         int ValueLength,
         PageId OverflowHead,
         byte[] InlineValue);
+}
+
+public readonly record struct StorageRewriteResult(long OldBytes, long NewBytes)
+{
+    public long ReclaimedBytes => Math.Max(0, OldBytes - NewBytes);
 }

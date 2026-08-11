@@ -7,17 +7,17 @@ using ChronicleDB.Storage.Faults;
 namespace ChronicleDB.Storage.Branches;
 
 /// <summary>
-/// Database-bound append-only branch metadata journal used by v0.7.
-/// It persists branch identity/ancestry, creation intent, activation and the
-/// authoritative local commit sequence. Branch transaction WAL is deliberately
-/// deferred to v0.8; AdvanceSequence records are not a substitute for WAL.
+/// Database-bound append-only branch lifecycle/cache journal. Starting with v0.8,
+/// branch.wal is authoritative for committed branch transactions; this journal
+/// persists branch identity, ancestry, lifecycle state, cached local sequence and
+/// physical publication boundaries used to accelerate idempotent recovery.
 /// </summary>
 public sealed class PersistentBranchMetadataStore : IDisposable
 {
     public const string FileName = "chronicle.branches";
 
     private readonly object _gate = new();
-    private readonly FileStream _stream;
+    private FileStream _stream;
     private readonly IStorageFaultInjector? _faultInjector;
     private readonly Dictionary<BranchId, BranchStoreRecord> _states = [];
     private readonly Dictionary<BranchId, List<BranchCommitDescriptor>> _commits = [];
@@ -133,6 +133,30 @@ public sealed class PersistentBranchMetadataStore : IDisposable
             ThrowIfUsable();
             return _states.Values
                 .Where(record => record.Type == BranchStoreRecordType.CreateIntent)
+                .OrderBy(record => record.EventSequence)
+                .ToArray();
+        }
+    }
+
+    public IReadOnlyList<BranchStoreRecord> ListDeleting()
+    {
+        lock (_gate)
+        {
+            ThrowIfUsable();
+            return _states.Values
+                .Where(record => record.Type == BranchStoreRecordType.DeleteIntent)
+                .OrderBy(record => record.EventSequence)
+                .ToArray();
+        }
+    }
+
+    public IReadOnlyList<BranchStoreRecord> ListDeleted()
+    {
+        lock (_gate)
+        {
+            ThrowIfUsable();
+            return _states.Values
+                .Where(record => record.Type == BranchStoreRecordType.DeleteComplete)
                 .OrderBy(record => record.EventSequence)
                 .ToArray();
         }
@@ -310,6 +334,167 @@ public sealed class PersistentBranchMetadataStore : IDisposable
             return record;
         }
     }
+
+    public BranchStoreRecord AppendDeleteIntent(BranchId branchId)
+    {
+        lock (_gate)
+        {
+            ThrowIfUsable();
+            EnsureEventSequenceAvailable();
+            if (!_states.TryGetValue(branchId, out var current) || !IsActiveState(current))
+            {
+                throw new StorageException("Only an active branch may begin deletion.");
+            }
+
+            var record = current with
+            {
+                Type = BranchStoreRecordType.DeleteIntent,
+                EventSequence = _nextEventSequence,
+                TransactionId = TransactionId.Empty,
+                MutationCount = 0,
+            };
+            AppendAndApply(record);
+            return record;
+        }
+    }
+
+    public BranchStoreRecord AppendDeleteComplete(BranchId branchId)
+    {
+        lock (_gate)
+        {
+            ThrowIfUsable();
+            EnsureEventSequenceAvailable();
+            if (!_states.TryGetValue(branchId, out var current)
+                || current.Type != BranchStoreRecordType.DeleteIntent)
+            {
+                throw new StorageException("Only a branch with a durable delete intent may complete deletion.");
+            }
+
+            var record = current with
+            {
+                Type = BranchStoreRecordType.DeleteComplete,
+                EventSequence = _nextEventSequence,
+            };
+            AppendAndApply(record);
+            return record;
+        }
+    }
+
+    public BranchStoreRecord AppendPhysicalBoundary(BranchId branchId, long dataLength)
+    {
+        lock (_gate)
+        {
+            ThrowIfUsable();
+            EnsureEventSequenceAvailable();
+            if (dataLength < 0 || !_states.TryGetValue(branchId, out var current) || !IsActiveState(current))
+            {
+                throw new StorageException("A physical boundary requires an active branch and a valid data length.");
+            }
+
+            var record = current with
+            {
+                Type = BranchStoreRecordType.PublishPhysicalBoundary,
+                EventSequence = _nextEventSequence,
+                TransactionId = TransactionId.Empty,
+                MutationCount = 0,
+                DataLengthAfterCommit = dataLength,
+            };
+            AppendAndApply(record);
+            return record;
+        }
+    }
+
+    public void CompactJournal()
+    {
+        lock (_gate)
+        {
+            ThrowIfUsable();
+            var active = _states.Values
+                .Where(IsActiveState)
+                .OrderBy(record => record.Depth)
+                .ThenBy(record => record.Name, StringComparer.Ordinal)
+                .ToArray();
+            var path = _stream.Name;
+            var temp = path + "." + Guid.NewGuid().ToString("N") + ".compacting";
+            var backup = path + ".previous";
+            try
+            {
+                using (var output = new FileStream(
+                           temp, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                           bufferSize: 16 * 1024, options: FileOptions.WriteThrough))
+                {
+                    output.Write(BranchStoreHeaderCodec.Encode(Header));
+                    ulong sequence = 1;
+                    foreach (var record in active)
+                    {
+                        var canonical = record with
+                        {
+                            Type = BranchStoreRecordType.RestoreActive,
+                            EventSequence = sequence++,
+                            TransactionId = TransactionId.Empty,
+                            MutationCount = 0,
+                        };
+                        output.Write(BranchStoreRecordCodec.Encode(canonical));
+                    }
+                    output.Flush(flushToDisk: true);
+                }
+
+                _stream.Flush(flushToDisk: true);
+                _stream.Dispose();
+                if (File.Exists(backup))
+                {
+                    File.Delete(backup);
+                }
+                File.Replace(temp, path, backup);
+                _stream = OpenJournal(path);
+                _nextEventSequence = checked((ulong)active.Length + 1);
+                var activeIds = active.Select(record => record.BranchId).ToHashSet();
+                foreach (var branchId in _states.Keys.Where(id => !activeIds.Contains(id)).ToArray())
+                {
+                    _states.Remove(branchId);
+                }
+                // v0.8+ WAL/checkpoint history is authoritative for transaction replay.
+                // The legacy metadata commit cache is intentionally discarded for every
+                // active branch when the lifecycle journal is canonicalized; retaining it
+                // would make process memory grow even though the on-disk journal shrank.
+                _commits.Clear();
+                _seenBranchIds.Clear();
+                _seenHistoryIds.Clear();
+                _seenTransactions.Clear();
+                foreach (var record in active)
+                {
+                    _commits.Add(record.BranchId, []);
+                    _seenBranchIds.Add(record.BranchId);
+                    _seenHistoryIds.Add(record.HistoryId);
+                }
+                if (File.Exists(backup))
+                {
+                    File.Delete(backup);
+                }
+            }
+            catch
+            {
+                _faulted = true;
+                if (!File.Exists(path) && File.Exists(backup))
+                {
+                    File.Move(backup, path, overwrite: true);
+                }
+                throw;
+            }
+            finally
+            {
+                if (File.Exists(temp))
+                {
+                    File.Delete(temp);
+                }
+            }
+        }
+    }
+
+    private static FileStream OpenJournal(string path)
+        => new(
+            path, FileMode.Open, FileAccess.ReadWrite, FileShare.None,
+            bufferSize: 16 * 1024, options: FileOptions.SequentialScan);
 
     public void Dispose()
     {
@@ -491,6 +676,20 @@ public sealed class PersistentBranchMetadataStore : IDisposable
                 }
                 _states[record.BranchId] = record;
                 break;
+            case BranchStoreRecordType.RestoreActive:
+                if (record.HistoryId == Header.MainHistoryId
+                    || _states.ContainsKey(record.BranchId)
+                    || !_seenBranchIds.Add(record.BranchId)
+                    || !_seenHistoryIds.Add(record.HistoryId)
+                    || _reservedNames.ContainsKey(record.Name)
+                    || record.LocalStorageId == Guid.Empty)
+                {
+                    throw new StorageCorruptionException("Compacted branch state reuses an identity or is incomplete.");
+                }
+                _states.Add(record.BranchId, record);
+                _reservedNames.Add(record.Name, record.BranchId);
+                _commits.Add(record.BranchId, []);
+                break;
             case BranchStoreRecordType.AdvanceSequence:
                 if (!_states.TryGetValue(record.BranchId, out var current) || !IsActiveState(current))
                 {
@@ -526,6 +725,38 @@ public sealed class PersistentBranchMetadataStore : IDisposable
                     record.LocalCommitSequence,
                     record.MutationCount,
                     record.DataLengthAfterCommit));
+                break;
+            case BranchStoreRecordType.DeleteIntent:
+                if (!_states.TryGetValue(record.BranchId, out var deletingCurrent) || !IsActiveState(deletingCurrent))
+                {
+                    throw new StorageCorruptionException("Branch delete intent references an inactive branch.");
+                }
+                EnsureImmutableMetadataMatches(deletingCurrent, record);
+                if (record.LocalCommitSequence != deletingCurrent.LocalCommitSequence
+                    || record.LocalStorageId != deletingCurrent.LocalStorageId
+                    || record.DataLengthAfterCommit != deletingCurrent.DataLengthAfterCommit)
+                {
+                    throw new StorageCorruptionException("Branch delete intent changes committed branch state.");
+                }
+                _states[record.BranchId] = record;
+                break;
+            case BranchStoreRecordType.DeleteComplete:
+                EnsureSameCreationMetadata(record, BranchStoreRecordType.DeleteIntent);
+                _states[record.BranchId] = record;
+                _reservedNames.Remove(record.Name);
+                break;
+            case BranchStoreRecordType.PublishPhysicalBoundary:
+                if (!_states.TryGetValue(record.BranchId, out var boundaryCurrent) || !IsActiveState(boundaryCurrent))
+                {
+                    throw new StorageCorruptionException("Branch physical boundary references an inactive branch.");
+                }
+                EnsureImmutableMetadataMatches(boundaryCurrent, record);
+                if (record.LocalCommitSequence != boundaryCurrent.LocalCommitSequence
+                    || record.LocalStorageId != boundaryCurrent.LocalStorageId)
+                {
+                    throw new StorageCorruptionException("Branch physical boundary changes logical branch state.");
+                }
+                _states[record.BranchId] = record;
                 break;
             case BranchStoreRecordType.AbandonCreate:
                 EnsureSameCreationMetadata(record, BranchStoreRecordType.CreateIntent);
@@ -563,7 +794,10 @@ public sealed class PersistentBranchMetadataStore : IDisposable
     }
 
     private static bool IsActiveState(BranchStoreRecord record)
-        => record.Type is BranchStoreRecordType.Activate or BranchStoreRecordType.AdvanceSequence;
+        => record.Type is BranchStoreRecordType.Activate
+            or BranchStoreRecordType.AdvanceSequence
+            or BranchStoreRecordType.PublishPhysicalBoundary
+            or BranchStoreRecordType.RestoreActive;
 
     private static string ValidateName(string name)
     {

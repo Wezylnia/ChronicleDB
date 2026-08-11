@@ -192,6 +192,18 @@ public static class BranchStoreRecordCodec
                     throw new StorageFormatException("Branch commit metadata is invalid.");
                 }
                 break;
+            case BranchStoreRecordType.DeleteIntent:
+            case BranchStoreRecordType.DeleteComplete:
+            case BranchStoreRecordType.PublishPhysicalBoundary:
+            case BranchStoreRecordType.RestoreActive:
+                if (record.LocalStorageId == Guid.Empty
+                    || record.TransactionId.IsValid
+                    || record.MutationCount != 0
+                    || record.DataLengthAfterCommit < 0)
+                {
+                    throw new StorageFormatException("Branch lifecycle/physical-boundary metadata is invalid.");
+                }
+                break;
             default:
                 throw new StorageFormatException("Branch metadata record type is unsupported.");
         }
