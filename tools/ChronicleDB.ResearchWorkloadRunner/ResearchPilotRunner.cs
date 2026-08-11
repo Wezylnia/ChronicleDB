@@ -30,6 +30,7 @@ internal static class ResearchPilotRunner
             "P3" => Task.FromResult(RunAncestryPilot(args[1..])),
             "P3T" => Task.FromResult(RunAncestryTimingControlPilot(args[1..])),
             "P4" => Task.FromResult(RunRecoverySchedulingPilot(args[1..])),
+            "P4R" => Task.FromResult(RunMeasuredRecoveryPilot(args[1..])),
             "P5" => Task.FromResult(RunRecoveryCompositionPilot(args[1..])),
             "P6" => Task.FromResult(RunErasureClosurePilot(args[1..])),
             _ => Task.FromResult(UnknownPilot(args[0])),
@@ -439,6 +440,138 @@ internal static class ResearchPilotRunner
         catch (Exception exception)
         {
             Console.Error.WriteLine($"P5 FAIL: {exception}");
+            return 1;
+        }
+    }
+
+    private static int RunMeasuredRecoveryPilot(string[] args)
+    {
+        if (args.Length < 4
+            || !int.TryParse(args[0], out var seed)
+            || !int.TryParse(args[1], out var historyCount)
+            || !int.TryParse(args[2], out var commitsPerHistory)
+            || !int.TryParse(args[3], out var requestedIndex)
+            || historyCount is < 4 or > 32
+            || commitsPerHistory is < 1 or > 500
+            || requestedIndex < 0
+            || requestedIndex >= historyCount)
+        {
+            Console.Error.WriteLine(
+                "Usage: pilot P4R <seed> <history-count:4..32> <commits-per-history:1..500> " +
+                "<requested-index:0..count-1> [output-directory]");
+            return 2;
+        }
+
+        var outputDirectory = args.Length >= 5
+            ? Path.GetFullPath(args[4])
+            : Path.Combine(
+                Environment.CurrentDirectory,
+                "artifacts",
+                "research-pilots",
+                $"p4r-{seed}-{historyCount}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outputDirectory);
+        var databaseDirectory = Path.Combine(outputDirectory, "database");
+
+        try
+        {
+            var random = new Random(seed);
+            var histories = new List<Guid>(historyCount);
+            using (var database = ChronicleDatabase.Open(databaseDirectory))
+            {
+                for (var index = 0; index < historyCount; index++)
+                {
+                    using var branch = database.CreateBranch($"p4r-{index:D2}");
+                    histories.Add(branch.HistoryId);
+                    for (var commit = 0; commit < commitsPerHistory; commit++)
+                    {
+                        branch.Put(
+                            Key((index * 100_000) + commit),
+                            Payload(512, random, salt: (index * 10_000) + commit));
+                    }
+                }
+            }
+
+            var sink = new TimedTraceResearchEventSink();
+            var wallClock = Stopwatch.StartNew();
+            using var reopened = ChronicleDatabase.Open(databaseDirectory, researchEventSink: sink);
+            wallClock.Stop();
+
+            var telemetry = reopened.GetResearchTelemetryStatus();
+            if (!telemetry.IsComplete)
+            {
+                throw new InvalidOperationException(
+                    $"P4R requires complete telemetry; failures={telemetry.PublicationFailures}.");
+            }
+
+            var timed = sink.Snapshot();
+            var recoveryStarted = timed.Single(item => item.Event.EventKind == ResearchEventKind.RecoveryStarted);
+            var recoveryCompleted = timed.Single(item => item.Event.EventKind == ResearchEventKind.RecoveryCompleted);
+            var branchMeasurements = histories
+                .Select((historyId, index) =>
+                {
+                    var started = timed.Single(item =>
+                        item.Event.EventKind == ResearchEventKind.OperationStarted
+                        && item.Event.HistoryId.Value == historyId
+                        && item.Event.TransactionId is null);
+                    var validated = timed.Single(item =>
+                        item.Event.EventKind == ResearchEventKind.HistoryValidated
+                        && item.Event.HistoryId.Value == historyId
+                        && item.Event.OperationId == started.Event.OperationId);
+                    return new MeasuredHistoryRecovery(
+                        index,
+                        historyId,
+                        started.Elapsed.TotalMilliseconds - recoveryStarted.Elapsed.TotalMilliseconds,
+                        validated.Elapsed.TotalMilliseconds - recoveryStarted.Elapsed.TotalMilliseconds,
+                        validated.Elapsed.TotalMilliseconds - started.Elapsed.TotalMilliseconds);
+                })
+                .OrderBy(item => item.StartMilliseconds)
+                .ToArray();
+
+            var requested = branchMeasurements.Single(item => item.Index == requestedIndex);
+            var firstBranchStart = branchMeasurements.Min(item => item.StartMilliseconds);
+            var lastBranchValidated = branchMeasurements.Max(item => item.ValidatedMilliseconds);
+            var recoveryCompletedMilliseconds = recoveryCompleted.Elapsed.TotalMilliseconds
+                - recoveryStarted.Elapsed.TotalMilliseconds;
+            var sumBranchRecoveryMilliseconds = branchMeasurements.Sum(item => item.DurationMilliseconds);
+            var strictCurrentReadyMilliseconds = recoveryCompletedMilliseconds;
+            var optimisticLocalLowerBoundMilliseconds = firstBranchStart + requested.DurationMilliseconds;
+            var upperBoundSpeedup = optimisticLocalLowerBoundMilliseconds <= 0
+                ? 0d
+                : strictCurrentReadyMilliseconds / optimisticLocalLowerBoundMilliseconds;
+
+            var result = new MeasuredRecoveryPilotResult(
+                Pilot: "P4R",
+                Seed: seed,
+                HistoryCount: historyCount,
+                CommitsPerHistory: commitsPerHistory,
+                RequestedIndex: requestedIndex,
+                Histories: branchMeasurements,
+                WallClockOpenMilliseconds: wallClock.Elapsed.TotalMilliseconds,
+                RecoveryCompletedMilliseconds: recoveryCompletedMilliseconds,
+                PreBranchRecoveryMilliseconds: firstBranchStart,
+                SumBranchRecoveryMilliseconds: sumBranchRecoveryMilliseconds,
+                PostBranchValidationMilliseconds: Math.Max(0d, recoveryCompletedMilliseconds - lastBranchValidated),
+                StrictCurrentTimeToAnyHistoryReadyMilliseconds: strictCurrentReadyMilliseconds,
+                OptimisticRequestedLocalLowerBoundMilliseconds: optimisticLocalLowerBoundMilliseconds,
+                OptimisticUpperBoundSpeedup: upperBoundSpeedup,
+                BranchRecoveryFraction: recoveryCompletedMilliseconds <= 0
+                    ? 0d
+                    : sumBranchRecoveryMilliseconds / recoveryCompletedMilliseconds,
+                CurrentSemanticsAllowsSelectiveHistoryReady: false,
+                TelemetryComplete: telemetry.IsComplete);
+            File.WriteAllText(
+                Path.Combine(outputDirectory, "p4r-result.json"),
+                JsonSerializer.Serialize(result, JsonOptions));
+            Console.WriteLine(
+                $"P4R PASS histories={historyCount} commits={commitsPerHistory} " +
+                $"open-ms={result.RecoveryCompletedMilliseconds:F2} branch-fraction={result.BranchRecoveryFraction:P1} " +
+                $"optimistic-upper={result.OptimisticUpperBoundSpeedup:F2}x selective-ready={result.CurrentSemanticsAllowsSelectiveHistoryReady} " +
+                $"output={outputDirectory}");
+            return result.TelemetryComplete ? 0 : 1;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"P4R FAIL: {exception}");
             return 1;
         }
     }
@@ -1415,6 +1548,32 @@ internal static class ResearchPilotRunner
     private sealed record RecoveryCompositionMutantPilotResult(
         string Name,
         RecoveryCompositionExplorationResult Result);
+
+    private sealed record MeasuredHistoryRecovery(
+        int Index,
+        Guid HistoryId,
+        double StartMilliseconds,
+        double ValidatedMilliseconds,
+        double DurationMilliseconds);
+
+    private sealed record MeasuredRecoveryPilotResult(
+        string Pilot,
+        int Seed,
+        int HistoryCount,
+        int CommitsPerHistory,
+        int RequestedIndex,
+        IReadOnlyList<MeasuredHistoryRecovery> Histories,
+        double WallClockOpenMilliseconds,
+        double RecoveryCompletedMilliseconds,
+        double PreBranchRecoveryMilliseconds,
+        double SumBranchRecoveryMilliseconds,
+        double PostBranchValidationMilliseconds,
+        double StrictCurrentTimeToAnyHistoryReadyMilliseconds,
+        double OptimisticRequestedLocalLowerBoundMilliseconds,
+        double OptimisticUpperBoundSpeedup,
+        double BranchRecoveryFraction,
+        bool CurrentSemanticsAllowsSelectiveHistoryReady,
+        bool TelemetryComplete);
 
     private sealed record RecoverySchedulingPilotResult(
         string Pilot,
