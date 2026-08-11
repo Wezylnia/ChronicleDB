@@ -149,6 +149,13 @@ internal sealed class BranchRuntime : IDisposable
             if (!walInitialized)
             {
                 var legacy = ReadLegacyCommittedHistory(definition, legacyCommits, store);
+                foreach (var commit in legacy)
+                {
+                    RecoveredLogicalHistoryValidator.ValidateMutations(
+                        commit.Mutations,
+                        databaseOptions,
+                        "Legacy branch history");
+                }
                 BootstrapWal(definition, wal, legacy);
                 wal.Flush();
                 store.EnsureFormatFlags(DatabaseHeader.WalInitializedFlag);
@@ -177,6 +184,10 @@ internal sealed class BranchRuntime : IDisposable
             versions = new CommittedVersionStore(new SynchronizedVersionIndex());
             if (checkpoint is not null)
             {
+                RecoveredLogicalHistoryValidator.ValidateCheckpoint(
+                    checkpoint,
+                    databaseOptions,
+                    $"Branch {definition.BranchId.Value} history checkpoint");
                 ReplayCheckpoint(checkpoint, versions);
             }
 
@@ -192,6 +203,10 @@ internal sealed class BranchRuntime : IDisposable
                 checkpointTransactionIds);
             foreach (var committed in recovery.CommittedTransactions)
             {
+                RecoveredLogicalHistoryValidator.ValidateMutations(
+                    committed.Mutations,
+                    databaseOptions,
+                    $"Branch {definition.BranchId.Value} WAL");
                 versions.ValidateReplayCapacity(committed.Mutations);
                 versions.ReplayCommitted(committed.TransactionId, committed.CommitSequence, committed.Mutations);
             }

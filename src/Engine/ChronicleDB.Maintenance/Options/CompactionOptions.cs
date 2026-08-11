@@ -1,7 +1,7 @@
 namespace ChronicleDB.Maintenance;
 
 /// <summary>
-/// Basic v0.9 foreground-compaction throttle. Compaction is deliberately bounded
+/// Basic v1.0 foreground-compaction throttle. Compaction is deliberately bounded
 /// rather than rewriting every history on each call.
 /// </summary>
 public sealed class CompactionOptions

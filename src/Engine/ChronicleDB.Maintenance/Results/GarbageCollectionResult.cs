@@ -5,4 +5,5 @@ public sealed record GarbageCollectionResult(
     int VersionsReclaimed,
     long CheckpointBytesWritten,
     ulong MainRetentionFloor,
-    int DeletedBranchDirectoriesReclaimed);
+    int DeletedBranchDirectoriesReclaimed,
+    int DeletedBranchDirectoriesPending = 0);

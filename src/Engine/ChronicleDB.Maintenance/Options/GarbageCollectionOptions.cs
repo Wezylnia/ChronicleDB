@@ -1,7 +1,7 @@
 namespace ChronicleDB.Maintenance;
 
 /// <summary>
-/// Conservative v0.9 historical-reclamation policy. The engine keeps at least
+/// Conservative v1.0 historical-reclamation policy. The engine keeps at least
 /// <see cref="RetainRecentCommits"/> generic point-in-time commit boundaries per
 /// independently writable history in addition to every explicit persistent or
 /// process-local retention root.

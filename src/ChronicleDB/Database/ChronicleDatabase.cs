@@ -28,7 +28,8 @@ namespace ChronicleDB;
 
 /// <summary>
 /// Embedded persistent key-value engine implementing durable Snapshot Isolation,
-/// concurrent readers/writers, persistent named snapshots and retained time travel.
+/// persistent historical state, independently writable branches, retained time travel,
+/// crash recovery, garbage collection, and copy-and-publish compaction.
 /// </summary>
 public sealed partial class ChronicleDatabase : IDisposable
 {
@@ -195,6 +196,14 @@ public sealed partial class ChronicleDatabase : IDisposable
                 // recovery authority; the unreset WAL still contains complete history.
                 TryDeleteFile(checkpointPath);
                 TryDeleteFile(checkpointPath + ".previous");
+            }
+
+            if (mainCheckpoint is not null)
+            {
+                RecoveredLogicalHistoryValidator.ValidateCheckpoint(
+                    mainCheckpoint,
+                    validatedOptions,
+                    "Main history checkpoint");
             }
 
             var checkpointTransactionIds = mainCheckpoint?.Versions
@@ -684,6 +693,11 @@ public sealed partial class ChronicleDatabase : IDisposable
                 var wal = _wal.GetStatistics();
                 var snapshots = _snapshots.List();
                 var runtimes = _branchRuntimes.Values.ToArray();
+                var branchWalBytes = runtimes.Sum(runtime => runtime.Wal.GetStatistics().FileLength);
+                var checkpointBytes = GetFileLengthIfExists(
+                    Path.Combine(_databaseDirectory, PersistentHistoryCheckpoint.FileName))
+                    + runtimes.Sum(runtime => GetFileLengthIfExists(
+                        Path.Combine(runtime.Directory, PersistentHistoryCheckpoint.FileName)));
                 var averageWalFlushMilliseconds = wal.FlushCount == 0
                     ? 0
                     : wal.TotalFlushStopwatchTicks * 1000d / Stopwatch.Frequency / wal.FlushCount;
@@ -732,12 +746,120 @@ public sealed partial class ChronicleDatabase : IDisposable
                     CompactionPasses: counters.CompactionPasses,
                     CompactionBytesRewritten: counters.CompactionBytesRewritten,
                     CompactionBytesReclaimed: counters.CompactionBytesReclaimed,
-                    CompactionMilliseconds: counters.CompactionMilliseconds);
+                    CompactionMilliseconds: counters.CompactionMilliseconds,
+                    BranchLocalWalBytes: branchWalBytes,
+                    HistoryRootMetadataBytes: _historyRootStore.FileLength,
+                    HistoryCheckpointBytes: checkpointBytes);
             }
         }
         finally
         {
             ExitOperation();
+        }
+    }
+
+    public ChronicleHistoryTopologyDiagnostics GetHistoryTopologyDiagnostics()
+    {
+        EnterOperation();
+        try
+        {
+            lock (_historyGate)
+            {
+                var mainStatistics = _versions.GetStatistics();
+                var branchActiveTransactions = _branchRuntimes.Values.Sum(runtime => (long)runtime.ActiveTransactions);
+                var counters = _counters.Snapshot();
+                var mainActiveTransactions = checked((int)Math.Min(
+                    int.MaxValue,
+                    Math.Max(0L, counters.ActiveTransactions - branchActiveTransactions)));
+                var mainRetentionBoundaries = _activeHistoryBoundaries.CountForHistory(_mainHistoryId);
+                var mainHistoricalHandles = Math.Max(0, mainRetentionBoundaries - mainActiveTransactions);
+                var main = new ChronicleHistoryDiagnostics(
+                    HistoryId: _mainHistoryId.Value,
+                    Kind: "Main",
+                    BranchId: null,
+                    Name: "main",
+                    ParentHistoryId: null,
+                    ParentBaseSequence: null,
+                    Depth: 0,
+                    CurrentSequence: GetCurrentCommitSequence().Value,
+                    RetentionFloor: GetHistoryRetentionFloor().Value,
+                    LocalCurrentKeyCount: mainStatistics.CurrentKeyCount,
+                    VersionCount: mainStatistics.VersionCount,
+                    VersionChainCount: mainStatistics.ChainCount,
+                    MaximumVersionChainLength: mainStatistics.MaximumChainLength,
+                    SnapshotCount: _snapshots.Count,
+                    DataFileBytes: _store.DataLength,
+                    WalFileBytes: _wal.GetStatistics().FileLength,
+                    OpenRetentionBoundaryCount: mainRetentionBoundaries,
+                    OpenBranchHandleCount: 0,
+                    ActiveTransactionCount: mainActiveTransactions,
+                    OpenHistoricalHandleCount: mainHistoricalHandles);
+
+                var branches = _branchRuntimes.Values
+                    .OrderBy(runtime => runtime.Definition.Depth)
+                    .ThenBy(runtime => runtime.Definition.Name, StringComparer.Ordinal)
+                    .ThenBy(runtime => runtime.Definition.BranchId.Value)
+                    .Select(runtime =>
+                    {
+                        var definition = runtime.Definition;
+                        var statistics = runtime.Versions.GetStatistics();
+                        return new ChronicleHistoryDiagnostics(
+                            HistoryId: definition.HistoryId.Value,
+                            Kind: "Branch",
+                            BranchId: definition.BranchId.Value,
+                            Name: definition.Name,
+                            ParentHistoryId: definition.ParentHistoryId.Value,
+                            ParentBaseSequence: definition.ParentBaseSequence.Value,
+                            Depth: definition.Depth,
+                            CurrentSequence: definition.LocalCurrentSequence.Value,
+                            RetentionFloor: runtime.HistoryFloor.Value,
+                            LocalCurrentKeyCount: statistics.CurrentKeyCount,
+                            VersionCount: statistics.VersionCount,
+                            VersionChainCount: statistics.ChainCount,
+                            MaximumVersionChainLength: statistics.MaximumChainLength,
+                            SnapshotCount: runtime.Snapshots.Count,
+                            DataFileBytes: runtime.Store.DataLength,
+                            WalFileBytes: runtime.Wal.GetStatistics().FileLength,
+                            OpenRetentionBoundaryCount: _activeHistoryBoundaries.CountForHistory(definition.HistoryId),
+                            OpenBranchHandleCount: runtime.OpenBranchHandles,
+                            ActiveTransactionCount: runtime.ActiveTransactions,
+                            OpenHistoricalHandleCount: runtime.OpenHistoricalHandles);
+                    })
+                    .ToArray();
+
+                var roots = _historyRoots.ListActive()
+                    .Select(root => new ChronicleRetentionRootDiagnostics(
+                        RootId: root.RootId.Value,
+                        Kind: root.Kind.ToString(),
+                        OwnerHistoryId: root.HistoryId.Value,
+                        ProtectedHistoryId: root.ProtectedHistoryId.Value,
+                        Boundary: root.Boundary.Value,
+                        CreatedAt: DateTimeOffset.FromUnixTimeMilliseconds(root.CreatedUnixMilliseconds),
+                        State: root.State.ToString()))
+                    .ToArray();
+
+                return new ChronicleHistoryTopologyDiagnostics(main, branches, roots);
+            }
+        }
+        finally
+        {
+            ExitOperation();
+        }
+    }
+
+    private static long GetFileLengthIfExists(string path)
+    {
+        try
+        {
+            return File.Exists(path) ? new FileInfo(path).Length : 0;
+        }
+        catch (IOException)
+        {
+            return 0;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return 0;
         }
     }
 

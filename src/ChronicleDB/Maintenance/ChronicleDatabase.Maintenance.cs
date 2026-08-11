@@ -108,14 +108,22 @@ public sealed partial class ChronicleDatabase
                     }
                     _historyRootStore.CompactJournal();
                     _historyRoots.PruneDeleted();
-                    _branchStore.CompactJournal();
+                    if (deletedDirectories.Pending == 0)
+                    {
+                        _branchStore.CompactJournal();
+                    }
+                    // A pending private-directory deletion still needs its durable
+                    // DeleteComplete record so the next GC pass can discover and retry
+                    // that orphan. Compacting the branch journal here would forget the
+                    // cleanup obligation even though the directory still exists.
 
                     var result = new GarbageCollectionResult(
                         historiesProcessed,
                         reclaimedVersions,
                         checkpointBytes,
                         GetHistoryRetentionFloor().Value,
-                        deletedDirectories);
+                        deletedDirectories.Reclaimed,
+                        deletedDirectories.Pending);
                     _counters.GarbageCollectionCompleted(
                         reclaimedVersions,
                         checkpointBytes,
@@ -356,9 +364,10 @@ public sealed partial class ChronicleDatabase
         }
     }
 
-    private int ReclaimDeletedBranchDirectories()
+    private DeletedBranchReclamationResult ReclaimDeletedBranchDirectories()
     {
         var reclaimed = 0;
+        var pending = 0;
         foreach (var deleted in _branchStore.ListDeleted())
         {
             var directory = BranchStorageLayout.GetDirectory(_databaseDirectory, deleted.BranchId);
@@ -367,10 +376,26 @@ public sealed partial class ChronicleDatabase
                 continue;
             }
 
-            Directory.Delete(directory, recursive: true);
-            reclaimed++;
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+                reclaimed++;
+            }
+            catch (IOException)
+            {
+                // Branch-private cleanup is post-delete reclamation, not logical state
+                // publication. A transient file lock or filesystem cleanup failure must
+                // not fault an otherwise valid database; a later GC pass retries it.
+                pending++;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Same policy as an I/O cleanup failure: the deleted branch remains
+                // unreachable and its private directory is simply pending reclamation.
+                pending++;
+            }
         }
-        return reclaimed;
+        return new DeletedBranchReclamationResult(reclaimed, pending);
     }
 
     private IEnumerable<CompactionCandidate> BuildCompactionCandidates(
@@ -436,6 +461,8 @@ public sealed partial class ChronicleDatabase
 
     private static IReadOnlyList<StorageMutation> EncodeRetainedBranchPhysicalState(BranchRuntime runtime)
         => BranchRuntime.EncodePhysicalState(runtime.Definition, runtime.Versions.SnapshotHistory());
+
+    private readonly record struct DeletedBranchReclamationResult(int Reclaimed, int Pending);
 
     private sealed record CompactionCandidate(
         BranchRuntime? Runtime,

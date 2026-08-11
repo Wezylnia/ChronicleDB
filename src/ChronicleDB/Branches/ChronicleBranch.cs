@@ -4,7 +4,7 @@ using ChronicleDB.History.Branches;
 namespace ChronicleDB;
 
 /// <summary>
-/// Writable handle to one independently evolving v0.7 history domain.
+/// Writable handle to one independently evolving ChronicleDB history domain.
 /// Parent state is fixed at branch creation and never follows later parent commits.
 /// </summary>
 public sealed class ChronicleBranch : IDisposable

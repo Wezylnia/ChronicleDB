@@ -797,7 +797,7 @@ public sealed partial class ChronicleDatabase
             if (parentDepth >= BranchCatalog.MaximumDepth)
             {
                 throw new InvalidOperationException(
-                    $"ChronicleDB v0.7 supports at most {BranchCatalog.MaximumDepth} nested branch levels.");
+                    $"ChronicleDB v1.0 supports at most {BranchCatalog.MaximumDepth} nested branch levels.");
             }
 
             ValidateHistoryBoundary(parentHistoryId, parentBaseSequence);
@@ -1421,7 +1421,7 @@ public sealed partial class ChronicleDatabase
                     break;
                 default:
                     throw new StorageCorruptionException(
-                        $"Persistent root kind {root.Kind} is not valid in the v0.7 root store.");
+                        $"Persistent root kind {root.Kind} is not valid in the current history-root model.");
             }
         }
     }
