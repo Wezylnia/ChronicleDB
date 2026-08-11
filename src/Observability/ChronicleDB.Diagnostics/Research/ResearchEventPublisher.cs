@@ -15,6 +15,9 @@ public sealed class ResearchEventPublisher
     public ResearchEventPublisher(IResearchEventSink? sink = null)
     {
         _sink = sink ?? NullResearchEventSink.Instance;
+        _nextLogicalEventId = _sink is IResearchEventSequence sequence
+            ? sequence.LastLogicalEventId
+            : 0;
     }
 
     public ResearchTelemetryMode Mode => _sink.Mode;

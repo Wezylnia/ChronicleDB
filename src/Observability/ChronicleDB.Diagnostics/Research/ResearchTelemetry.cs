@@ -150,6 +150,11 @@ public interface IResearchEventSink
     void Publish(ResearchEvent researchEvent);
 }
 
+public interface IResearchEventSequence
+{
+    long LastLogicalEventId { get; }
+}
+
 public sealed class NullResearchEventSink : IResearchEventSink
 {
     public static NullResearchEventSink Instance { get; } = new();
@@ -218,13 +223,24 @@ public sealed class ResearchMetricSnapshot
     public IReadOnlyList<long> EventCounts { get; }
 }
 
-public sealed class TraceResearchEventSink : IResearchEventSink
+public sealed class TraceResearchEventSink : IResearchEventSink, IResearchEventSequence
 {
     private readonly object _gate = new();
     private readonly List<ResearchEvent> _events = [];
     private long _lastLogicalEventId;
 
     public ResearchTelemetryMode Mode => ResearchTelemetryMode.Trace;
+
+    public long LastLogicalEventId
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _lastLogicalEventId;
+            }
+        }
+    }
 
     public void Publish(ResearchEvent researchEvent)
     {

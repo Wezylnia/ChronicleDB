@@ -76,6 +76,23 @@ public sealed class ResearchTelemetryTests
     }
 
     [Fact]
+    public void NewPublisherContinuesLogicalIdsFromExistingTraceSink()
+    {
+        var sink = new TraceResearchEventSink();
+        var firstPublisher = new ResearchEventPublisher(sink);
+        firstPublisher.TryPublish(id => CreateEvent(id, ["wal"], []), out _);
+
+        var secondPublisher = new ResearchEventPublisher(sink);
+        var published = secondPublisher.TryPublish(
+            id => CreateEvent(id, ["wal"], [1], ResearchEventKind.AuthorityPublished),
+            out var eventId);
+
+        Assert.True(published);
+        Assert.Equal(2, eventId);
+        Assert.Equal(2, sink.LastLogicalEventId);
+    }
+
+    [Fact]
     public void PublisherDoesNotInvokeFactoryWhenTelemetryIsDisabled()
     {
         var publisher = new ResearchEventPublisher();
