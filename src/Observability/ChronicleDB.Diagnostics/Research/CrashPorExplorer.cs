@@ -90,7 +90,12 @@ public sealed record PersistenceAction
 /// dependencies, one logical operation, and authority/lifecycle transitions all
 /// force dependence.
 /// </summary>
-public sealed class ConservativeHistoryIndependence
+public interface IPersistenceActionIndependence
+{
+    bool AreIndependent(PersistenceAction left, PersistenceAction right);
+}
+
+public sealed class ConservativeHistoryIndependence : IPersistenceActionIndependence
 {
     private readonly Dictionary<HistoryId, HistoryId?> _parents;
 
@@ -162,9 +167,47 @@ public sealed class ConservativeHistoryIndependence
         // history WAL/checkpoint authority domains are one of the hypotheses P2
         // needs to test. Shared catalog/root resources and explicit dependencies
         // already force dependence where publication is actually coupled.
+        => PersistenceActionIndependenceRules.IsGlobalTransition(kind);
+}
+
+/// <summary>
+/// Generic resource/dependency POR baseline. It intentionally has no branch ancestry
+/// model and therefore answers whether history topology adds anything beyond durable
+/// resource touch sets and explicit dependency edges.
+/// </summary>
+public sealed class ResourceDependencyIndependence : IPersistenceActionIndependence
+{
+    public bool AreIndependent(PersistenceAction left, PersistenceAction right)
+    {
+        ArgumentNullException.ThrowIfNull(left);
+        ArgumentNullException.ThrowIfNull(right);
+        return left.ActionId != right.ActionId
+            && left.OperationId != right.OperationId
+            && !left.DependencyActionIds.Contains(right.ActionId)
+            && !right.DependencyActionIds.Contains(left.ActionId)
+            && !left.ResourceSet.Intersect(right.ResourceSet, StringComparer.Ordinal).Any()
+            && !PersistenceActionIndependenceRules.IsGlobalTransition(left.EventKind)
+            && !PersistenceActionIndependenceRules.IsGlobalTransition(right.EventKind);
+    }
+}
+
+internal static class PersistenceActionIndependenceRules
+{
+    public static bool IsGlobalTransition(ResearchEventKind kind)
         => kind is ResearchEventKind.RecoveryStarted
             or ResearchEventKind.RecoveryCompleted
             or ResearchEventKind.CorruptionDetected;
+}
+
+public sealed record RandomCrashSamplingResult(
+    int SampleBudget,
+    int UniqueCrashPlansSampled,
+    int UniqueObservationTraceCount)
+{
+    public double ObservationCoverage(int exhaustiveObservationTraceCount)
+        => exhaustiveObservationTraceCount <= 0
+            ? 0d
+            : (double)UniqueObservationTraceCount / exhaustiveObservationTraceCount;
 }
 
 public sealed record PorVerificationResult(
@@ -195,9 +238,12 @@ public sealed class BoundedCrashPorExplorer
     private readonly PersistenceAction[] _actions;
     private readonly Dictionary<long, PersistenceAction> _byId;
     private readonly Dictionary<long, HashSet<long>> _requiredPredecessors;
-    private readonly ConservativeHistoryIndependence _independence;
+    private readonly IPersistenceActionIndependence _independence;
 
-    public BoundedCrashPorExplorer(IEnumerable<PersistenceAction> actions, int maximumActions = 9)
+    public BoundedCrashPorExplorer(
+        IEnumerable<PersistenceAction> actions,
+        int maximumActions = 9,
+        IPersistenceActionIndependence? independence = null)
     {
         ArgumentNullException.ThrowIfNull(actions);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumActions);
@@ -227,7 +273,7 @@ public sealed class BoundedCrashPorExplorer
         }
 
         _requiredPredecessors = BuildRequiredPredecessors(_actions);
-        _independence = new ConservativeHistoryIndependence(_actions);
+        _independence = independence ?? new ConservativeHistoryIndependence(_actions);
         EnsureAcyclic();
     }
 
@@ -327,6 +373,52 @@ public sealed class BoundedCrashPorExplorer
             exhaustiveTraces.Count,
             reducedTraces.Count,
             exhaustiveTraces.SetEquals(reducedTraces));
+    }
+
+    public RandomCrashSamplingResult SampleRandomCrashPlans(
+        Func<IReadOnlyList<PersistenceAction>, CanonicalObservationTrace> evaluator,
+        int sampleBudget,
+        int seed)
+    {
+        ArgumentNullException.ThrowIfNull(evaluator);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sampleBudget);
+
+        var random = new Random(seed);
+        var plans = new HashSet<string>(StringComparer.Ordinal);
+        var traces = new HashSet<CanonicalTraceKey>();
+        for (var sample = 0; sample < sampleBudget; sample++)
+        {
+            var order = GenerateRandomOrder(random);
+            var length = random.Next(0, order.Count + 1);
+            var prefix = order.Take(length).ToArray();
+            plans.Add(string.Join(',', prefix.Select(action => action.ActionId)));
+            traces.Add(new CanonicalTraceKey(evaluator(prefix).Points));
+        }
+
+        return new RandomCrashSamplingResult(sampleBudget, plans.Count, traces.Count);
+    }
+
+    private List<PersistenceAction> GenerateRandomOrder(Random random)
+    {
+        var selected = new HashSet<long>();
+        var order = new List<PersistenceAction>(_actions.Length);
+        while (order.Count < _actions.Length)
+        {
+            var ready = _actions
+                .Where(candidate => !selected.Contains(candidate.ActionId)
+                    && _requiredPredecessors[candidate.ActionId].IsSubsetOf(selected))
+                .ToArray();
+            if (ready.Length == 0)
+            {
+                throw new InvalidOperationException("Persistence action graph has no ready action.");
+            }
+
+            var candidate = ready[random.Next(ready.Length)];
+            selected.Add(candidate.ActionId);
+            order.Add(candidate);
+        }
+
+        return order;
     }
 
     private string CanonicalOrderSignature(IReadOnlyList<PersistenceAction> source)

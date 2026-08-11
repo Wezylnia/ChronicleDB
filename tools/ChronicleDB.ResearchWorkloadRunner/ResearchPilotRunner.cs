@@ -594,6 +594,31 @@ internal static class ResearchPilotRunner
                 var stopwatch = Stopwatch.StartNew();
                 var verification = explorer.VerifyCrashPrefixEquivalence(oracle.Evaluate);
 
+                // Strong generic baseline: resource/dependency-aware POR without any
+                // ChronicleDB branch ancestry model. If this matches the proposed
+                // reducer everywhere, the history-domain contribution is weaker.
+                var proposedIndependence = new ConservativeHistoryIndependence(actions);
+                var resourceBaselineIndependence = new ResourceDependencyIndependence();
+                var resourceBaselineUsesSameRelation = HaveSameIndependenceRelation(
+                    actions,
+                    proposedIndependence,
+                    resourceBaselineIndependence);
+                var resourceBaselineVerification = resourceBaselineUsesSameRelation
+                    ? verification
+                    : new BoundedCrashPorExplorer(
+                        actions,
+                        maximumActions: historyCount * 4,
+                        independence: resourceBaselineIndependence)
+                        .VerifyCrashPrefixEquivalence(oracle.Evaluate);
+
+                // Same-budget random crash sampling. This does not claim soundness; it
+                // attacks whether deterministic reduction buys semantic coverage beyond
+                // a simple seeded campaign with the same number of executed plans.
+                var randomBaseline = explorer.SampleRandomCrashPlans(
+                    oracle.Evaluate,
+                    sampleBudget: Math.Max(1, verification.ReducedCrashPlanCount),
+                    seed: 20_260_811 + historyCount);
+
                 // Negative control: deliberately hide the shared branch-catalog touch
                 // from the independence relation while keeping the real observer. If
                 // equivalence survives this control, the claimed resource-aware POR
@@ -635,6 +660,14 @@ internal static class ResearchPilotRunner
                     ObservationSetsEquivalent: verification.ObservationSetsEquivalent,
                     OrderReductionFactor: verification.OrderReductionFactor,
                     CrashPlanReductionFactor: verification.CrashPlanReductionFactor,
+                    ResourceBaselineUsesSameIndependenceRelation: resourceBaselineUsesSameRelation,
+                    ResourceBaselineObservationSetsEquivalent: resourceBaselineVerification.ObservationSetsEquivalent,
+                    ResourceBaselineReducedCrashPlanCount: resourceBaselineVerification.ReducedCrashPlanCount,
+                    ResourceBaselineCrashPlanReductionFactor: resourceBaselineVerification.CrashPlanReductionFactor,
+                    RandomBaselineSampleBudget: randomBaseline.SampleBudget,
+                    RandomBaselineUniqueCrashPlans: randomBaseline.UniqueCrashPlansSampled,
+                    RandomBaselineObservationTraceCount: randomBaseline.UniqueObservationTraceCount,
+                    RandomBaselineObservationCoverage: randomBaseline.ObservationCoverage(verification.ExhaustiveObservationTraceCount),
                     CatalogBlindObservationSetsEquivalent: catalogBlindVerification.ObservationSetsEquivalent,
                     CatalogBlindReducedCrashPlanCount: catalogBlindVerification.ReducedCrashPlanCount,
                     CatalogBlindCrashPlanReductionFactor: catalogBlindVerification.CrashPlanReductionFactor,
@@ -646,8 +679,9 @@ internal static class ResearchPilotRunner
                     $"P2R {(result.ObservationSetsEquivalent ? "PASS" : "FAIL")} histories={historyCount} " +
                     $"actions={result.ActionCount} shared={string.Join(',', result.SharedResources)} " +
                     $"exhaustive-plans={result.ExhaustiveCrashPlanCount} reduced-plans={result.ReducedCrashPlanCount} " +
-                    $"crf={result.CrashPlanReductionFactor:F2} catalog-blind-eq={result.CatalogBlindObservationSetsEquivalent} " +
-                    $"output={outputDirectory}");
+                    $"crf={result.CrashPlanReductionFactor:F2} generic-crf={result.ResourceBaselineCrashPlanReductionFactor:F2} " +
+                    $"random-coverage={result.RandomBaselineObservationCoverage:P1} " +
+                    $"catalog-blind-eq={result.CatalogBlindObservationSetsEquivalent} output={outputDirectory}");
                 return result.ObservationSetsEquivalent && !result.CatalogBlindObservationSetsEquivalent ? 0 : 1;
             }
             finally
@@ -663,6 +697,26 @@ internal static class ResearchPilotRunner
             Console.Error.WriteLine($"P2R FAIL: {exception}");
             return 1;
         }
+    }
+
+    private static bool HaveSameIndependenceRelation(
+        IReadOnlyList<PersistenceAction> actions,
+        ConservativeHistoryIndependence left,
+        ResourceDependencyIndependence right)
+    {
+        for (var first = 0; first < actions.Count; first++)
+        {
+            for (var second = first + 1; second < actions.Count; second++)
+            {
+                if (left.AreIndependent(actions[first], actions[second])
+                    != right.AreIndependent(actions[first], actions[second]))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     private static int RunCrashPorPilot(string[] args)
@@ -1160,6 +1214,14 @@ internal static class ResearchPilotRunner
         bool ObservationSetsEquivalent,
         double OrderReductionFactor,
         double CrashPlanReductionFactor,
+        bool ResourceBaselineUsesSameIndependenceRelation,
+        bool ResourceBaselineObservationSetsEquivalent,
+        int ResourceBaselineReducedCrashPlanCount,
+        double ResourceBaselineCrashPlanReductionFactor,
+        int RandomBaselineSampleBudget,
+        int RandomBaselineUniqueCrashPlans,
+        int RandomBaselineObservationTraceCount,
+        double RandomBaselineObservationCoverage,
         bool CatalogBlindObservationSetsEquivalent,
         int CatalogBlindReducedCrashPlanCount,
         double CatalogBlindCrashPlanReductionFactor,

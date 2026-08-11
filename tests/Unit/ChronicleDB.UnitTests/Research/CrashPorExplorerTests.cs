@@ -89,6 +89,49 @@ public sealed class CrashPorExplorerTests
     }
 
     [Fact]
+    public void GenericResourceBaselineDoesNotModelAncestry()
+    {
+        var parent = Action(1, HistoryA, "a.wal");
+        var child = new PersistenceAction(
+            2,
+            ResearchEventKind.OperationStarted,
+            HistoryB,
+            HistoryA,
+            Guid.Parse("00000000-0000-0000-0000-000000000002"),
+            ["b.wal"],
+            ResearchDurabilityPhase.WalAppended,
+            1);
+
+        var historyAware = new BoundedCrashPorExplorer([parent, child]);
+        var resourceOnly = new BoundedCrashPorExplorer(
+            [parent, child],
+            independence: new ResourceDependencyIndependence());
+
+        Assert.Equal(2, historyAware.EnumerateReducedOrders().Count);
+        Assert.Single(resourceOnly.EnumerateReducedOrders());
+    }
+
+    [Fact]
+    public void RandomCrashSamplingUsesFixedBudgetAndIsDeterministic()
+    {
+        var actions = new[]
+        {
+            Action(1, HistoryA, "a.wal"),
+            Action(2, HistoryB, "b.wal"),
+            Action(3, new HistoryId(Guid.Parse("30000000-0000-0000-0000-000000000001")), "c.wal"),
+        };
+        var explorer = new BoundedCrashPorExplorer(actions);
+
+        var first = explorer.SampleRandomCrashPlans(OrderSensitiveEvaluator, sampleBudget: 7, seed: 42);
+        var second = explorer.SampleRandomCrashPlans(OrderSensitiveEvaluator, sampleBudget: 7, seed: 42);
+
+        Assert.Equal(7, first.SampleBudget);
+        Assert.Equal(first, second);
+        Assert.InRange(first.UniqueCrashPlansSampled, 1, 7);
+        Assert.InRange(first.UniqueObservationTraceCount, 1, 7);
+    }
+
+    [Fact]
     public void DisjointPerHistoryAuthorityPublicationCanCommute()
     {
         var explorer = new BoundedCrashPorExplorer(
