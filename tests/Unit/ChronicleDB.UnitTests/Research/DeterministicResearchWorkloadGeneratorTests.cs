@@ -53,6 +53,25 @@ public sealed class DeterministicResearchWorkloadGeneratorTests
     }
 
     [Fact]
+    public void BranchCreationSlotsAreNotRepeatedByControlAndDeepFamilies()
+    {
+        var control = DeterministicResearchWorkloadGenerator.Generate(ResearchWorkloadFamily.S0Control, 1, 32);
+        var deep = DeterministicResearchWorkloadGenerator.Generate(ResearchWorkloadFamily.S3DeepInheritance, 1, 64);
+
+        var controlBranches = control
+            .Where(operation => operation.Kind == ResearchWorkloadOperationKind.CreateBranch)
+            .Select(operation => operation.HistorySlot)
+            .ToArray();
+        var deepBranches = deep
+            .Where(operation => operation.Kind == ResearchWorkloadOperationKind.CreateBranch)
+            .Select(operation => operation.HistorySlot)
+            .ToArray();
+
+        Assert.Equal(controlBranches.Distinct().Count(), controlBranches.Length);
+        Assert.Equal(deepBranches.Distinct().Count(), deepBranches.Length);
+    }
+
+    [Fact]
     public void NegativeOperationCountIsRejected()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() =>

@@ -107,7 +107,7 @@ public static class DeterministicResearchWorkloadGenerator
     }
 
     private static ResearchWorkloadOperation CreateControl(int step, int key, int valueSize)
-        => step % 8 == 0
+        => step == 0
             ? Branch(step, 1, 0, key, valueSize)
             : Data(step, step % 2 == 0 ? ResearchWorkloadOperationKind.Put : ResearchWorkloadOperationKind.Read, 0, key, valueSize);
 
@@ -126,7 +126,7 @@ public static class DeterministicResearchWorkloadGenerator
     private static ResearchWorkloadOperation CreateDeepInheritance(int step, int key, int valueSize)
     {
         var depth = Math.Min(16, 1 + step / 2);
-        return step % 2 == 0
+        return step % 2 == 0 && step / 2 < 16
             ? Branch(step, depth, depth - 1, key, valueSize)
             : Data(step, ResearchWorkloadOperationKind.Read, depth, key, valueSize);
     }
