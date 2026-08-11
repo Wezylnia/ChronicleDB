@@ -2,7 +2,13 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using ChronicleDB;
 using ChronicleDB.Diagnostics.Research;
+using ChronicleDB.Storage;
 using ChronicleDB.Transactions.Faults;
+
+if (args.Length > 0 && args[0].Equals("pilot", StringComparison.OrdinalIgnoreCase))
+{
+    return await ResearchPilotRunner.RunAsync(args[1..]);
+}
 
 if (args.Length > 0 && args[0].Equals("crash", StringComparison.OrdinalIgnoreCase))
 {
@@ -37,7 +43,7 @@ if (family is not (ResearchWorkloadFamily.S0Control
     or ResearchWorkloadFamily.S4WideIndependentHistories
     or ResearchWorkloadFamily.S6ErasureConflict))
 {
-    Console.Error.WriteLine("This baseline runner currently supports only S0-S3; S4-S7 need family-specific execution semantics.");
+    Console.Error.WriteLine("This baseline runner supports S0-S4 and S6; S5/S7 use crash or campaign mode.");
     return 2;
 }
 
@@ -73,6 +79,7 @@ try
         Execute(database, branches, snapshots, operation);
     }
 
+    EnsureTelemetryComplete(database.GetResearchTelemetryStatus());
     var events = sink.Snapshot();
     ResearchTraceValidator.Validate(events);
     var traceArtifact = session.Complete(events);
@@ -246,10 +253,10 @@ static ExperimentManifest CreateManifest(
     return new ExperimentManifest
     {
         ExperimentId = Guid.NewGuid(),
-        ManifestFormatVersion = 1,
+        ManifestFormatVersion = ExperimentManifest.CurrentFormatVersion,
         ResearchTraceFormatVersion = ResearchTraceSerializer.CurrentFormatVersion,
         ChronicleVersion = "v1.1-research",
-        GitCommit = Environment.GetEnvironmentVariable("CHRONICLE_GIT_COMMIT") ?? "unknown",
+        GitCommit = ResolveGitCommit(),
         BuildConfiguration = "Release",
         MachineId = Environment.MachineName,
         Cpu = RuntimeInformation.ProcessArchitecture.ToString(),
@@ -258,7 +265,7 @@ static ExperimentManifest CreateManifest(
         FileSystem = drive.DriveFormat,
         OperatingSystem = RuntimeInformation.OSDescription,
         DotNetVersion = Environment.Version.ToString(),
-        PageSize = 4096,
+        PageSize = StorageOptions.DefaultPageSize,
         KeySize = 1,
         ValueSize = Math.Max(1, profile.MaximumValueSize),
         WorkloadSeed = seed,
@@ -269,6 +276,7 @@ static ExperimentManifest CreateManifest(
         TrialOrder = 0,
         WorkloadFamily = family.ToString(),
         DurationMilliseconds = 0,
+        CacheState = "unspecified",
         BranchCount = profile.BranchCount,
         BranchDepth = profile.MaximumBranchDepth,
         Fanout = profile.MaximumFanout,
@@ -286,6 +294,57 @@ static ExperimentManifest CreateManifest(
         TelemetryMode = ResearchTelemetryMode.Trace,
         UtcStartedAt = DateTimeOffset.UtcNow,
     };
+}
+
+static string ResolveGitCommit()
+{
+    var configured = Environment.GetEnvironmentVariable("CHRONICLE_GIT_COMMIT");
+    if (!string.IsNullOrWhiteSpace(configured))
+    {
+        return configured.Trim();
+    }
+
+    try
+    {
+        using var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = "git",
+            Arguments = "rev-parse HEAD",
+            WorkingDirectory = Environment.CurrentDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        });
+        if (process is not null)
+        {
+            var output = process.StandardOutput.ReadToEnd();
+            if (!process.WaitForExit(milliseconds: 2_000))
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Process already exited between the timeout and cleanup.
+                }
+
+                return "unknown";
+            }
+
+            if (process.ExitCode == 0 && !string.IsNullOrWhiteSpace(output))
+            {
+                return output.Trim();
+            }
+        }
+    }
+    catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
+    {
+        // Reproducibility validation below will reject an unknown commit for publication runs.
+    }
+
+    return "unknown";
 }
 
 static async Task<int> RunCrashParentAsync(string[] args)
@@ -345,25 +404,56 @@ static async Task<int> RunCrashParentAsync(string[] args)
         operations,
         crashPlan);
 
+    var crashMarkerPath = Path.Combine(outputDirectory, "crash-marker.txt");
+    File.Delete(crashMarkerPath);
     using var process = StartCrashChild(
         databaseDirectory,
         family,
         seed,
         operationCount,
-        injection);
-    await process.WaitForExitAsync();
-    if (process.ExitCode == 0)
+        injection,
+        crashMarkerPath);
+    using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
     {
-        Console.Error.WriteLine("Crash child exited normally; the configured fault point was not reached.");
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch (InvalidOperationException)
+            {
+                // Process exited while the timeout handler was running.
+            }
+
+            Console.Error.WriteLine("Crash child exceeded the 30 second research-run timeout.");
+            return 1;
+        }
+    }
+    var expectedMarker = CrashInjector.MarkerText(injection.OperationStep, injection.FaultPoint);
+    var markerMatches = File.Exists(crashMarkerPath)
+        && string.Equals(File.ReadAllText(crashMarkerPath), expectedMarker, StringComparison.Ordinal);
+    if (process.ExitCode == 0 || !markerMatches)
+    {
+        Console.Error.WriteLine(
+            $"Crash child did not reach the configured fault point cleanly: exit={process.ExitCode} " +
+            $"marker={(markerMatches ? "matched" : "missing-or-invalid")}.");
         return 1;
     }
 
     var sink = new TraceResearchEventSink();
+    ResearchTelemetryStatus recoveryTelemetry;
     using (var recovered = ChronicleDatabase.Open(databaseDirectory, researchEventSink: sink))
     {
         _ = recovered.GetDiagnostics();
+        recoveryTelemetry = recovered.GetResearchTelemetryStatus();
     }
 
+    EnsureTelemetryComplete(recoveryTelemetry);
     var recoveryEvents = sink.Snapshot();
     ResearchTraceValidator.Validate(recoveryEvents);
     var traceArtifact = session.Complete(recoveryEvents);
@@ -434,12 +524,24 @@ static async Task<int> RunCrashCampaignAsync(string[] args)
     return failures == 0 ? 0 : 1;
 }
 
+static void EnsureTelemetryComplete(ResearchTelemetryStatus status)
+{
+    ArgumentNullException.ThrowIfNull(status);
+    if (!status.IsComplete)
+    {
+        throw new InvalidOperationException(
+            $"Research telemetry is incomplete: mode={status.Mode}, faulted={status.IsFaulted}, " +
+            $"publicationFailures={status.PublicationFailures}, lastEvent={status.LastLogicalEventId}.");
+    }
+}
+
 static Process StartCrashChild(
     string databaseDirectory,
     ResearchWorkloadFamily family,
     int seed,
     int operationCount,
-    ResearchCrashInjection injection)
+    ResearchCrashInjection injection,
+    string crashMarkerPath)
 {
     var startInfo = new ProcessStartInfo
     {
@@ -460,20 +562,21 @@ static Process StartCrashChild(
     startInfo.ArgumentList.Add(operationCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
     startInfo.ArgumentList.Add(injection.OperationStep.ToString(System.Globalization.CultureInfo.InvariantCulture));
     startInfo.ArgumentList.Add(injection.FaultPoint);
+    startInfo.ArgumentList.Add(crashMarkerPath);
     return Process.Start(startInfo)
         ?? throw new InvalidOperationException("Could not start research crash child process.");
 }
 
 static int RunCrashChild(string[] args)
 {
-    if (args.Length != 6
+    if (args.Length != 7
         || !TryParseFamily(args[1], out var family)
         || !int.TryParse(args[2], out var seed)
         || !int.TryParse(args[3], out var operationCount)
         || !int.TryParse(args[4], out var crashStep)
         || !Enum.TryParse<TransactionFaultPoint>(args[5], ignoreCase: true, out var faultPoint))
     {
-        Console.Error.WriteLine("Usage: child <database-directory> <family> <seed> <operation-count> <crash-step> <fault-point>");
+        Console.Error.WriteLine("Usage: child <database-directory> <family> <seed> <operation-count> <crash-step> <fault-point> <crash-marker-path>");
         return 2;
     }
 
@@ -488,11 +591,20 @@ static int RunCrashChild(string[] args)
     var branches = new Dictionary<int, ChronicleBranch>();
     var branchIds = new Dictionary<int, Guid>();
     var snapshots = new List<IDisposable>();
-    var database = ChronicleDatabase.Open(args[0]);
+    ChronicleDatabase? database = null;
     try
     {
+        database = ChronicleDatabase.Open(args[0]);
         foreach (var operation in operations.Where(operation => operation.Step < crashStep))
         {
+            // Crash/Recover entries are control markers. Each crash injection is an
+            // independent replay from a clean database prefix, so earlier markers do
+            // not themselves crash or reopen the process.
+            if (operation.Kind is ResearchWorkloadOperationKind.Crash or ResearchWorkloadOperationKind.Recover)
+            {
+                continue;
+            }
+
             Execute(database, branches, snapshots, operation, branchIds);
         }
 
@@ -505,14 +617,20 @@ static int RunCrashChild(string[] args)
 
         database = ChronicleDatabase.Open(
             args[0],
-            faultInjector: new CrashInjector(faultPoint));
+            faultInjector: new CrashInjector(faultPoint, args[6], crashStep));
         foreach (var (slot, branchId) in branchIds)
         {
             branches.Add(slot, database.OpenBranch(branchId));
         }
 
         ExecuteCrashOperation(database, branches, crashOperation);
-        return 0;
+        Console.Error.WriteLine("Configured fault point was not reached by the crash operation.");
+        return 1;
+    }
+    catch (Exception exception)
+    {
+        Console.Error.WriteLine($"Crash child failed before the configured FailFast injection: {exception}");
+        return 1;
     }
     finally
     {
@@ -526,7 +644,7 @@ static int RunCrashChild(string[] args)
             branch.Dispose();
         }
 
-        database.Dispose();
+        database?.Dispose();
     }
 }
 
@@ -545,13 +663,37 @@ static void ExecuteCrashOperation(
     }
 }
 
-file sealed class CrashInjector(TransactionFaultPoint target) : ITransactionFaultInjector
+file sealed class CrashInjector(
+    TransactionFaultPoint target,
+    string markerPath,
+    int operationStep) : ITransactionFaultInjector
 {
+    public static string MarkerText(int step, string faultPoint)
+        => $"step={step};fault={faultPoint}";
+
     public void Hit(TransactionFaultPoint point)
     {
-        if (point == target)
+        if (point != target)
         {
-            Environment.FailFast($"Injected research crash at {point}.");
+            return;
         }
+
+        var marker = MarkerText(operationStep, point.ToString());
+        Directory.CreateDirectory(Path.GetDirectoryName(markerPath)!);
+        using (var stream = new FileStream(
+            markerPath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.Read,
+            bufferSize: 4096,
+            FileOptions.WriteThrough))
+        using (var writer = new StreamWriter(stream, leaveOpen: true))
+        {
+            writer.Write(marker);
+            writer.Flush();
+            stream.Flush(flushToDisk: true);
+        }
+
+        Environment.FailFast($"Injected research crash at {point}.");
     }
 }
