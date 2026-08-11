@@ -286,10 +286,24 @@ public sealed class WalLog : IDisposable
         }
         finally
         {
-            if (File.Exists(temporaryPath))
+            TryDeleteNonAuthoritativeFile(temporaryPath);
+        }
+    }
+
+    private static void TryDeleteNonAuthoritativeFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
             {
-                File.Delete(temporaryPath);
+                File.Delete(path);
             }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The canonical WAL was either never published or another opener won the
+            // create race. Failure to remove our temporary file must not mask the
+            // authoritative creation/open result.
         }
     }
 

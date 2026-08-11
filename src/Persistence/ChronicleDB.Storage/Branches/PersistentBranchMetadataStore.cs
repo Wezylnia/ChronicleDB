@@ -415,8 +415,19 @@ public sealed class PersistentBranchMetadataStore : IDisposable
                 .ThenBy(record => record.Name, StringComparer.Ordinal)
                 .ToArray();
             var path = _stream.Name;
-            var temp = path + "." + Guid.NewGuid().ToString("N") + ".compacting";
             var backup = path + ".previous";
+            if (_nextEventSequence == checked((ulong)active.Length + 1)
+                && _states.Count == active.Length
+                && _commits.Count == active.Length
+                && _commits.Values.All(commits => commits.Count == 0))
+            {
+                // Canonical v1 form stores one RestoreActive record per live branch;
+                // retry stale-backup cleanup without rewriting transaction metadata.
+                TryDeleteNonAuthoritativeFile(backup);
+                return;
+            }
+
+            var temp = path + "." + Guid.NewGuid().ToString("N") + ".compacting";
             try
             {
                 using (var output = new FileStream(
@@ -441,9 +452,12 @@ public sealed class PersistentBranchMetadataStore : IDisposable
 
                 _stream.Flush(flushToDisk: true);
                 _stream.Dispose();
-                if (File.Exists(backup))
+                if (!TryPrepareBackupPath(backup))
                 {
-                    File.Delete(backup);
+                    // The canonical journal is still authoritative and publication has
+                    // not started. Keep the store usable and retry maintenance later.
+                    _stream = OpenJournal(path);
+                    return;
                 }
                 File.Replace(temp, path, backup);
                 _stream = OpenJournal(path);
@@ -467,10 +481,7 @@ public sealed class PersistentBranchMetadataStore : IDisposable
                     _seenBranchIds.Add(record.BranchId);
                     _seenHistoryIds.Add(record.HistoryId);
                 }
-                if (File.Exists(backup))
-                {
-                    File.Delete(backup);
-                }
+                TryDeleteNonAuthoritativeFile(backup);
             }
             catch
             {
@@ -483,11 +494,40 @@ public sealed class PersistentBranchMetadataStore : IDisposable
             }
             finally
             {
-                if (File.Exists(temp))
-                {
-                    File.Delete(temp);
-                }
+                TryDeleteNonAuthoritativeFile(temp);
             }
+        }
+    }
+
+    private static bool TryPrepareBackupPath(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static void TryDeleteNonAuthoritativeFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The active journal has already been selected independently. Orphaned temp
+            // output or a previous generation is cleanup debt, not authoritative state.
         }
     }
 
@@ -601,6 +641,7 @@ public sealed class PersistentBranchMetadataStore : IDisposable
     {
         var position = (long)BranchStoreHeaderCodec.Size;
         var expectedEventSequence = 1UL;
+        var header = new byte[BranchStoreRecordCodec.HeaderSize];
         while (position < _stream.Length)
         {
             var remaining = _stream.Length - position;
@@ -610,7 +651,6 @@ public sealed class PersistentBranchMetadataStore : IDisposable
                 break;
             }
 
-            var header = new byte[BranchStoreRecordCodec.HeaderSize];
             ReadExactly(_stream, header, position);
             if (!header.AsSpan(0, 4).SequenceEqual("BRN1"u8))
             {
@@ -629,6 +669,12 @@ public sealed class PersistentBranchMetadataStore : IDisposable
 
             if (totalLength > remaining)
             {
+                if (HasCompleteFooter(position, remaining))
+                {
+                    throw new StorageCorruptionException(
+                        "Branch metadata header length is corrupt even though a complete footer is present.");
+                }
+
                 TruncateTail(position);
                 break;
             }
@@ -648,6 +694,22 @@ public sealed class PersistentBranchMetadataStore : IDisposable
         }
 
         _nextEventSequence = expectedEventSequence;
+    }
+
+    private bool HasCompleteFooter(long recordOffset, long remaining)
+    {
+        if (remaining < BranchStoreRecordCodec.FooterSize || remaining > int.MaxValue)
+        {
+            return false;
+        }
+
+        var footer = new byte[BranchStoreRecordCodec.FooterSize];
+        ReadExactly(
+            _stream,
+            footer,
+            checked(recordOffset + remaining - BranchStoreRecordCodec.FooterSize));
+        var footerLength = BinaryPrimitives.ReadUInt32LittleEndian(footer.AsSpan(0, 4));
+        return footerLength == remaining && footer.AsSpan(4, 4).SequenceEqual("BEND"u8);
     }
 
     private void ApplyRecoveredRecord(BranchStoreRecord record)
@@ -865,10 +927,7 @@ public sealed class PersistentBranchMetadataStore : IDisposable
         }
         finally
         {
-            if (File.Exists(temporaryPath))
-            {
-                File.Delete(temporaryPath);
-            }
+            TryDeleteNonAuthoritativeFile(temporaryPath);
         }
     }
 

@@ -757,17 +757,17 @@ public sealed class PersistentKeyValueStore : IDisposable
                 {
                     _options.FaultInjector?.Hit(StorageFaultPoint.BeforeCompactionPublish, PageId.Invalid);
                 }
-                // From this point onward the authoritative file publication protocol has
-                // begun. Any exception requires reopen before this store instance may be
-                // trusted again, even when recovery can deterministically choose a file.
-                publicationTouched = true;
+                // Flush and close the current generation before publishing a replacement.
+                // Neither action changes which on-disk generation is authoritative.
                 _data.Flush(flushToDisk: true);
                 _data.Dispose();
                 dataClosed = true;
-                if (File.Exists(backupPath))
-                {
-                    File.Delete(backupPath);
-                }
+                TryDeleteCompactionBackup(backupPath);
+
+                // The first rename changes the publication state. From this point onward an
+                // exception requires reopen before this store instance may be trusted again,
+                // even when recovery can deterministically choose a valid generation.
+                publicationTouched = true;
                 File.Move(dataPath, backupPath, overwrite: true);
                 try
                 {
@@ -798,10 +798,10 @@ public sealed class PersistentKeyValueStore : IDisposable
                     _options.FaultInjector?.Hit(StorageFaultPoint.AfterCompactionPublish, PageId.Invalid);
                     _options.FaultInjector?.Hit(StorageFaultPoint.BeforeCompactionCleanup, PageId.Invalid);
                 }
-                if (File.Exists(backupPath))
-                {
-                    File.Delete(backupPath);
-                }
+                // The new primary has been reopened, scanned, and compared byte-for-byte
+                // with the requested logical state. A failure to retire the previous
+                // generation is therefore cleanup debt, not a database correctness failure.
+                TryDeleteCompactionBackup(backupPath);
                 if (injectPublicationFaults)
                 {
                     _options.FaultInjector?.Hit(StorageFaultPoint.AfterCompactionCleanup, PageId.Invalid);
@@ -841,9 +841,10 @@ public sealed class PersistentKeyValueStore : IDisposable
                         Directory.Delete(tempDirectory, recursive: true);
                     }
                 }
-                catch (IOException)
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
-                    // Orphaned temporary output is never authoritative.
+                    // Orphaned temporary output is never authoritative. Cleanup can be
+                    // retried on a later maintenance pass without faulting the live store.
                 }
             }
         }
@@ -937,10 +938,10 @@ public sealed class PersistentKeyValueStore : IDisposable
         {
             return false;
         }
-        var map = expected.ToDictionary(item => item.Key, item => item.Value.ToArray());
+        var map = expected.ToDictionary(item => item.Key, item => item.Value);
         foreach (var item in actual)
         {
-            if (!map.TryGetValue(item.Key, out var value) || !value.AsSpan().SequenceEqual(item.Value.Span))
+            if (!map.TryGetValue(item.Key, out var value) || !value.Span.SequenceEqual(item.Value.Span))
             {
                 return false;
             }

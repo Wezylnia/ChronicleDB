@@ -319,9 +319,9 @@ public sealed partial class ChronicleDatabase : IDisposable
             var snapshotRecords = snapshotStore.ListActive();
             ReconcileSnapshotRoots(historyRootStore, snapshotRecords, store.DatabaseId, mainHistoryId);
 
-            // v0.7 favors correctness over lazy-open cost: every active branch is validated
-            // and reconstructed during database open. This also verifies branch snapshots
-            // before the database is exposed as ready.
+            // v1.0 deliberately favors eager correctness validation over lazy branch open: every
+            // active branch and its persistent snapshots are reconstructed before the
+            // database is exposed as ready.
             branchRuntimes = OpenBranchRuntimes(
                 fullDirectory,
                 branchDefinitions,
@@ -1293,9 +1293,10 @@ public sealed partial class ChronicleDatabase : IDisposable
         {
             if (File.Exists(path)) File.Delete(path);
         }
-        catch (IOException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // The authoritative WAL/checkpoint validation that follows decides open safety.
+            // The file is not authoritative until its capability flag is published.
+            // Cleanup failure does not change the WAL/checkpoint recovery decision.
         }
     }
 

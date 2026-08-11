@@ -222,8 +222,16 @@ public sealed class PersistentSnapshotStore : IDisposable
                 .ThenBy(record => record.Name, StringComparer.Ordinal)
                 .ToArray();
             var path = _stream.Name;
-            var temp = path + "." + Guid.NewGuid().ToString("N") + ".compacting";
             var backup = path + ".previous";
+            if (_nextEventSequence == checked((ulong)active.Length + 1))
+            {
+                // The journal already consists of one canonical Create event per
+                // active snapshot. Retry stale-backup cleanup without rewriting it.
+                TryDeleteNonAuthoritativeFile(backup);
+                return;
+            }
+
+            var temp = path + "." + Guid.NewGuid().ToString("N") + ".compacting";
             try
             {
                 using (var output = new FileStream(
@@ -245,9 +253,12 @@ public sealed class PersistentSnapshotStore : IDisposable
 
                 _stream.Flush(flushToDisk: true);
                 _stream.Dispose();
-                if (File.Exists(backup))
+                if (!TryPrepareBackupPath(backup))
                 {
-                    File.Delete(backup);
+                    // The canonical journal is still authoritative and publication has
+                    // not started. Keep the store usable and retry maintenance later.
+                    _stream = OpenJournal(path);
+                    return;
                 }
                 File.Replace(temp, path, backup);
                 _stream = OpenJournal(path);
@@ -260,10 +271,7 @@ public sealed class PersistentSnapshotStore : IDisposable
                 _maximumReferencedSequence = active.Length == 0
                     ? CommitSequence.Initial
                     : new CommitSequence(active.Max(record => record.Sequence.Value));
-                if (File.Exists(backup))
-                {
-                    File.Delete(backup);
-                }
+                TryDeleteNonAuthoritativeFile(backup);
             }
             catch
             {
@@ -276,11 +284,40 @@ public sealed class PersistentSnapshotStore : IDisposable
             }
             finally
             {
-                if (File.Exists(temp))
-                {
-                    File.Delete(temp);
-                }
+                TryDeleteNonAuthoritativeFile(temp);
             }
+        }
+    }
+
+    private static bool TryPrepareBackupPath(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static void TryDeleteNonAuthoritativeFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The active journal has already been selected independently. Orphaned temp
+            // output or a previous generation is cleanup debt, not authoritative state.
         }
     }
 
@@ -491,10 +528,7 @@ public sealed class PersistentSnapshotStore : IDisposable
         }
         finally
         {
-            if (File.Exists(temporaryPath))
-            {
-                File.Delete(temporaryPath);
-            }
+            TryDeleteNonAuthoritativeFile(temporaryPath);
         }
     }
 

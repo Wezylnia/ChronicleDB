@@ -47,21 +47,15 @@ public static class PersistentHistoryCheckpoint
             return null;
         }
 
-        try
-        {
-            var result = Read(path, expectedDatabaseId, expectedHistoryId);
-            if (File.Exists(backup))
-            {
-                File.Delete(backup);
-            }
-            return result;
-        }
-        catch when (File.Exists(backup))
-        {
-            var fallback = Read(backup, expectedDatabaseId, expectedHistoryId);
-            File.Move(backup, path, overwrite: true);
-            return fallback;
-        }
+        // A present primary is the only candidate for the current generation. A stale
+        // .previous file may outlive successful publication if cleanup failed, and the
+        // WAL may already have rotated past that older checkpoint. Falling back from a
+        // corrupt present primary could therefore roll durable history backward. The
+        // backup is used only above, when the primary is actually missing after an
+        // interrupted rename.
+        var result = Read(path, expectedDatabaseId, expectedHistoryId);
+        TryDeleteNonAuthoritativeFile(backup);
+        return result;
     }
 
     public static long Publish(
@@ -104,18 +98,27 @@ public static class PersistentHistoryCheckpoint
 
             // Re-read the published bytes before retiring the previous generation.
             _ = Read(path, checkpoint.DatabaseId, checkpoint.HistoryId);
-            if (File.Exists(backup))
-            {
-                File.Delete(backup);
-            }
+            TryDeleteNonAuthoritativeFile(backup);
             return new FileInfo(path).Length;
         }
         finally
         {
-            if (File.Exists(temp))
+            TryDeleteNonAuthoritativeFile(temp);
+        }
+    }
+
+    private static void TryDeleteNonAuthoritativeFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
             {
-                File.Delete(temp);
+                File.Delete(path);
             }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // A validated primary remains authoritative. Cleanup can be retried later.
         }
     }
 
@@ -126,7 +129,7 @@ public static class PersistentHistoryCheckpoint
     {
         var ordered = checkpoint.Versions
             .OrderBy(version => version.CommitSequence.Value)
-            .ThenBy(version => Convert.ToHexString(version.Key.AsSpan()), StringComparer.Ordinal)
+            .ThenBy(version => version.Key, BinaryKeyLexicographicComparer.Instance)
             .ToArray();
 
         var header = new byte[HeaderSize];
@@ -223,9 +226,9 @@ public static class PersistentHistoryCheckpoint
         // up-front allocation before the first record is validated. Grow gradually
         // while decoding instead.
         var versions = new List<HistoryCheckpointVersion>(Math.Min(count, 4_096));
+        var recordHeader = new byte[RecordHeaderSize];
         for (var index = 0; index < count; index++)
         {
-            var recordHeader = new byte[RecordHeaderSize];
             ReadExactly(stream, recordHeader);
             if (!recordHeader.AsSpan(0, 4).SequenceEqual(RecordMagic)
                 || recordHeader[4] != 1

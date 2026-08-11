@@ -486,7 +486,7 @@ internal sealed class BranchRuntime : IDisposable
                      .ThenBy(group => group.Key.TransactionId.Value))
         {
             var mutations = transaction
-                .OrderBy(version => Convert.ToHexString(version.Key.AsSpan()), StringComparer.Ordinal)
+                .OrderBy(version => version.Key, BinaryKeyLexicographicComparer.Instance)
                 .ToArray();
             for (var index = 0; index < mutations.Length; index++)
             {
@@ -522,16 +522,16 @@ internal sealed class BranchRuntime : IDisposable
     {
         var expected = versions.SnapshotHistory()
             .ToDictionary(
-                version => (version.CommitSequence, version.TransactionId, Convert.ToHexString(version.Key.AsSpan())),
+                version => (version.CommitSequence, version.TransactionId, version.Key),
                 version => version);
         var actual = DecodePhysicalRecords(definition, store)
             .SelectMany(pair => pair.Value)
             .ToArray();
-        var seenExpected = new HashSet<(CommitSequence, TransactionId, string)>();
+        var seenExpected = new HashSet<(CommitSequence, TransactionId, BinaryKey)>();
 
         foreach (var record in actual)
         {
-            var key = (record.CommitSequence, record.TransactionId, Convert.ToHexString(record.Key));
+            var key = (record.CommitSequence, record.TransactionId, new BinaryKey(record.Key));
             if (!expected.TryGetValue(key, out var version))
             {
                 // A freshly published retained-history checkpoint may intentionally make
@@ -642,9 +642,10 @@ internal sealed class BranchRuntime : IDisposable
         {
             if (File.Exists(path)) File.Delete(path);
         }
-        catch (IOException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // The subsequent authoritative WAL open still determines correctness.
+            // The file is not authoritative until the corresponding capability flag is
+            // published. Cleanup failure may leave an orphan, but must not alter recovery.
         }
     }
 
