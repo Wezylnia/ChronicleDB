@@ -36,7 +36,8 @@ var databaseDirectory = Path.Combine(outputDirectory, "database");
 var artifactDirectory = Path.Combine(outputDirectory, "artifacts");
 
 var operations = DeterministicResearchWorkloadGenerator.Generate(family, seed, operationCount);
-var manifest = CreateManifest(family, seed, operationCount);
+var profile = ResearchWorkloadProfiler.Analyze(operations);
+var manifest = CreateManifest(family, seed, profile);
 var sink = new TraceResearchEventSink();
 var session = new ResearchExperimentSession(
     new ResearchArtifactWriter(artifactDirectory),
@@ -213,7 +214,10 @@ static bool TryParseFamily(string value, out ResearchWorkloadFamily family)
     }
 }
 
-static ExperimentManifest CreateManifest(ResearchWorkloadFamily family, int seed, int operationCount)
+static ExperimentManifest CreateManifest(
+    ResearchWorkloadFamily family,
+    int seed,
+    ResearchWorkloadProfile profile)
 {
     var root = Path.GetPathRoot(Environment.CurrentDirectory) ?? Environment.CurrentDirectory;
     var drive = new DriveInfo(root);
@@ -234,7 +238,7 @@ static ExperimentManifest CreateManifest(ResearchWorkloadFamily family, int seed
         DotNetVersion = Environment.Version.ToString(),
         PageSize = 4096,
         KeySize = 1,
-        ValueSize = 1024,
+        ValueSize = Math.Max(1, profile.MaximumValueSize),
         WorkloadSeed = seed,
         CrashPlanSeed = seed,
         MutationSeed = seed,
@@ -243,12 +247,12 @@ static ExperimentManifest CreateManifest(ResearchWorkloadFamily family, int seed
         TrialOrder = 0,
         WorkloadFamily = family.ToString(),
         DurationMilliseconds = 0,
-        BranchCount = 0,
-        BranchDepth = 0,
-        Fanout = 0,
+        BranchCount = profile.BranchCount,
+        BranchDepth = profile.MaximumBranchDepth,
+        Fanout = profile.MaximumFanout,
         BranchAgeMilliseconds = 0,
         Divergence = 0,
-        SnapshotCount = 0,
+        SnapshotCount = profile.SnapshotCount,
         SnapshotAgeMilliseconds = 0,
         GcMode = "baseline",
         CompactionMode = "baseline",
