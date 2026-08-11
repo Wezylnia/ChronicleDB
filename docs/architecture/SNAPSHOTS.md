@@ -1,4 +1,4 @@
-# v1.0 persistent snapshots and time travel
+# Persistent Snapshots and Time Travel
 
 ChronicleDB exposes retained MVCC history through persistent named snapshots and fixed-boundary historical views in Main and branch histories. Snapshot creation is metadata-oriented: it does not copy the visible database state.
 

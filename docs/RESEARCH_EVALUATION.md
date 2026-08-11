@@ -1,4 +1,4 @@
-# v1.0 research evaluation contract
+# Research Evaluation Contract
 
 ChronicleDB v1.0 is an experimental system. Evaluation must distinguish **measured evidence** from architectural intent. The repository provides reproducible workloads and metrics; it does not embed a preselected conclusion.
 

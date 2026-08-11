@@ -1,71 +1,36 @@
-# Reference Repository Architecture Review
+# Repository-Structure Review (Archived Design Input)
 
-The initial ChronicleDB structure was informed by three local repositories, but it intentionally does not copy any of them wholesale. Their problem domains differ from a storage engine, so the useful lessons are principles rather than folder names.
+## Status
 
-## MIoT
+This note records repository-structure observations that informed the initial ChronicleDB assembly layout. It is historical design input, not an architectural authority. `ARCHITECTURE.md` and the architecture tests define the current project graph.
 
-Useful patterns:
+## Repositories reviewed
 
-- a recognizable `src/Core`, `src/Modules`, `src/Infrastructure`, `src/Apps` top-level map;
-- architecture tests that parse project references and reject cycles;
-- technology-specific infrastructure separation;
-- ADRs for behavior whose reliability semantics must be decided before implementation;
-- an explicit warning against prematurely splitting one cohesive module into many projects.
+### MIoT
 
-Risks observed:
+The useful lesson was disciplined separation of core concepts, modules, infrastructure, and executable surfaces, backed by architecture tests and ADRs. ChronicleDB did not copy the application-layer naming because a storage engine is organized around durability, recovery, history, and ownership rather than enterprise service layers.
 
-- `Application`, `Abstractions`, and `Common` can become broad convergence points;
-- a central application project may reference many product modules and grow into the de facto monolith;
-- source-token architecture tests are helpful guardrails but weaker than exact project dependency contracts.
+The review also highlighted a failure mode worth avoiding: broad `Application`, `Abstractions`, or `Common` projects can become dependency convergence points. ChronicleDB therefore keeps `Core` intentionally small and validates exact project-reference direction.
 
-ChronicleDB adoption:
+### RepoTrustDoctor
 
-- keep the architecture test and ADR discipline;
-- keep a small dependency-free foundation, but do not create a generic Common project;
-- use exact allowed dependency sets instead of broad prefix-only bans;
-- group by storage-engine risk boundaries rather than enterprise application layers.
+The repository demonstrated clear abstraction/implementation seams and deterministic orchestration. Its highly granular plugin project structure was not adopted because ChronicleDB does not benefit from one assembly per page type, maintenance operation, or history feature.
 
-## RepoTrustDoctor
+The replaceable index is the main deliberate abstraction/implementation pair because later latch-free research must be compared with the managed baseline under the same transaction semantics.
 
-Useful patterns:
+### InterviewArena
 
-- strong plugin seams between analyzer abstractions and implementations;
-- clear composition roots for CLI, API, and worker hosts;
-- deterministic orchestration and explicit artifact dependencies;
-- separate engine, infrastructure, and tool concerns.
+The useful pattern was a balanced modular-monolith shape with thin composition roots and architecture tests. Product-oriented domain/application/provider terminology was not adopted; ChronicleDB instead names boundaries after semantic, persistence, indexing, recovery, maintenance, and observability responsibilities.
 
-Risks observed:
+## Result
 
-- very fine-grained analyzer projects create a large project-reference fan-out;
-- composition roots and integration tests must reference many assemblies;
-- adding an implementation can require solution/project edits disproportionate to its code size.
+ChronicleDB uses a modular monolith with assembly boundaries where they protect one of the following:
 
-ChronicleDB adoption:
+- persistent-format ownership;
+- recovery or transaction semantics;
+- replaceable implementation seams;
+- dependency direction;
+- unsafe/native-code containment;
+- executable research/test boundaries.
 
-- use a separate abstraction/implementation pair only for the index, where v1.5 explicitly requires interchangeable baseline and latch-free implementations;
-- do not create one assembly per page type, maintenance operation, or history feature;
-- use feature folders inside cohesive assemblies until a real replacement, package, unsafe-code, or process boundary exists.
-
-## InterviewArena
-
-Useful patterns:
-
-- a balanced modular-monolith layout;
-- thin composition roots and provider adapters behind ports;
-- feature modules kept independent from application and infrastructure;
-- architecture tests based on assembly dependency direction.
-
-Risks observed:
-
-- generic application abstractions can obscure which module owns a port;
-- domain/application/module distinctions are product-oriented and do not directly model durability, recovery, or memory ownership.
-
-ChronicleDB adoption:
-
-- retain the balanced project count and thin composition-root idea;
-- replace provider/infrastructure language with semantic, persistence, indexing, recovery, maintenance, and observability boundaries;
-- strengthen the assembly inspection with project-file validation because ChronicleDB must also police build flags, package ownership, and unsafe code.
-
-## Resulting decision
-
-ChronicleDB uses a modular monolith with twelve initial production assemblies. This is more segmented than InterviewArena because WAL, storage, recovery, and index replacement are independently correctness-critical, but far less fragmented than RepoTrustDoctor's one-project-per-plugin shape. Semantic features that strongly share invariants—snapshots, branches, roots, and retention—stay together in `ChronicleDB.History` and are separated by feature folders.
+This review should not be used to justify new projects by analogy. New assembly boundaries require a ChronicleDB-specific ownership or replacement reason and, when material, an ADR.

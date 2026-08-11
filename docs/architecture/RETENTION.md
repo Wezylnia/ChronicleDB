@@ -1,6 +1,6 @@
-# Historical retention
+# Historical Retention
 
-ChronicleDB v1.0 retains the v0.9 design that separates a history's generic time-travel range from explicit roots that protect isolated older states. This distinction prevents one ancient branch or snapshot from forcing the entire database to retain every unrelated intermediate version.
+ChronicleDB v1.0 separates a history's generic time-travel range from explicit roots that protect isolated older states. This distinction prevents one ancient branch or snapshot from forcing the entire database to retain every unrelated intermediate version.
 
 ## Generic history floor
 
@@ -29,3 +29,8 @@ For one key, a committed version is retained when at least one of these is true:
 - it is the latest committed version of the key.
 
 This is a per-key reachability rule, not a single global-minimum rule.
+
+
+## Selection cost
+
+Committed version chains are ordered by commit sequence. GC locates the generic floor and each explicit pinned boundary with binary search, then retains the continuous generic suffix plus the exact predecessor required by each older observer. The optimization changes selection cost, not the reachability rule.

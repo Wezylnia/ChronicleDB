@@ -1,4 +1,4 @@
-# v0.5 crash harness
+# Crash Testing
 
 `ChronicleDB.CrashHarness` is a separate-process durability test. Children terminate with `Environment.FailFast`; normal managed disposal therefore cannot make a test pass accidentally by flushing cleanly.
 
@@ -28,7 +28,7 @@ The harness crashes:
 
 ## History-root scenarios
 
-The v0.6 recovery matrix also covers:
+The generalized-root recovery matrix also covers:
 
 - a missing root record after a durable snapshot create;
 - an orphaned active root after a durable snapshot delete;
@@ -48,7 +48,7 @@ dotnet run --project tools/ChronicleDB.CrashHarness -- run 100
 
 This is intentionally heavier than the normal unit suite and should be part of release/soak validation.
 
-## v0.8 branch scenarios
+## Branch durability scenarios
 
 The harness repeats every `TransactionFaultPoint` through a branch-local transaction. Reopen verifies the two-key branch update is atomic. Before the branch WAL durability barrier, absent or complete outcomes are accepted only where buffered bytes may have reached the OS; after WAL flush, the complete branch transaction is mandatory.
 
@@ -63,7 +63,7 @@ Branch lifecycle persistence is exercised separately:
 
 Reopen must expose either no branch or one fully active branch according to the durable activation boundary; interrupted deletion must converge to no active branch; and a durably flushed branch snapshot must reopen with identical historical contents. Partially initialized branch state is never accepted as an active history.
 
-## v0.9 maintenance scenarios
+## Maintenance scenarios
 
 Process-level failures are injected:
 

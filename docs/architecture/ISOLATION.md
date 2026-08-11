@@ -1,6 +1,6 @@
-# v0.5 isolation contract
+# Isolation Model
 
-ChronicleDB v0.5 provides **Snapshot Isolation (SI)**. It does not claim serializability.
+ChronicleDB v1.0 provides **Snapshot Isolation (SI)**, preserving the v0.5 semantic baseline independently within each writable history. It does not claim serializability.
 
 ## Guarantees
 
@@ -14,7 +14,7 @@ For an active transaction:
 - first-committer-wins prevents two transactions with an overlapping written key from both committing after one has produced a version newer than the other's start sequence;
 - one committed multi-key write set is observed atomically at a commit boundary.
 
-Conflict validation and commit decision are serialized by the v0.5 commit coordinator, so two same-key writers cannot both pass validation against the same stale head.
+Conflict validation and the commit decision are serialized by the owning history's commit coordinator, so two same-key writers in one history cannot both pass validation against the same stale head. Main and separate branches have independent conflict domains after branching.
 
 ## Permitted anomaly: write skew
 

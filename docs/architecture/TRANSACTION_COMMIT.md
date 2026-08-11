@@ -1,6 +1,6 @@
-# v0.5 transaction commit boundary
+# Transaction Commit Protocol
 
-ChronicleDB v0.5 allows transactions and reads to execute concurrently, but intentionally serializes the **durability-critical commit decision** through one commit gate. This is not a database-wide read lock: ordinary current reads, historical reads, persistent snapshot reads, and transaction construction do not wait for WAL fsync. The serialized region preserves one unambiguous order across commit-sequence allocation, WAL LSNs, physical append recovery bases, and final publication.
+ChronicleDB v1.0 preserves the v0.5 durability rule while scoping serialization to the writable history. Main has one durability-critical commit coordinator, and every branch has its own coordinator. This is not a database-wide read lock: ordinary current reads, historical reads, persistent snapshot reads, transaction construction, and commits in independent branch histories do not share one global fsync gate. Within one history, the serialized region preserves an unambiguous order across commit-sequence allocation, WAL LSNs, physical recovery bases, and final publication.
 
 ## Preflight phase
 

@@ -1,4 +1,4 @@
-# v1.0 storage format
+# Storage Format
 
 This document describes the byte-level persistent storage owned by `ChronicleDB.Storage`. WAL framing is documented separately.
 
@@ -14,7 +14,7 @@ This document describes the byte-level persistent storage owned by `ChronicleDB.
 | `branches/<BranchId>/chronicle.data` | page-aligned append-only branch-private version records | branch-local MVCC history |
 | `branches/<BranchId>/chronicle.snapshots` | framed lifecycle records | persistent snapshots inside one branch |
 | `branches/<BranchId>/branch.wal` | common WAL framing + branch/history payload envelope | branch-local durability and recovery |
-| `chronicle.history` / `branches/<BranchId>/chronicle.history` | immutable checksummed retained-history projection | v0.9 checkpoint used before WAL rotation/physical reclamation |
+| `chronicle.history` / `branches/<BranchId>/chronicle.history` | immutable checksummed retained-history projection | recovery authority published before WAL rotation or physical reclamation |
 
 `chronicle.wal` is owned by `ChronicleDB.Wal`.
 
@@ -63,7 +63,7 @@ Every 16 KiB page uses the existing 32-byte `CPG1` header with page type, one-ba
 
 Record payloads retain the v0.1 layout: key length, value length, flags, overflow head, inline length, full key bytes, and inline bytes. Overflow pages form forward-only chains and must reconstruct exactly the declared value length.
 
-The append-oriented page model may retain old physical records between maintenance passes; current physical state is rebuilt by scanning newest record/tombstone state per key. v0.9+ GC/compaction may replace that representation only after retained logical history is durably checkpointed. Once the database metadata says WAL is initialized, the high-level engine requires every physical current key to have WAL-backed logical history; newly injected low-level keys are rejected as persistence divergence rather than silently adopted.
+The append-oriented page model may retain old physical records between maintenance passes; current physical state is rebuilt by scanning newest record/tombstone state per key. v1.0 GC/compaction may replace that representation only after retained logical history is durably checkpointed. Once the database metadata says WAL is initialized, the high-level engine requires every physical current key to have WAL-backed logical history; newly injected low-level keys are rejected as persistence divergence rather than silently adopted.
 
 ## Persistent snapshot file
 
@@ -94,7 +94,7 @@ Complete checksummed structures are never silently discarded. Automatic repair i
 - incomplete final history-root frame after validated framing;
 - incomplete final branch-metadata frame after validated redundant length framing;
 - Main data append regions whose recovery base is proven by a durable WAL Commit, plus the narrow legacy partial-final-page rule;
-- branch-local append bytes beyond the latest durably published v0.7 branch committed-prefix descriptor.
+- legacy v0.7 branch-local append bytes beyond the latest durably published committed-prefix descriptor.
 ### Faulted low-level store instances
 
 A `PersistentKeyValueStore` instance is not reusable after an operation may have modified
@@ -106,22 +106,27 @@ low-level storage API from continuing with an in-memory index whose physical app
 outcome is uncertain.
 
 
-## v0.7 branch metadata and local versions
+## Legacy branch metadata and local versions
 
 `chronicle.branches` begins with a checksummed `CHBRN001` header bound to the Main database and Main history identities. Variable records contain redundant header/footer lengths, CRC32C, contiguous event sequence, `BranchId`, child/parent `HistoryId`, base root and parent boundary, local storage identity, local commit sequence, transaction identity, mutation count, committed data length, branch depth, creation time, and UTF-8 name. Complete corrupt frames are fatal; only an incomplete final frame may be truncated.
 
-Each activated branch owns a separate branch-local page store under `branches/<BranchId>/`. Physical keys identify individual local versions rather than logical user keys. The stored `BVR1` envelope carries full user-key bytes, branch/history/transaction identity, local commit sequence, mutation index/count, tombstone state, value bytes, and CRC32C. The parent dataset is not copied into this store. `AdvanceSequence` metadata records define the authoritative page-aligned committed prefix used by v0.7 reopen.
+Each activated branch owns a separate branch-local page store under `branches/<BranchId>/`. Physical keys identify individual local versions rather than logical user keys. The stored `BVR1` envelope carries full user-key bytes, branch/history/transaction identity, local commit sequence, mutation index/count, tombstone state, value bytes, and CRC32C. The parent dataset is not copied into this store. `AdvanceSequence` metadata records define the authoritative page-aligned committed prefix used by the legacy v0.7 reopen path.
 
-## v0.8 branch WAL envelope
+## Branch WAL envelope
 
 Each branch uses the standard 64-byte WAL file header and standard record framing. The inner record payload is wrapped by a fixed branch envelope that redundantly identifies `BranchId` and `HistoryId`. Recovery verifies these identities before interpreting Begin/Put/Delete/Commit payloads. The branch WAL file name is `branch.wal` and its generic file identity is the branch-local storage GUID.
 
-## v0.9 retained-history checkpoint
+## Retained-history checkpoint
 
 `chronicle.history` is a complete immutable file for one history domain. Its checksummed header contains database/storage identity, `HistoryId`, checkpoint sequence, generic retention floor, and version count. Each version record contains transaction identity, commit sequence, full binary key (including the valid zero-length key), tombstone/value metadata, explicit lengths, and CRC32C. Declared record counts and payload lengths must be physically possible for the containing file before variable-size allocations are attempted, and disk-declared counts do not directly determine unbounded collection capacity. The entire file must parse exactly; unexplained trailing bytes are corruption. After framing/CRC validation, the high-level recovery path also checks every retained key/value against the database's configured logical limits before admitting the checkpoint into MVCC history.
 
-Publication writes and fsyncs a temporary file, moves the previous checkpoint to `.previous`, publishes the replacement, re-reads it for validation, then retires the previous generation. A checkpoint becomes required only after the `HistoryCheckpointInitialized` database-header capability is durable.
+Publication writes and fsyncs a temporary file, moves the previous checkpoint to `.previous`, publishes the replacement, re-reads it for validation, then retires the previous generation. A validated primary remains authoritative if stale-backup cleanup fails; a `.previous` checkpoint is restored only when the canonical primary is absent after an interrupted rename. A present but invalid primary fails closed rather than rolling retained history backward. A checkpoint becomes required only after the `HistoryCheckpointInitialized` database-header capability is durable.
 
-## v0.9 lifecycle journal compaction
+## Lifecycle journal compaction
 
 Snapshot, history-root, and branch lifecycle journals remain append-only during foreground operation. A GC maintenance pass may atomically rewrite them to canonical active state after all durable history/reclamation decisions for the pass are complete. Incomplete lifecycle states are never silently converted into active roots during compaction.
+
+
+## Integrity scope
+
+Persistent CRC32C fields detect accidental corruption and torn/malformed structures. They do not authenticate the file contents and do not protect against an attacker who can rewrite the database directory and recompute checksums. See `docs/SECURITY.md` for the host trust boundary.

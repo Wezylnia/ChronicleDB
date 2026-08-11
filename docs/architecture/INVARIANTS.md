@@ -1,4 +1,4 @@
-# v1.0 correctness invariants
+# Correctness Invariants
 
 These invariants are the release contract. Performance work may change implementation mechanisms but may not weaken them.
 
@@ -69,7 +69,7 @@ These invariants are the release contract. Performance work may change implement
 
 **Legacy committed-prefix compatibility.** v0.7 branch metadata prefixes are accepted only on the legacy migration path. Once branch WAL is initialized, checkpoint + identity-bound branch WAL determine committed logical history; physical branch bytes are derived state and cannot independently establish a commit.
 
-## v0.8 branch durability invariants
+## Branch durability invariants
 
 **Branch WAL identity.** Every branch WAL record belongs to exactly the branch/history domain that is recovering it; cross-history replay is rejected.
 
@@ -79,7 +79,7 @@ These invariants are the release contract. Performance work may change implement
 
 **Branch deletion dependency safety.** A branch may not complete logical deletion while a persistent child or branch snapshot still requires its history.
 
-## v0.9 maintenance invariants
+## Maintenance invariants
 
 **Retention reachability.** Every value observable by the generic retained range, an explicit root, or an active process observer remains reconstructable after GC.
 
@@ -92,3 +92,12 @@ These invariants are the release contract. Performance work may change implement
 **Compaction observational equivalence.** Compaction may move physical bytes but cannot change Main, branch, snapshot, or retained historical query results.
 
 **Copy-publish safety.** Physical replacement always leaves either the old complete representation, the new complete representation, or a recoverably distinguishable pair; recovery never requires half of each.
+
+
+## Recovery-authority hardening
+
+**Validated-primary authority.** When a complete retained-history checkpoint primary validates, an older `.previous` generation cannot become authoritative merely because cleanup of that older file fails.
+
+**Complete-frame integrity.** A metadata frame with a complete valid footer is not a crash-truncated tail. Contradictory header/footer lengths are corruption.
+
+**Cleanup non-authority.** Failure to remove a temporary file, stale backup, or already-deleted branch directory cannot change logical commit, retention, or checkpoint authority after the authoritative generation has been established.

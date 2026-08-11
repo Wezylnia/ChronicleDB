@@ -1,4 +1,4 @@
-# v0.5 transaction model
+# Transaction Model
 
 ChronicleDB transactions are explicit single-history Snapshot Isolation transactions over binary keys and values.
 

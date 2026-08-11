@@ -1,4 +1,4 @@
-# Version garbage collection
+# Version Garbage Collection
 
 `RunGarbageCollection` advances generic history floors and removes committed MVCC versions that are unreachable from every supported observer. Correctness has priority over reclamation rate.
 

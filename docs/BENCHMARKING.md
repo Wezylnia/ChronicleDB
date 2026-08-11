@@ -1,4 +1,4 @@
-# v1.0 benchmarking methodology
+# Benchmarking Methodology
 
 ChronicleDB benchmarks are reproducible research instrumentation, not a claim that the project outperforms mature database engines. Correctness and durability gates take precedence over benchmark results.
 
@@ -37,6 +37,8 @@ Each scenario is invoked once for warm-up and then once for measurement. GC is e
 - **branch create** — creation of metadata-oriented fixed-base branches without copying Main user state; records metadata/private data/WAL growth.
 - **branch inherited read** — local-miss resolution through the immutable parent base after Main diverges.
 - **branch local write** — branch-local WAL + physical publication cost.
+- **branch storage amplification** — ten branches with controlled 25% logical divergence; reports branch-private data/WAL growth and private bytes per branch write.
+- **snapshot retention amplification** — an old retained snapshot plus aggressive GC; reports snapshot age, retained/reclaimed versions, checkpoint size, and remaining storage.
 - **B3 branch-scale-1 / 10** — inherited reads with small active sibling sets.
 - **B4 branch-scale-25 / 50 / 100** — the same shape at larger topology sizes to expose metadata and fallback-read overhead.
 - **B6 GC pass** — retained-history checkpoint/WAL rotation and managed version reclamation.
@@ -51,6 +53,6 @@ Branch creation must be described as **metadata-oriented / shared-state / withou
 
 GC results must report both effectiveness and interference. Compaction results must include bytes rewritten as well as bytes reclaimed. Recovery timing is meaningful only when the reopened Main, branches, ancestry, and persistent snapshots are also validated.
 
-The commit coordinator and conventional managed synchronization are intentional v1.0 semantic baselines. v1.5 optimizations should be compared against this release with unchanged logical semantics and equivalent durability.
+The commit coordinator and conventional managed synchronization are the intentional v1.0 semantic baseline. v1.5 optimizations should be compared against this release with unchanged logical semantics and equivalent durability.
 
 See [RESEARCH_EVALUATION.md](RESEARCH_EVALUATION.md) for research questions and the metadata required for publication-quality experiments.

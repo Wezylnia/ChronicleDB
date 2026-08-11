@@ -1,4 +1,4 @@
-# History ownership
+# History Ownership
 
 Every persistent historical object has one creating history and an explicit retention relationship.
 

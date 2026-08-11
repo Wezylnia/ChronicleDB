@@ -1,3 +1,5 @@
 # Foundation
 
-`ChronicleDB.Core` contains only dependency-free concepts shared by multiple engine layers. It is not a miscellaneous helper library. Types enter this project only when their meaning is stable across semantics, persistence, indexing, and orchestration.
+`ChronicleDB.Core` contains small, dependency-light concepts shared across the engine: identifiers, binary-key ownership/equality, sequences, and invariant-oriented primitives.
+
+Foundation is not a general helper library. A type belongs here only when its meaning is stable across semantics, persistence, indexing, and orchestration.

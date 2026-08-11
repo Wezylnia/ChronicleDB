@@ -1,3 +1,3 @@
 # Observability
 
-Diagnostics contains typed counters, events, and invariant snapshots. Observation must never affect logical results, commit ordering, recovery, or durability.
+Observability contains counters and diagnostic support used by the public engine and research tooling. Metrics report behavior; they never participate in commit decisions, visibility, recovery authority, retention, or reclamation.

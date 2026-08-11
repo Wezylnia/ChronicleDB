@@ -1,410 +1,217 @@
 # ChronicleDB Architecture
 
-## 1. Status and authority
+## Status
 
-This document is the architectural source of truth for the repository layout and compile-time dependency boundaries. The project definition and version plans remain authoritative for behavior, semantics, invariants, release gates, and research scope.
+This document defines assembly ownership, dependency direction, and the runtime composition model for ChronicleDB v1.0. Semantic behavior is defined in `project-definition.md` and the architecture-topic documents under `docs/architecture`. Persistent-format changes and other costly decisions require an ADR.
 
-If an implementation needs a dependency forbidden here, first decide whether the responsibility is misplaced. If the dependency direction truly must change, record an ADR and update the architecture test in the same change.
+## Architectural model
 
-## 2. Architectural objective
+ChronicleDB is a modular monolith: one embedded engine distribution, split into assemblies only where a boundary protects correctness, durability, replacement, ownership, or tooling isolation.
 
-ChronicleDB is an embedded storage engine, not a web application and not a generic enterprise Clean Architecture solution. Its important boundaries are determined by:
+The design separates five concerns that are easy to blur in a storage engine:
 
-- semantic correctness versus physical representation;
-- volatile state versus durable state;
-- logical history reclamation versus concurrent physical memory reclamation;
-- stable contracts versus replaceable experimental implementations;
-- safe managed code versus explicitly owned unsafe/native code;
-- production engine behavior versus research, fault-injection, and benchmark infrastructure.
+1. **semantics** — what transactions, versions, snapshots, roots, and branches mean;
+2. **persistence** — how durable bytes are encoded, validated, flushed, and recovered;
+3. **orchestration** — how the public engine coordinates semantic and persistence components;
+4. **maintenance** — how obsolete logical state and physical storage are reclaimed without changing observations;
+5. **research infrastructure** — tests, crash injection, inspection, and benchmarks that observe the engine but do not become correctness dependencies.
 
-The architecture is a modular monolith: one repository and one embedded engine distribution, with multiple assemblies only where a compile-time boundary protects a real risk or replacement seam.
+## Global rules
 
-## 3. Design rules
+- Full binary key bytes define identity. Hashes are never identity.
+- Persistent bytes are parsed through explicit codecs; raw CLR object layouts are never persisted.
+- The dependency graph is acyclic.
+- `ChronicleDB` is the runtime composition root and public embedded API.
+- Internal types are preferred unless a type is part of the public API or an intentional replacement seam.
+- Persistent DTOs do not leak into the public API.
+- Unsafe code is disabled globally in v1.0.
+- Baseline implementations remain available when later optimized implementations are introduced.
+- Diagnostics and tools are observational; the engine never depends on them for durability or retention decisions.
+- A lower-level persistence project does not call upward into transaction or branch semantics.
 
-1. Correctness semantics are independent of any one page, WAL, or index implementation.
-2. The dependency graph is acyclic and points from orchestration toward stable lower-level contracts.
-3. Only `ChronicleDB` is the runtime composition root and intended consumer entry point.
-4. Source is `internal` by default. A type becomes public only because the embedded API or an intentional extension contract requires it.
-5. Persistent DTOs are not domain objects and are not public API contracts.
-6. Full binary keys define identity. Hashes never define equality by themselves.
-7. No generic repository, generic service, global service locator, or miscellaneous `Common` project is introduced.
-8. Assembly boundaries are not duplicated as nested `Controllers/Services/Repositories` layers. Each assembly uses cohesive feature folders.
-9. Unsafe code is globally disabled. A future native-memory assembly must opt in explicitly and own every pointer lifetime.
-10. Baseline implementations remain available for differential validation after optimized implementations are introduced.
+## Repository layout
 
-## 4. Repository shape
+| Area | Projects / directories | Responsibility |
+| --- | --- | --- |
+| Public runtime | `src/ChronicleDB` | Embedded API and composition root |
+| Foundation | `src/Foundation/ChronicleDB.Core` | Identifiers, binary keys, sequences, limits |
+| Semantics | `src/Semantics/ChronicleDB.Mvcc`, `ChronicleDB.History` | Visibility, snapshots, roots, branch metadata model, retention |
+| Persistence | `src/Persistence/ChronicleDB.Storage`, `ChronicleDB.Wal` | Files, pages, values, journals, checkpoints, WAL framing and scanning |
+| Indexing | `src/Indexing/ChronicleDB.Indexing.Abstractions`, `ChronicleDB.Indexing.Baseline` | Replaceable version-index contract and managed baseline |
+| Engine | `src/Engine/ChronicleDB.Transactions`, `ChronicleDB.Recovery`, `ChronicleDB.Maintenance` | Transactions, committed-version state, recovery, GC/compaction contracts |
+| Observability | `src/Observability/ChronicleDB.Diagnostics` | Counters and diagnostic support |
+| Verification | `tests/Unit`, `tests/Persistence`, `tests/Correctness`, `tests/Recovery`, `tests/Architecture` | Unit, persistence, differential, recovery, and dependency validation |
+| Tools | `tools/ChronicleDB.CrashHarness`, `ChronicleDB.Inspector`, `ChronicleDB.WorkloadRunner` | Process-crash testing, inspection, deterministic workloads |
+| Benchmarks | `benchmarks/ChronicleDB.Benchmarks` | Reproducible research measurements |
 
-```text
-ChronicleDB.slnx
-Directory.Build.props
-Directory.Packages.props
-global.json
-
-src/
-  ChronicleDB/                         Public facade and composition root
-  Foundation/
-    ChronicleDB.Core/                  Dependency-free identifiers and invariants
-  Semantics/
-    ChronicleDB.Mvcc/                  Version/visibility semantics
-    ChronicleDB.History/               Roots, snapshots, branches, retention model
-  Persistence/
-    ChronicleDB.Storage/               Files, pages, allocation, values, checkpoints
-    ChronicleDB.Wal/                   WAL format, append, flush, scan, validation
-  Indexing/
-    ChronicleDB.Indexing.Abstractions/ Replaceable logical index contract
-    ChronicleDB.Indexing.Baseline/     Managed synchronized baseline index
-  Engine/
-    ChronicleDB.Transactions/          Transaction state and commit protocol
-    ChronicleDB.Recovery/              Deterministic durable-state reconstruction
-    ChronicleDB.Maintenance/           GC, reclamation planning, compaction scheduling
-  Observability/
-    ChronicleDB.Diagnostics/           Typed events, counters and invariant snapshots
-
-tests/
-  Architecture/                        Compile-time boundary contract
-  Unit/                                Pure semantic and data-structure tests
-  Persistence/                         Page, file, WAL and checkpoint tests
-  Correctness/
-    ChronicleDB.ReferenceModel/        Simple independent logical oracle
-    ChronicleDB.CorrectnessTests/      Generated and differential workloads
-  Recovery/                            Fault and crash-recovery matrix
-
-tools/
-  ChronicleDB.Inspector/               Read-only database/history/retention inspection
-  ChronicleDB.CrashHarness/            Child-process crash orchestration
-  ChronicleDB.WorkloadRunner/          Deterministic workload replay
-
-benchmarks/
-  ChronicleDB.Benchmarks/              Reproducible baseline and ablation runner
-
-docs/
-  adr/                                 Architectural decisions
-  architecture/                        Supporting architecture analysis
-```
-
-Reserved for v1.2-v1.4, and created only when their release gate is reached:
-
-```text
-src/Concurrency/ChronicleDB.Memory.Native/
-src/Concurrency/ChronicleDB.Reclamation.Epochs/
-src/Indexing/ChronicleDB.Indexing.LatchFree/
-```
-
-These projects are deliberately not empty placeholders today. They are allowed only after ownership specifications, profiling evidence, and baseline tests exist.
-
-### Mapping from the release plans
-
-The plans use logical subsystem names; this document decides their physical assembly ownership:
-
-| Planned subsystem | Physical owner |
-| --- | --- |
-| `ChronicleDB.Api` / Public Engine API | `ChronicleDB` |
-| `ChronicleDB.Core` | `ChronicleDB.Core` |
-| Transaction Manager | `ChronicleDB.Transactions` |
-| MVCC Engine | `ChronicleDB.Mvcc` plus transaction orchestration |
-| History Manager and Branch Manager | feature folders in `ChronicleDB.History` |
-| Storage Manager and Page Manager | feature folders in `ChronicleDB.Storage` |
-| WAL Manager | `ChronicleDB.Wal` |
-| Recovery Manager | `ChronicleDB.Recovery` |
-| Reclamation and Compaction | feature folders in `ChronicleDB.Maintenance` |
-| Diagnostics Layer | `ChronicleDB.Diagnostics` |
-| Baseline and optimized indexes | separate implementations of `ChronicleDB.Indexing.Abstractions` |
-
-History and branching stay in one assembly because they share the history graph and retention invariants. Reclamation and compaction stay in one assembly because both consume the same liveness plan and physical publication workflow. They remain separate feature folders and may split later only under the criteria in section 13.
-
-## 5. Production project ownership
-
-### `ChronicleDB`
-
-Owns the supported embedded API, configuration validation, engine open/close lifecycle, implementation selection, and composition. It may reference concrete modules because it is the composition root. Business and storage algorithms do not live here.
-
-Expected feature folders:
-
-```text
-Configuration/
-Database/
-Transactions/
-Snapshots/
-Branches/
-Errors/
-```
+## Assembly ownership
 
 ### `ChronicleDB.Core`
 
-Owns dependency-free identifiers, limits, invariant helpers, binary ownership vocabulary, clocks/sequences where they are truly universal, and errors shared by internal contracts. It must not become a dumping ground for helpers.
-
-Candidates include `TransactionId`, `CommitSequence`, `LogSequenceNumber`, `PageId`, `HistoryId`, `SnapshotId`, and explicit owned/borrowed binary value types. Physical page structures do not belong here.
+Owns dependency-light shared primitives: strongly typed identifiers, binary-key ownership and equality, commit sequences, and small invariant-oriented helpers. It is not a miscellaneous utility project.
 
 ### `ChronicleDB.Mvcc`
 
-Owns immutable version metadata, tombstone semantics, centralized visibility evaluation, version-chain traversal rules, and snapshot boundaries. It contains no file I/O, WAL writing, index implementation, timers, or background workers.
-
-The visibility rule must have one authoritative implementation used by transactions, snapshots, historical reads, branches, recovery validation, and tests.
+Owns pure version-visibility rules. It has no file or WAL responsibility.
 
 ### `ChronicleDB.History`
 
-Owns the generalized history graph: Main, persistent snapshot roots, branch roots, ancestry, branch-local shadowing, historical read boundaries, retention reasons, and lifecycle rules. It depends on MVCC semantics but not on transaction orchestration or persistence implementations.
-
-Keeping snapshots and branches together prevents two competing retention models. Feature folders provide the internal boundary:
-
-```text
-Roots/
-Snapshots/
-HistoricalReads/
-Branches/
-Retention/
-```
+Owns the logical model for snapshots, history roots, branch definitions/catalog state, history-domain identity, and retention requirements. It answers semantic questions such as which history a root protects; it does not write files itself.
 
 ### `ChronicleDB.Storage`
 
-Owns database files, page IDs and formats, checksums, allocation, overflow values, durable metadata slots, checkpoint storage, bounded parsing, and physical I/O abstractions. It does not decide transaction visibility, commit success, or history retention.
-
-Expected feature folders:
-
-```text
-Files/
-Pages/
-Allocation/
-Values/
-Formats/
-Checksums/
-Checkpoints/
-Faults/
-```
+Owns durable database files, pages, record/overflow encoding, metadata journals, history checkpoints, CRC32C validation, storage limits, append-prefix recovery, and copy-and-publish data-file rewrite. It treats durable bytes as untrusted input and has no authority to decide whether a transaction is committed.
 
 ### `ChronicleDB.Wal`
 
-Owns WAL record framing and codecs, append, flush, durability boundaries, LSN management, recovery scanning, tail truncation detection, and log-specific fault injection. It does not publish logical commits or mutate the index.
-
-WAL is separate from storage because its ordering and corruption rules have an independent format, failure matrix, and review surface.
+Owns WAL file/header framing, record codecs, LSN continuity, append/flush behavior, branch WAL envelopes, and structural WAL validation. Higher layers interpret complete WAL records as transactions.
 
 ### `ChronicleDB.Indexing.Abstractions`
 
-Owns the smallest stable index seam required by the engine: collision-safe lookup of version heads, publication/update operations, capability reporting, and diagnostic snapshots. It must not expose locks, native pointers, delta-chain nodes, or a particular tree representation.
+Owns the smallest stable version-index seam required by the MVCC engine. The contract exposes logical keys and version heads, not locks, pages, native pointers, epochs, or tree nodes.
 
 ### `ChronicleDB.Indexing.Baseline`
 
-Owns the understandable managed, synchronized index used as the initial implementation and permanent correctness/performance baseline. It depends on the index contract; transaction and recovery projects never reference it directly.
+Owns the v1.0 managed synchronized index. It remains the semantic/performance baseline for v1.5 differential testing.
 
 ### `ChronicleDB.Transactions`
 
-Owns transaction descriptors, states, local write sets, read-your-writes, conflict validation, commit sequence allocation, atomic publication, abort behavior, and the commit protocol that coordinates WAL, storage, index, MVCC, and history contracts.
-
-This is orchestration code. It may coordinate dependencies but must not absorb their binary codecs, file operations, or concrete data structures.
+Owns transaction state, private write sets, committed version chains, conflict validation, replay-capacity checks, and version-store synchronization. It depends on the logical index abstraction rather than a concrete tree/hash implementation.
 
 ### `ChronicleDB.Recovery`
 
-Owns open-time recovery orchestration, checkpoint selection, valid WAL prefix replay, incomplete-transaction elimination, history reconstruction, index rebuilding, and recovered invariant validation. It reuses persistent codecs owned by Storage and WAL rather than defining copies.
-
-Recovery is separate from ordinary transactions so startup-only failure handling does not pollute the foreground commit path.
+Owns interpretation of authoritative durable history: transaction grouping, commit-sequence validation, checkpoint/WAL generation rules, physical recovery bases, and deterministic replay decisions. It uses storage/WAL codecs rather than reimplementing formats.
 
 ### `ChronicleDB.Maintenance`
 
-Owns retention analysis, logical version GC, page reclamation planning, copy-and-publish compaction, cleanup, throttling, and maintenance scheduling. It consumes immutable semantic snapshots and publishes physical changes through explicit storage/index contracts.
-
-Logical version GC belongs here. Future epoch-based physical object reclamation does not; it receives its own concurrency assembly because its safety model is different.
+Owns public maintenance configuration/result contracts. Runtime orchestration remains in the composition root because a GC/compaction pass coordinates multiple histories and persistence authorities.
 
 ### `ChronicleDB.Diagnostics`
 
-Owns typed, low-allocation engine events, counters, diagnostic snapshots, and invariant observation contracts. It does not own business decisions and does not become a logging framework wrapper.
+Owns counters and measurement support. Metrics can report behavior but cannot authorize a commit, reclaim a version, or select recovery state.
 
-Diagnostics are observational. Disabling them may reduce visibility but must never change results, ordering, or durability.
+### `ChronicleDB`
 
-## 6. Dependency graph
+Owns public handles and runtime orchestration:
 
-```text
-ChronicleDB (public facade / composition root)
-  -> Transactions
-  -> Recovery
-  -> Maintenance
-  -> Indexing.Baseline
-  -> all required stable contracts
+- database open/close and lifecycle;
+- Main transaction commit coordination;
+- snapshot and historical-view handles;
+- branch creation/open/delete and branch runtime composition;
+- branch transaction durability coordination;
+- history-root integration;
+- recovery sequencing across the history graph;
+- GC/compaction pass coordination;
+- public diagnostics.
 
-Transactions
-  -> Core + Diagnostics + Mvcc + History
-  -> Storage + Wal + Indexing.Abstractions
+It is allowed to know concrete implementations because it is the composition root. Concrete details should not flow back into semantic contracts.
 
-Recovery
-  -> Core + Diagnostics + Mvcc + History
-  -> Storage + Wal + Indexing.Abstractions
+## Dependency direction
 
-Maintenance
-  -> Core + Diagnostics + Mvcc + History
-  -> Storage + Indexing.Abstractions
+The intended dependency direction moves from foundation to semantics, then persistence/engine implementations, then recovery/maintenance/diagnostics, and finally the public `ChronicleDB` composition root. Tools, benchmarks, and tests depend on the product; production assemblies never depend on those surfaces.
 
-Indexing.Baseline
-  -> Core + Diagnostics + Indexing.Abstractions
+The exact allowed project-reference graph is enforced by architecture tests. Those tests, rather than this prose summary, are authoritative for compile-time edges.
 
-History -> Core + Mvcc
-Storage -> Core + Diagnostics
-Wal -> Core + Diagnostics
-Diagnostics -> Core
-Mvcc -> Core
-Indexing.Abstractions -> Core
-Core -> nothing
-```
+## Persistence authority versus semantic authority
 
-Key consequences:
+A recurring architectural rule is that the component storing bytes is not automatically the component deciding their meaning.
 
-- The transaction path sees only the index contract, never the baseline or future latch-free implementation.
-- Recovery can rebuild replaceable structures without depending on the normal transaction manager.
-- History cannot call persistence or transactions; persistence of history metadata is coordinated at a higher layer.
-- Maintenance cannot use WAL accidentally. A maintenance operation requiring durable publication must expose that need to the composition/transaction boundary explicitly.
-- The facade is the only source project allowed to choose concrete implementations.
+Examples:
 
-The exact graph is executable policy in `ChronicleDB.ArchitectureTests`.
+- `WalLog` validates framed records; recovery decides which complete transactions committed.
+- the branch lifecycle journal stores identity/ancestry/publication metadata; branch WAL/checkpoint history is transaction authority after v0.8.
+- history roots describe durable retention requirements; the version store decides which concrete versions satisfy those boundaries.
+- physical data pages represent committed state; a retained-history checkpoint plus WAL can be the authority used to rebuild derived branch pages.
 
-## 7. Folder rules inside a project
+This separation prevents convenient storage metadata from accidentally becoming a second transaction protocol.
 
-Folders represent cohesive features, not technical buckets. A feature keeps its model, algorithm, validation, and focused helpers together.
+## History domains
 
-Preferred:
+Main is the root history domain. Every writable branch receives a distinct `HistoryId` and local commit-sequence namespace. A historical coordinate therefore includes both history identity and sequence.
 
-```text
-ChronicleDB.Wal/
-  Format/
-    WalRecordHeader.cs
-    WalRecordCodec.cs
-    WalRecordValidator.cs
-  Writing/
-    WalWriter.cs
-    FlushCoordinator.cs
-  Reading/
-    WalScanner.cs
-    WalTailStatus.cs
-```
+Branches form an acyclic parent tree because v1.0 has no merge. Persistent snapshots reference a point in a history but do not create writable ancestry.
 
-Avoid:
+The branch-base root is owned by the child history while protecting the parent history at the fixed branch point. GC relies on that distinction.
 
-```text
-Models/
-Interfaces/
-Services/
-Managers/
-Helpers/
-Utils/
-```
+## Concurrency model
 
-An interface stays next to the capability that owns it unless it is the deliberate cross-implementation seam in `Indexing.Abstractions`.
+v1.0 is intentionally not latch-free.
 
-## 8. Public API boundary
+- immutable committed versions support stable reads;
+- `CommittedVersionStore` protects chain/index publication with managed synchronization;
+- Main has an ordered durability-critical commit coordinator;
+- each branch has its own ordered commit coordinator;
+- different histories do not share write/write conflict domains;
+- lifecycle/maintenance operations use a history gate to prevent branch creation/deletion or reader-registration races while retention state changes;
+- public transaction handles serialize `Commit`, `Abort`, and disposal transitions for the same handle.
 
-Consumers reference `ChronicleDB`, not internal subsystem projects. Public DTOs do not expose:
+The purpose of this baseline is predictable semantics. v1.5 may replace selected synchronization mechanisms only after profiling and ownership design.
 
-- physical page IDs unless explicitly documented as diagnostic handles;
-- WAL positions as commit sequences;
-- index nodes or hashes as key identity;
-- pooled buffers whose lifetime cannot be guaranteed;
-- native pointers or ref-like values across async/lifetime boundaries;
-- persistence records used for on-disk compatibility.
+## Recovery model
 
-CLR visibility and supported API are separate concerns in this multi-assembly design:
+Open proceeds from roots of authority toward derived state:
 
-- public types in `ChronicleDB` are the supported consumer surface;
-- `Indexing.Abstractions` is an intentional advanced extension surface;
-- a cross-assembly type in another project is an engine SPI, not automatically a supported consumer API;
-- engine SPI types use the narrowest possible contract and live under an ownership-specific namespace, never a generic `Shared` namespace;
-- broad `InternalsVisibleTo` declarations are avoided because they erase the compile-time boundary the project split was created to protect.
+1. validate Main metadata and physical format;
+2. load the Main retained-history checkpoint when its capability is durable;
+3. scan and interpret Main WAL;
+4. reconstruct Main MVCC state and reconcile physical publication;
+5. validate persistent snapshot/root/branch metadata;
+6. validate branch ancestry in dependency order;
+7. for each branch, load checkpoint, interpret identity-bound branch WAL, rebuild MVCC, and validate/rebuild derived physical branch state;
+8. expose the database only after all required histories pass validation.
 
-The safe default read API returns owned data. A future borrowed/zero-copy API must be explicitly named, scoped, non-async across the borrow, and documented with mechanically enforced lifetime rules.
+No history is exposed while its parent/base dependency remains unresolved.
 
-## 9. Persistent format governance
+## Maintenance model
 
-Page, database-header, checkpoint, WAL, snapshot, and branch metadata formats are protocols. Every format requires:
+GC and compaction are separate operations.
 
-- magic and format version where applicable;
-- fixed endianness and explicit field widths;
-- documented limits and reserved bytes;
-- checked arithmetic and complete bounds validation before interpretation;
-- checksum scope and corruption behavior;
-- forward/backward compatibility policy;
-- golden byte fixtures;
-- truncated, torn, oversized, and corrupted input tests;
-- an ADR for incompatible changes.
+**GC** computes the retained logical projection, publishes a complete history checkpoint, rotates WAL only after that checkpoint is durable, compacts managed version chains, advances generic floors, and canonicalizes lifecycle journals.
 
-Serialization code lives with the format owner. It is never duplicated in Engine, tools, or tests. Tests may provide independent decoders only when intentionally acting as an oracle.
+**Compaction** first refreshes recovery authority for the selected history, then builds and validates a replacement physical representation before atomically publishing it. A validated primary is never rolled back merely because stale backup cleanup fails.
 
-## 10. Concurrency and async boundaries
+v1.0 budgets compaction across histories. The selected history is still rewritten as a complete surviving physical state; page/segment-granular incremental rewrite is a future optimization.
 
-- Conventional synchronization is the baseline until measurement justifies replacement.
-- Publication points are explicit and documented; multi-key logical commit visibility must not emerge from incidental collection updates.
-- Async I/O does not permit borrowed spans, locks, pins, or epoch guards to cross an `await` unless their contract explicitly proves safety.
-- Background work receives immutable plans or stable handles, not mutable transaction objects.
-- Logical commit sequence, LSN, and physical offsets remain distinct types.
-- No component may claim the whole engine is lock-free because one implementation has a latch-free update path.
+## Persistent-format governance
 
-## 11. Evolution by release
+A durable format owner must define:
 
-### v0.1-v0.5
+- magic/version fields;
+- exact integer widths and byte order;
+- reserved fields;
+- length/count limits;
+- checksum scope;
+- identity binding;
+- crash-tail policy;
+- corruption behavior;
+- compatibility/migration rules;
+- golden or corruption tests.
 
-Implement managed storage, WAL, recovery, baseline indexing, transactions, MVCC, snapshots, conservative retention, diagnostics, reference-model validation, and crash tests in the existing projects.
+Complete corruption is fatal. Only a tail whose framing proves it may be incomplete is eligible for truncation. Derived state may be rebuilt only from independently validated authoritative history.
 
-### v0.6-v1.0
+## Unsafe/native-code boundary
 
-Expand `ChronicleDB.History` with generalized roots, branches, ancestry, and retention explanations. Expand `ChronicleDB.Maintenance` with reachability-aware GC and copy-and-publish compaction. Create a new assembly only if an actual dependency cycle, package boundary, or independent replacement need appears.
+v1.0 compiles with unsafe code disabled. Planned native-memory work belongs in a dedicated future assembly after ownership has been specified for allocation, publication, reader protection, retirement, and reclamation.
 
-### v1.1-v1.5
+Semantic or public assemblies must not expose raw pointers or depend on epoch internals.
 
-After profiling and ownership gates:
+## Tooling boundary
 
-1. Create `ChronicleDB.Memory.Native` for allocator, owned/borrowed native slices, debug guards, and leak tracking.
-2. Create `ChronicleDB.Reclamation.Epochs` for worker registration, epoch guards, retirement queues, and safe physical reclamation.
-3. Create `ChronicleDB.Indexing.LatchFree` as another implementation of `Indexing.Abstractions`.
-4. Keep `Indexing.Baseline` and run identical workloads against both.
-5. Let only `ChronicleDB` select an implementation from validated configuration.
+CrashHarness, Inspector, WorkloadRunner, benchmarks, and test projects are clients of supported public/internal test seams. They do not implement alternate WAL, MVCC, branch-resolution, or retention rules.
 
-Native and latch-free projects may depend inward on stable contracts. Existing semantic projects must not depend outward on their concrete types.
+The Inspector escapes control characters in persisted names before writing terminal output. Benchmark and diagnostic output is observational evidence and cannot affect engine state.
 
-## 12. Testing architecture
+## Change policy
 
-| Test area | Purpose |
-| --- | --- |
-| `ArchitectureTests` | Project DAG, package ownership, unsafe-code boundary, central configuration |
-| `UnitTests` | Pure visibility, state machines, codecs, data structures, boundary values |
-| `PersistenceTests` | Real file I/O, pages, overflow values, WAL framing, checkpoints, corruption |
-| `ReferenceModel` | Small, obvious, implementation-independent logical state model |
-| `CorrectnessTests` | Property/generated workloads and differential replay |
-| `RecoveryTests` | Child-process crashes, truncation/torn writes, reopen and durable-prefix validation |
-| `CrashHarness` | Deterministic external process termination; not an in-process exception simulator |
-| `WorkloadRunner` | Seeded workload record/replay shared by correctness, stress, and benchmarks |
-| `Benchmarks` | Reproducible baselines and ablation; never a correctness oracle |
+The following changes require an ADR plus corresponding architecture/format tests where relevant:
 
-Test utilities are shared only through the narrow `ReferenceModel` project. A large universal `TestCommon` project is forbidden because it couples unrelated test suites and hides fixture ownership.
+- persistent byte-layout changes;
+- commit/durability ordering changes;
+- recovery-authority changes;
+- public lifetime/ownership changes;
+- history/branch semantic changes;
+- unsafe-code opt-in;
+- dependency-direction changes;
+- replacement of a baseline implementation with a new mandatory mechanism.
 
-## 13. When to create or split a project
-
-Create a project only when at least one condition is true:
-
-- a concrete implementation must be replaceable behind a stable contract;
-- unsafe/native code needs a hard containment boundary;
-- an external package must not leak into semantic assemblies;
-- startup/recovery code has materially different dependencies from foreground code;
-- a separately runnable process or tool is required;
-- architecture tests cannot otherwise enforce a critical dependency rule.
-
-Do not split merely because a folder is large. Before splitting, prove the new dependency direction is acyclic and name the owner of cross-boundary contracts.
-
-## 14. Forbidden shortcuts
-
-- `ChronicleDB.Common`, `ChronicleDB.Helpers`, or a service-locator project.
-- Transaction code referencing `Indexing.Baseline` or a future latch-free implementation.
-- History code writing files or WAL records directly.
-- Storage/WAL codecs copied into Recovery, Inspector, or tests.
-- Public API returning mutable engine-owned buffers.
-- `unsafe` enabled globally or in a semantic/persistence project.
-- Benchmark-specific behavior in production paths without an explicit feature and equivalence tests.
-- Circular project references resolved by moving unrelated types into Core.
-- Empty future projects created only to make the tree look complete.
-
-## 15. Change checklist
-
-Before merging a feature:
-
-1. Identify the owning module and semantic invariant.
-2. State persistent-format and recovery impact.
-3. Extend the reference model when logical behavior changes.
-4. Add unit/property/differential tests before optimization.
-5. Add fault injection when durable state changes.
-6. Confirm the architecture test still represents the intended dependency graph.
-7. Update an ADR for format, lifecycle, ownership, or dependency changes.
-8. Benchmark only after correctness and recovery gates pass.
+Performance refactoring that preserves these contracts still requires differential, recovery, and benchmark evidence before it becomes part of the v1 semantic baseline.

@@ -1,4 +1,4 @@
-# Branch recovery
+# Branch Recovery
 
 Branch recovery is dependency-ordered and fail-closed. Main metadata and history roots are validated before any branch becomes available; parent histories therefore exist before their children are exposed.
 
@@ -31,13 +31,13 @@ The logical authority is `checkpoint + branch WAL`. Branch physical pages are de
 
 Physical versions below an advanced generic retention floor may remain temporarily until compaction; unexplained records inside the retained range are corruption.
 
-Because the branch physical store is derived state after v0.8, checksum/framing damage in that store may be rebuilt from an already validated checkpoint + branch WAL authority. This recovery rule does not make valid-looking but semantically inconsistent pages trustworthy: if a decoded physical version has the wrong logical key identity, commit sequence, transaction identity, tombstone state, or value bytes, open fails closed with corruption instead of silently rewriting it.
+Because the branch physical store is derived state in v1.0, checksum/framing damage in that store may be rebuilt from an already validated checkpoint + branch WAL authority. This recovery rule does not make valid-looking but semantically inconsistent pages trustworthy: if a decoded physical version has the wrong logical key identity, commit sequence, transaction identity, tombstone state, or value bytes, open fails closed with corruption instead of silently rewriting it.
 
 ## Deletion recovery
 
 Branch deletion uses durable DeleteIntent and DeleteComplete lifecycle records. New branch operations are blocked once deletion starts. Normal deletion is rejected while open handles, active transactions, persistent branch snapshots, or child branches remain.
 
-If a crash leaves a durable DeleteIntent, reopen completes the deletion only when the persistent dependency graph is still safe. A delete intent coexisting with a retained child or branch snapshot is treated as corruption rather than guessed away. Branch-private files are reclaimed later by v0.9 GC.
+If a crash leaves a durable DeleteIntent, reopen completes the deletion only when the persistent dependency graph is still safe. A delete intent coexisting with a retained child or branch snapshot is treated as corruption rather than guessed away. Branch-private files are reclaimed by a later garbage-collection pass.
 
 ## Ancestry
 

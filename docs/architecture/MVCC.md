@@ -1,4 +1,4 @@
-# v1.0 MVCC model
+# MVCC Model
 
 ChronicleDB v1.0 uses immutable managed committed-version chains as the semantic source for current, transactional, snapshot, branch, and time-travel reads. The managed implementation remains the correctness baseline for later v1.5 index/reclamation optimization.
 

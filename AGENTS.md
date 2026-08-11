@@ -1,14 +1,16 @@
-# ChronicleDB contributor rules
+# ChronicleDB Contributor Guide
 
 These rules apply to the entire repository.
 
-1. Read `project-definition.md`, `ARCHITECTURE.md`, and the relevant local plan under `private-docs/` before changing engine behavior.
-2. Preserve the source-project dependency DAG enforced by `ChronicleDB.ArchitectureTests`.
-3. Put code in the owning feature folder. Do not create `Common`, `Helpers`, `Utils`, generic repository, generic service, or service-locator layers.
-4. Keep `ChronicleDB.Core` dependency-free and small. Do not resolve cycles by moving unrelated types into Core.
-5. Only `src/ChronicleDB` selects concrete implementations. Transaction, recovery, and maintenance code reference `Indexing.Abstractions`, never `Indexing.Baseline` or future optimized indexes.
-6. Treat persistent layouts as protocols. Update format documentation, golden fixtures, corruption tests, and recovery tests with format changes.
-7. Keep unsafe code disabled outside the approved native-memory project. Do not let pointers, epoch guards, pins, or borrowed spans escape their documented lifetime.
-8. Extend the reference model before implementing changed logical semantics. Add fault injection for changed durable behavior.
-9. Preserve simple baseline implementations when adding optimized variants. Validate both with identical deterministic workloads.
-10. Run restore, build, architecture tests, and the affected correctness/recovery suites before declaring a change complete.
+1. Read `project-definition.md`, `ARCHITECTURE.md`, the relevant ADRs, and the affected architecture-topic documents before changing engine behavior.
+2. Preserve the project-reference DAG enforced by `ChronicleDB.ArchitectureTests`; do not resolve dependency cycles by moving unrelated code into `ChronicleDB.Core`.
+3. Place code in the assembly that owns the invariant. Avoid catch-all `Common`, `Utils`, service-locator, generic repository, or generic service layers.
+4. Only the `ChronicleDB` composition root selects concrete replaceable implementations. Engine semantics depend on stable abstractions, not the managed baseline index or future optimized index types.
+5. Treat every persistent layout as a protocol. Format changes require documentation, compatibility analysis, corruption coverage, and recovery tests.
+6. Keep unsafe code disabled in v1.0. Future native-memory work requires an explicit ownership contract for allocation, publication, protection, retirement, and reclamation.
+7. Extend the reference model before changing logical semantics. Add fault injection when a change alters persistence or crash behavior.
+8. Do not weaken durability, retention, or validation to improve a benchmark. Performance work must preserve the same semantic configuration.
+9. Keep baseline implementations available when optimized variants are introduced so differential validation remains possible.
+10. Before declaring a change complete, run restore/build, the architecture suite, affected unit/persistence/correctness/recovery tests, and the relevant crash/workload campaign.
+
+Security-sensitive changes should also update `docs/SECURITY.md`. A checksum is never a substitute for cryptographic authenticity, and best-effort cleanup must not be confused with logical publication.

@@ -1,4 +1,4 @@
-# v0.5 transaction state and local writes
+# Transaction State and Local Writes
 
 Each transaction has a non-empty `TransactionId`, an immutable `StartSequence`, an optional final `CommitSequence`, an explicit state, and a private write set. A public transaction handle is intended to be single-owner; concurrency is achieved through independent handles.
 

@@ -1,4 +1,4 @@
-# v1.0 history roots
+# History Roots
 
 ChronicleDB treats historical retention as a first-class semantic contract. A history root identifies a stable boundary that must remain reconstructable even when the generic time-travel floor advances. Persistent snapshots and branch bases are durable roots; active transactions and open historical/snapshot handles contribute process-local boundaries through the same retention planner.
 

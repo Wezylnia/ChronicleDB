@@ -1,98 +1,72 @@
 # ChronicleDB
 
-ChronicleDB is an experimental embedded, persistent, versioned key-value storage engine for .NET 10. The v1.0 release architecture combines crash-safe MVCC and Snapshot Isolation with persistent historical roots, copy-on-write/shared-state branches, independent branch WAL/recovery, conservative branch lifecycle, retained-history garbage collection, and copy-and-publish physical compaction.
+ChronicleDB is an experimental embedded key-value storage engine for .NET 10. It stores binary keys and values, provides WAL-backed transactions with Snapshot Isolation, retains historical MVCC state for persistent snapshots and time-travel reads, and can create independently writable branches from retained history without copying the complete logical database.
 
-The current release deliberately does **not** claim branch merge/rebase, cross-history transactions, latch-free indexing, epoch-based reclamation, native-memory hot paths, distributed operation, group commit, or SQL. Those remain later-release work.
+The v1.0 line is the semantic baseline for later performance research. Correctness, crash recovery, history retention, and branch isolation are intentionally prioritized over latch-free execution or peak throughput.
 
-## v1.0 guarantees
+## What v1.0 provides
 
-- binary keys (including the zero-length binary key) use full structural identity and engine-owned bytes;
-- acknowledged durable commits have a recoverable WAL decision before publication;
-- multi-key transactions become logically visible as one committed unit;
-- transactions read one fixed `StartSequence` plus their own writes;
-- first-committer-wins prevents overlapping write/write commits;
-- Snapshot Isolation is explicitly **not** serializable;
-- persistent named snapshots survive restart and keep a fixed historical boundary;
-- retained commit-sequence views are read-only and deterministic;
-- snapshot deletion removes only that persistent root; GC later reclaims history only when no remaining root or active observer requires it;
-- persistent snapshots are represented as generalized history roots and survive restart through `chronicle.history-roots`;
-- interrupted root publication is reconciled deterministically during open;
-- branch creation is metadata-oriented: inherited state remains shared through a fixed historical base rather than being copied;
-- Main and each branch use distinct history domains and local commit-sequence namespaces;
-- branch reads distinguish local values, local tombstones, and parent fallback through one resolver;
-- branch snapshots and branch-local historical reads remain stable while Main, siblings, and the branch continue evolving;
-- nested branching is correctness-first and bounded to 16 levels;
-- every writable branch owns an identity-bound WAL and durable branch commits are redone after interrupted physical publication;
-- branch deletion is crash-safe and is rejected while active handles, persistent branch snapshots, or child branches depend on the history;
-- generic time-travel floors are distinct from explicit snapshot/branch roots, allowing per-key historical reclamation instead of one global minimum;
-- GC publishes a complete retained-history checkpoint before rotating WAL or removing managed versions;
-- physical compaction uses copy/fsync/validate/publish rather than destructive in-place rewriting and supports bounded rewrite budgets;
-- lifecycle journals are compacted to canonical active state so bounded create/delete workloads do not leak metadata indefinitely;
-- complete persistent corruption is rejected rather than silently repaired;
-- only proven crash tails or derived state recoverable from authoritative history are repaired.
-- retained-history checkpoint framing rejects physically impossible record counts before allocating record collections;
-- WAL/checkpoint recovery revalidates configured logical key/value limits before replay or physical redo, while obsolete pre-checkpoint WAL generations remain structural evidence rather than replay input;
-- history-topology diagnostics expose Main/branch ancestry, local sequence/floor, version depth, snapshots, data/WAL bytes, open readers, and explainable persistent retention roots;
-- deleted branch-private directory cleanup is retryable physical reclamation and cannot fault a logically valid database solely because the host filesystem temporarily refuses deletion;
-- deterministic v1.0 workload replay covers Main and multiple branches, snapshots, historical reads, restart, GC, and compaction with intermediate differential validation;
-- the v1.0 research runner records reproducibility metadata and dedicated branch creation/read/write/scale, GC, compaction, and recovery measurements without claiming superiority from the runner itself.
+- page-based persistent storage with explicit versioned binary formats and CRC32C corruption detection;
+- atomic multi-key transactions backed by a write-ahead log;
+- immutable committed MVCC versions and Snapshot Isolation with first-committer-wins write conflicts;
+- persistent named snapshots and commit-sequence historical reads;
+- explicit history domains with per-history commit-sequence namespaces;
+- metadata-oriented branch creation from a fixed parent history boundary;
+- branch-local WAL, recovery, snapshots, historical reads, tombstones, and bounded nested branching;
+- generalized history roots for snapshots and branch bases;
+- retention-aware version garbage collection;
+- retained-history checkpoints that allow WAL rotation without losing reconstructable history;
+- copy-and-publish physical compaction with bounded maintenance budgets;
+- deterministic differential workloads, fault injection, process-level crash testing, topology diagnostics, and machine-readable benchmarks.
 
-## Start here
+Snapshot Isolation is **not** serializable. Branch merge/rebase, cross-history transactions, replication, distributed operation, SQL, native-memory hot paths, epoch-based reclamation, and the planned latch-free index are outside v1.0.
 
-- [Project definition](project-definition.md)
-- [Architecture](ARCHITECTURE.md)
-- [Architecture decisions](docs/adr/README.md)
-- [Storage format](docs/architecture/STORAGE_FORMAT.md)
-- [WAL format](docs/architecture/WAL_FORMAT.md)
-- [Transaction model](docs/architecture/TRANSACTIONS.md)
-- [Commit protocol](docs/architecture/TRANSACTION_COMMIT.md)
-- [Transaction state](docs/architecture/TRANSACTION_STATE.md)
-- [MVCC](docs/architecture/MVCC.md)
-- [Isolation contract](docs/architecture/ISOLATION.md)
-- [Recovery](docs/architecture/RECOVERY.md)
-- [Persistent snapshots and time travel](docs/architecture/SNAPSHOTS.md)
-- [History model](docs/architecture/HISTORY_MODEL.md)
-- [History roots](docs/architecture/HISTORY_ROOTS.md)
-- [Retention](docs/architecture/RETENTION.md)
-- [Branch semantics](docs/architecture/BRANCHING.md)
-- [Branch storage](docs/architecture/BRANCH_STORAGE.md)
-- [Branch WAL](docs/architecture/BRANCH_WAL.md)
-- [Branch recovery](docs/architecture/BRANCH_RECOVERY.md)
-- [Version GC](docs/architecture/VERSION_GC.md)
-- [Compaction](docs/architecture/COMPACTION.md)
-- [History ownership](docs/architecture/HISTORY_OWNERSHIP.md)
-- [Correctness invariants](docs/architecture/INVARIANTS.md)
-- [Crash harness](docs/architecture/CRASH_HARNESS.md)
-- [Testing methodology](docs/TESTING.md)
-- [Benchmarking methodology](docs/BENCHMARKING.md)
-- [Research evaluation contract](docs/RESEARCH_EVALUATION.md)
+## Core durability rule
 
-The detailed v0.5, v1.0, and v1.5 working plans may be kept outside the repository; the checked-in architecture documents are the implementation contract.
+An acknowledged durable commit has a recoverable WAL decision before it becomes an acknowledged success. Physical publication and logical transaction visibility are distinct concepts: recovery may redo derived physical state, but it must never invent a commit or lose an acknowledged one.
+
+For retained history, the recovery authority is the latest validated history checkpoint plus the authoritative WAL generation that follows it. Checksums detect corruption; they do not provide cryptographic authenticity. See [Security](docs/SECURITY.md).
+
+## Repository guide
+
+- [Project definition](project-definition.md) — product scope, semantic contract, invariants, and v1.5 transition boundary.
+- [Architecture](ARCHITECTURE.md) — assembly ownership and dependency rules.
+- [Architecture decisions](docs/adr/README.md) — durable design decisions and compatibility history.
+- [Storage format](docs/architecture/STORAGE_FORMAT.md) and [WAL format](docs/architecture/WAL_FORMAT.md) — persistent byte contracts.
+- [Transactions](docs/architecture/TRANSACTIONS.md), [MVCC](docs/architecture/MVCC.md), and [Isolation](docs/architecture/ISOLATION.md) — transactional semantics.
+- [Recovery](docs/architecture/RECOVERY.md) — Main and branch recovery authority.
+- [Snapshots](docs/architecture/SNAPSHOTS.md), [History roots](docs/architecture/HISTORY_ROOTS.md), and [Retention](docs/architecture/RETENTION.md) — historical-state lifecycle.
+- [Branching](docs/architecture/BRANCHING.md), [Branch storage](docs/architecture/BRANCH_STORAGE.md), and [Branch recovery](docs/architecture/BRANCH_RECOVERY.md) — writable historical branches.
+- [Version GC](docs/architecture/VERSION_GC.md) and [Compaction](docs/architecture/COMPACTION.md) — maintenance and reclamation.
+- [Security](docs/SECURITY.md) — threat model, integrity limits, and operational responsibilities.
+- [Testing](docs/TESTING.md), [Benchmarking](docs/BENCHMARKING.md), and [Research evaluation](docs/RESEARCH_EVALUATION.md) — release evidence and experiment discipline.
 
 ## Build and validate
 
+The repository pins its SDK in `global.json`.
+
 ```powershell
 dotnet restore ChronicleDB.slnx
-dotnet build ChronicleDB.slnx --no-restore
-dotnet test ChronicleDB.slnx --no-build
+dotnet build ChronicleDB.slnx -c Release --no-restore
+dotnet test ChronicleDB.slnx -c Release --no-build
 ```
 
-Run deterministic workload replay:
+Run deterministic multi-history validation:
 
 ```powershell
-dotnet run --project tools/ChronicleDB.WorkloadRunner -- 42 1000 4
+dotnet run -c Release --project tools/ChronicleDB.WorkloadRunner -- 42 10000 8
 ```
 
-Run process-level crash injection (100 repetitions of every scenario):
+Run process-level crash injection:
 
 ```powershell
-dotnet run --project tools/ChronicleDB.CrashHarness -- run 100
+dotnet run -c Release --project tools/ChronicleDB.CrashHarness -- run 100
 ```
 
-Run baseline measurements and retain raw JSON:
+Collect a machine-readable benchmark report:
 
 ```powershell
 dotnet run -c Release --project benchmarks/ChronicleDB.Benchmarks -- 1000 8 .artifacts/benchmarks/v10.json 42
 ```
 
-The SDK is pinned by `global.json`. Package versions, compiler settings, analyzer policy, artifact paths, and the default unsafe-code prohibition are centralized at the repository root.
+Benchmark output is evidence about a particular build and workload, not a claim of superiority over mature database systems. Historical v0.5 comparisons must be run from the actual v0.5 revision rather than simulated inside the v1.0 binary.

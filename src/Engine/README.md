@@ -1,3 +1,9 @@
-# Engine orchestration
+# Engine
 
-Transactions coordinates foreground commit behavior, Recovery reconstructs durable state during open, and Maintenance plans/reclaims/compacts obsolete physical state. These projects orchestrate owned modules; they do not duplicate codecs or concrete index algorithms.
+The Engine area contains orchestration-level contracts and mechanisms that operate above persistent codecs:
+
+- `ChronicleDB.Transactions` owns transaction state and committed MVCC version management.
+- `ChronicleDB.Recovery` interprets validated WAL/checkpoint history during open.
+- `ChronicleDB.Maintenance` defines GC/compaction options and results.
+
+These projects do not duplicate storage/WAL codecs or select concrete index implementations.

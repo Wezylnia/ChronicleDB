@@ -1,3 +1,5 @@
 # Semantics
 
-This area defines logical database behavior independently of files, WAL records, concrete indexes, or background execution. MVCC owns visibility; History owns roots, snapshots, branches, ancestry, and retention meaning.
+Semantics defines logical database behavior independently of file layouts and concrete indexes. MVCC owns visibility rules; History owns snapshots, roots, branch ancestry, history-domain identity, and retention meaning.
+
+Persistence records these concepts, but it does not redefine them.

@@ -1,4 +1,4 @@
-# v1.0 WAL format
+# WAL Format
 
 Each WAL begins with a fixed 64-byte database-bound file header (`CWLHDR01`, version 1.0). The header contains database GUID, first LSN, checksum algorithm, reserved bytes, and CRC32C. A WAL whose GUID differs from `chronicle.meta` is rejected.
 
@@ -47,4 +47,4 @@ A WAL instance faults after uncertain append/flush I/O. It cannot be reused; dat
 
 ## Branch WAL payload envelope
 
-v0.8 branch WAL files reuse this generic framing but wrap every record payload with a branch envelope containing `BranchId` and `HistoryId`. The generic WAL header is bound to the branch-local storage identity; the envelope additionally prevents a syntactically valid WAL record from being replayed into another branch history. The inner Begin payload is empty, Put/Delete use the normal mutation codecs, and Commit uses the normal commit-sequence/recovery-base codec.
+Branch WAL files reuse this generic framing but wrap every record payload with a branch envelope containing `BranchId` and `HistoryId`. The generic WAL header is bound to the branch-local storage identity; the envelope additionally prevents a syntactically valid WAL record from being replayed into another branch history. The inner Begin payload is empty, Put/Delete use the normal mutation codecs, and Commit uses the normal commit-sequence/recovery-base codec.

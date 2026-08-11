@@ -1,4 +1,4 @@
-# v1.0 testing methodology
+# Testing Methodology
 
 ChronicleDB uses independent validation layers because no single kind of test is sufficient for a storage engine.
 
@@ -40,11 +40,11 @@ dotnet run --project tools/ChronicleDB.CrashHarness -- run 100
 Release evidence should preserve failing seeds, raw logs, runtime/OS details, and benchmark JSON rather than reporting only a green summary. v1.0 also includes `V10ReleaseGateTests`, which drives one complete history graph through source-snapshot deletion, sibling divergence, tombstones, nested branching, branch snapshots, GC, compaction, restart, and branch deletion.
 
 
-## v0.7 branch gate
+## Historical branch gate coverage
 
-The v0.7 suite must demonstrate that branch creation does not copy the parent data file; local puts/deletes remain private; parent and siblings cannot drift a branch base; local tombstones suppress fallback; branch-local Snapshot Isolation uses a stable `StartSequence`; branch snapshots and historical reads match the reference model; nested lookup is bounded; and reopen accepts only local physical data covered by published branch commit metadata. Full independent branch-WAL crash testing remains a v0.8 gate.
+The retained v0.7 compatibility suite demonstrates that branch creation does not copy the parent data file; local puts/deletes remain private; parent and siblings cannot drift a branch base; local tombstones suppress fallback; branch-local Snapshot Isolation uses a stable `StartSequence`; branch snapshots and historical reads match the reference model; nested lookup is bounded; and legacy reopen accepts only local physical data covered by published branch commit metadata. The v1.0 suite adds the independent branch-WAL crash and recovery cases that completed the v0.8 durability milestone.
 
-## v0.8/v0.9 validation layers
+## Durability and maintenance coverage
 
 Branch durability tests cover per-record history identity, incomplete transactions, post-fsync redo, missing initialized WAL, legacy v0.7 WAL bootstrap, deletion dependencies, and interrupted deletion recovery.
 
@@ -52,7 +52,7 @@ Maintenance tests separately cover retained-history checkpoint framing, generic-
 
 `MaintenanceDifferentialTests` generates Main and sibling-branch histories against `ReferenceBranchingModel`, retains Main and branch snapshots plus recent branch historical views, then compares every observer before maintenance, after GC+compaction, and again after restart. Final-state-only comparison is intentionally insufficient.
 
-## v1.0 release freeze gate
+## v1.0 release gate
 
 The release candidate is acceptable only when the full solution build succeeds and the architecture, unit, persistence, correctness, recovery, and process-crash suites pass together. `GetHistoryTopologyDiagnostics()` is tested as an observational API and must not be used by the engine to make retention or durability decisions. History-checkpoint corruption tests include impossible resource metadata so malformed files fail before large allocations. Recovery tests also inject checksummed WAL/checkpoint history that exceeds configured logical key/value limits and require rejection before physical redo; obsolete pre-reset WAL at/below an authoritative checkpoint is verified as non-replay input.
 
@@ -66,3 +66,7 @@ dotnet run -c Release --project tools/ChronicleDB.WorkloadRunner -- 42 10000 8
 dotnet run -c Release --project tools/ChronicleDB.CrashHarness -- run 100
 dotnet run -c Release --project benchmarks/ChronicleDB.Benchmarks -- 1000 8 .artifacts/benchmarks/v10.json 42
 ```
+
+## Hardening regression coverage
+
+The hardening suite distinguishes incomplete crash tails from complete corrupt metadata. In particular, a branch metadata record with a complete footer but a corrupted declared length must fail closed rather than being truncated as a crash tail. History-checkpoint recovery validates the primary generation before cleanup, restores `.previous` only when the canonical file is missing, and fails closed when a present primary is corrupt rather than silently rolling history backward.

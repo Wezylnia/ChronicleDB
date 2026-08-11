@@ -1,4 +1,4 @@
-# v1.0 branching semantics
+# Branching Semantics
 
 ChronicleDB v1.0 represents a branch as an independently writable `HistoryId` rooted at a fixed retained boundary in one parent history. Branch creation shares immutable historical state; it does not copy the parent's logical dataset. New branch-owned writes are persisted separately and parent state is never modified by branch commits.
 

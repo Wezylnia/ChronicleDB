@@ -19,5 +19,6 @@ ADRs record decisions that are expensive to reverse or that affect correctness, 
 | [0013](0013-v08-branch-wal-and-lifecycle.md) | v0.8 branch WAL, recovery authority, and lifecycle | Accepted |
 | [0014](0014-v09-history-gc-and-compaction.md) | v0.9 retained-history GC and copy-publish compaction | Accepted |
 | [0015](0015-v10-research-grade-release-freeze.md) | v1.0 semantic freeze, topology observability, and reproducible evaluation | Accepted |
+| [0016](0016-v10-hardening-security-and-recovery-authority.md) | v1.0 hardening, security boundaries, and recovery authority | Accepted |
 
 Use a new ADR when changing the project graph, persistent formats, commit/durability semantics, memory ownership, public lifetime rules, or baseline/optimized implementation strategy.

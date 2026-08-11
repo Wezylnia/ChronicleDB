@@ -1,4 +1,4 @@
-# Physical compaction
+# Physical Compaction
 
 Garbage collection decides **what historical state is logically unnecessary**. Compaction decides **how the surviving physical state is rewritten**. The operations are deliberately separate.
 
@@ -17,7 +17,7 @@ A physical rewrite invalidates append-length recovery bases recorded by older WA
 5. move the old `chronicle.data` to `.previous`;
 6. publish the replacement as `chronicle.data`;
 7. reopen and validate the published file again;
-8. retire `.previous` only after successful publication.
+8. retire `.previous` only after successful publication; cleanup failure is recorded as filesystem debt rather than reclassifying the validated primary as corrupt.
 
 If the process dies between publication renames, open can restore the old file or accept the complete new file. When both `chronicle.data` and `.previous` exist, the previous generation is not discarded until the published primary passes storage framing/checksum validation; a torn/corrupt primary restores `.previous`. For branch data, a crash after file publication but before branch physical-boundary metadata is repaired only after the accepted new file is proven equivalent to authoritative checkpoint/WAL history.
 

@@ -1,4 +1,4 @@
-# WAL lifecycle and tail policy
+# WAL Lifecycle and Tail Policy
 
 `WalLog` owns one `.wal` file exclusively. Its fixed file header contains the storage database GUID and prevents replaying a WAL from another database. Initial creation writes and flushes a unique temporary file before moving it to the canonical name; an existing truncated canonical header is corruption rather than a reason to invent a new log identity.
 
@@ -24,6 +24,6 @@ A faulted `WalLog.Dispose()` deliberately avoids issuing another explicit `Flush
 
 The log is not a transaction manager: transaction grouping, commit semantics, recovery bases, MVCC reconstruction, and historical retention belong to higher layers.
 
-## v0.9 checkpoint rotation
+## Checkpoint rotation
 
 A history WAL may be reset only after a complete equivalent retained-history checkpoint has been fsynced and, on first use, the checkpoint capability has been durably published. Reset truncates the WAL back to its header and restarts local LSN allocation. Recovery accepts either checkpoint plus a pre-reset WAL or checkpoint plus the post-reset WAL prefix; commit records at or below the checkpoint sequence are validated but not replayed.
