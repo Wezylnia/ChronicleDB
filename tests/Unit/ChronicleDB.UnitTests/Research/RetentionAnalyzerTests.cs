@@ -109,6 +109,115 @@ public sealed class RetentionAnalyzerTests
         Assert.Equal(1, dropBoth.ProtectedVersionCountAfterDrop);
     }
 
+
+    [Fact]
+    public void MarginalDebtMatchesIndependentBruteForceOracleAcrossRandomRootSets()
+    {
+        for (var seed = 1; seed <= 250; seed++)
+        {
+            var random = new Random(seed);
+            var versionCount = random.Next(4, 18);
+            var rootCount = random.Next(2, 7);
+            var versions = Enumerable.Range(0, versionCount)
+                .Select(index => new RetentionVersion(
+                    $"v{index}",
+                    logicalPayloadBytes: random.Next(0, 4097),
+                    serializedBytes: random.Next(4097, 8193)))
+                .ToArray();
+
+            // Rebuild serialized sizes so every version satisfies serialized >= logical.
+            versions = versions
+                .Select((version, index) => new RetentionVersion(
+                    version.VersionId,
+                    version.LogicalPayloadBytes,
+                    version.LogicalPayloadBytes + 8 + index,
+                    version.LogicalPayloadBytes == 0))
+                .ToArray();
+
+            var global = versions
+                .Where(_ => random.NextDouble() < 0.15)
+                .ToArray();
+            var roots = Enumerable.Range(0, rootCount)
+                .Select(rootIndex => new RetentionRoot(
+                    $"r{rootIndex}",
+                    versions.Where(_ => random.NextDouble() < 0.45).ToArray()))
+                .ToArray();
+            var context = new RetentionContext(global, roots);
+
+            var selected = roots
+                .Where(_ => random.NextDouble() < 0.5)
+                .Select(root => root.RootId)
+                .ToArray();
+            if (selected.Length == 0)
+            {
+                selected = [roots[0].RootId];
+            }
+
+            var actual = MarginalRetentionAnalyzer.Analyze(context, selected);
+            var expected = BruteForceMarginalDebt(context, selected);
+
+            Assert.Equal(expected.CurrentCount, actual.ProtectedVersionCount);
+            Assert.Equal(expected.AfterCount, actual.ProtectedVersionCountAfterDrop);
+            Assert.Equal(expected.CurrentPayloadBytes, actual.CurrentLivePayloadBytes);
+            Assert.Equal(expected.AfterPayloadBytes, actual.LivePayloadBytesAfterDrop);
+            Assert.Equal(expected.MarginalPayloadBytes, actual.MarginalPayloadBytes);
+            Assert.Equal(expected.CurrentSerializedBytes, actual.CurrentSerializedBytes);
+            Assert.Equal(expected.AfterSerializedBytes, actual.SerializedBytesAfterDrop);
+            Assert.Equal(expected.MarginalSerializedBytes, actual.MarginalSerializedBytes);
+        }
+    }
+
+    private static BruteForceRetentionResult BruteForceMarginalDebt(
+        RetentionContext context,
+        IReadOnlyCollection<string> selectedRootIds)
+    {
+        static Dictionary<string, RetentionVersion> Union(IEnumerable<RetentionVersion> values)
+        {
+            var result = new Dictionary<string, RetentionVersion>(StringComparer.Ordinal);
+            foreach (var version in values)
+            {
+                result[version.VersionId] = version;
+            }
+
+            return result;
+        }
+
+        var all = Union(context.GloballyRequiredVersions.Concat(context.Roots.SelectMany(root => root.RequiredVersions)));
+        var remaining = Union(context.GloballyRequiredVersions.Concat(
+            context.Roots
+                .Where(root => !selectedRootIds.Contains(root.RootId, StringComparer.Ordinal))
+                .SelectMany(root => root.RequiredVersions)));
+
+        static long SumPayload(IEnumerable<RetentionVersion> values)
+            => values.Sum(version => version.LogicalPayloadBytes);
+        static long SumSerialized(IEnumerable<RetentionVersion> values)
+            => values.Sum(version => version.SerializedBytes);
+
+        var currentPayload = SumPayload(all.Values);
+        var afterPayload = SumPayload(remaining.Values);
+        var currentSerialized = SumSerialized(all.Values);
+        var afterSerialized = SumSerialized(remaining.Values);
+        return new BruteForceRetentionResult(
+            all.Count,
+            remaining.Count,
+            currentPayload,
+            afterPayload,
+            currentPayload - afterPayload,
+            currentSerialized,
+            afterSerialized,
+            currentSerialized - afterSerialized);
+    }
+
+    private sealed record BruteForceRetentionResult(
+        int CurrentCount,
+        int AfterCount,
+        long CurrentPayloadBytes,
+        long AfterPayloadBytes,
+        long MarginalPayloadBytes,
+        long CurrentSerializedBytes,
+        long AfterSerializedBytes,
+        long MarginalSerializedBytes);
+
     [Fact]
     public void ActiveBoundaryPreventsFalseCounterfactualReclaim()
     {
