@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using ChronicleDB.Core.Identifiers;
 using ChronicleDB.Core.Sequences;
 using ChronicleDB.PersistenceTests.Fixtures;
@@ -81,6 +82,41 @@ public sealed class BranchStoreTests
         using var reopened = PersistentBranchMetadataStore.Open(directory.Path, databaseId, main);
         Assert.Single(reopened.ListCreating());
         Assert.Equal(validLength, new FileInfo(path).Length);
+    }
+
+
+    [Fact]
+    public void CompleteFinalFrameWithCorruptDeclaredLengthIsRejectedInsteadOfTruncated()
+    {
+        using var directory = new StorageTestDirectory();
+        var databaseId = Guid.NewGuid();
+        var main = new HistoryId(databaseId);
+        using (var store = PersistentBranchMetadataStore.Open(directory.Path, databaseId, main))
+        {
+            store.AppendCreateIntent(
+                BranchId.New(),
+                HistoryId.New(),
+                main,
+                HistoryRootId.New(),
+                CommitSequence.Initial,
+                100,
+                1,
+                "length-corruption");
+        }
+
+        var path = Path.Combine(directory.Path, PersistentBranchMetadataStore.FileName);
+        var bytes = File.ReadAllBytes(path);
+        var recordOffset = BranchStoreHeaderCodec.Size;
+        var declaredLength = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(recordOffset + 12, 4));
+        var corruptLength = checked(declaredLength + 1);
+        Assert.True(corruptLength <= ushort.MaxValue);
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(recordOffset + 10, 2), checked((ushort)corruptLength));
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(recordOffset + 12, 4), corruptLength);
+        File.WriteAllBytes(path, bytes);
+
+        Assert.Throws<StorageCorruptionException>(
+            () => PersistentBranchMetadataStore.Open(directory.Path, databaseId, main));
+        Assert.Equal(bytes.Length, new FileInfo(path).Length);
     }
 
     [Fact]

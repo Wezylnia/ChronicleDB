@@ -174,4 +174,102 @@ public sealed class HistoryCheckpointTests
         Assert.Throws<StorageCorruptionException>(() =>
             PersistentHistoryCheckpoint.TryLoad(directory.Path, databaseId, historyId));
     }
+
+    [Fact]
+    public void ValidatedPrimaryCheckpointTakesPrecedenceOverOlderPreviousGeneration()
+    {
+        using var directory = new StorageTestDirectory();
+        var databaseId = Guid.NewGuid();
+        var historyId = new HistoryId(Guid.NewGuid());
+        var transactionId = new TransactionId(Guid.NewGuid());
+        var first = new HistoryCheckpoint(
+            databaseId,
+            historyId,
+            new CommitSequence(1),
+            CommitSequence.Initial,
+            [new HistoryCheckpointVersion(transactionId, new CommitSequence(1), new BinaryKey([1]), false, new byte[] { 1 })]);
+        var second = new HistoryCheckpoint(
+            databaseId,
+            historyId,
+            new CommitSequence(2),
+            CommitSequence.Initial,
+            [
+                new HistoryCheckpointVersion(transactionId, new CommitSequence(1), new BinaryKey([1]), false, new byte[] { 1 }),
+                new HistoryCheckpointVersion(new TransactionId(Guid.NewGuid()), new CommitSequence(2), new BinaryKey([1]), false, new byte[] { 2 }),
+            ]);
+
+        _ = PersistentHistoryCheckpoint.Publish(directory.Path, first);
+        var path = Path.Combine(directory.Path, PersistentHistoryCheckpoint.FileName);
+        var olderBytes = File.ReadAllBytes(path);
+        _ = PersistentHistoryCheckpoint.Publish(directory.Path, second);
+        File.WriteAllBytes(path + ".previous", olderBytes);
+
+        var recovered = PersistentHistoryCheckpoint.TryLoad(directory.Path, databaseId, historyId);
+
+        Assert.NotNull(recovered);
+        Assert.Equal(new CommitSequence(2), recovered!.CheckpointSequence);
+        Assert.Equal(new byte[] { 2 }, recovered.Versions[^1].Value.ToArray());
+    }
+
+    [Fact]
+    public void CorruptPresentPrimaryDoesNotRollBackToPreviousGeneration()
+    {
+        using var directory = new StorageTestDirectory();
+        var databaseId = Guid.NewGuid();
+        var historyId = new HistoryId(Guid.NewGuid());
+        var first = new HistoryCheckpoint(
+            databaseId,
+            historyId,
+            new CommitSequence(1),
+            CommitSequence.Initial,
+            [new HistoryCheckpointVersion(new TransactionId(Guid.NewGuid()), new CommitSequence(1), new BinaryKey([1]), false, new byte[] { 1 })]);
+        var second = new HistoryCheckpoint(
+            databaseId,
+            historyId,
+            new CommitSequence(2),
+            CommitSequence.Initial,
+            [new HistoryCheckpointVersion(new TransactionId(Guid.NewGuid()), new CommitSequence(2), new BinaryKey([1]), false, new byte[] { 2 })]);
+
+        _ = PersistentHistoryCheckpoint.Publish(directory.Path, first);
+        var path = Path.Combine(directory.Path, PersistentHistoryCheckpoint.FileName);
+        var olderBytes = File.ReadAllBytes(path);
+        _ = PersistentHistoryCheckpoint.Publish(directory.Path, second);
+        File.WriteAllBytes(path + ".previous", olderBytes);
+
+        var corruptPrimary = File.ReadAllBytes(path);
+        corruptPrimary[^1] ^= 0x5a;
+        File.WriteAllBytes(path, corruptPrimary);
+
+        Assert.Throws<StorageCorruptionException>(
+            () => PersistentHistoryCheckpoint.TryLoad(directory.Path, databaseId, historyId));
+        Assert.Equal(olderBytes, File.ReadAllBytes(path + ".previous"));
+    }
+
+    [Fact]
+    public void MissingPrimaryRestoresPreviousGenerationAfterInterruptedRename()
+    {
+        using var directory = new StorageTestDirectory();
+        var databaseId = Guid.NewGuid();
+        var historyId = new HistoryId(Guid.NewGuid());
+        var checkpoint = new HistoryCheckpoint(
+            databaseId,
+            historyId,
+            new CommitSequence(1),
+            CommitSequence.Initial,
+            [new HistoryCheckpointVersion(new TransactionId(Guid.NewGuid()), new CommitSequence(1), new BinaryKey([1]), false, new byte[] { 1 })]);
+
+        _ = PersistentHistoryCheckpoint.Publish(directory.Path, checkpoint);
+        var path = Path.Combine(directory.Path, PersistentHistoryCheckpoint.FileName);
+        var previousPath = path + ".previous";
+        File.Move(path, previousPath);
+
+        var recovered = PersistentHistoryCheckpoint.TryLoad(directory.Path, databaseId, historyId);
+
+        Assert.NotNull(recovered);
+        Assert.Equal(new CommitSequence(1), recovered!.CheckpointSequence);
+        Assert.True(File.Exists(path));
+        Assert.False(File.Exists(previousPath));
+    }
+
+
 }
