@@ -199,6 +199,8 @@ Semantic or public assemblies must not expose raw pointers or depend on epoch in
 
 CrashHarness, Inspector, WorkloadRunner, benchmarks, and test projects are clients of supported public/internal test seams. They do not implement alternate WAL, MVCC, branch-resolution, or retention rules.
 
+v1.1 research observation uses a minimal optional seam owned by `ChronicleDB.Diagnostics`. `IResearchEventSink`, `ObservationEnvelope`, manifests, and trace serializers are observational artifacts; the engine never consults them for durability, retention, recovery authority, or publication decisions. `MetricsMode` and `TraceMode` are selected by the `ChronicleDB` composition root. Research tools remain downstream clients and production assemblies do not depend on research runners or artifact storage.
+
 The Inspector escapes control characters in persisted names before writing terminal output. Benchmark and diagnostic output is observational evidence and cannot affect engine state.
 
 ## Change policy

@@ -74,3 +74,20 @@ The benchmark executable performs a warm-up run before each measured run. For pu
 ## Correctness before performance
 
 A result is not eligible for performance interpretation if the corresponding correctness/recovery gate fails. In particular, a benchmark configuration must not improve results by disabling the durability barrier, deleting retained history, bypassing WAL/checkpoint validation, or weakening snapshot/branch semantics unless that configuration is explicitly presented as a different system variant.
+
+## v1.1 research observation contract
+
+v1.1 research instrumentation is observational and disabled by default. The composition root may receive an `IResearchEventSink` for a research run:
+
+```csharp
+using var trace = new TraceResearchEventSink();
+using var database = ChronicleDatabase.Open(
+    directory,
+    researchEventSink: trace);
+```
+
+The first lifecycle events are `RecoveryStarted`, `HistoryReady`, and `RecoveryCompleted`. Main and branch transactions additionally expose property-relevant `OperationStarted`, `DurabilityBarrier`, `AuthorityPublished`, and `OperationCompleted` milestones. Events carry logical event IDs, history identity, resource sets, durability phase, authority generation, and dependency event IDs.
+
+`MetricsResearchEventSink` is for low-overhead counters. `TraceResearchEventSink` is for correctness/POR/recovery campaigns and may be materially more expensive; trace runs are not performance evidence. Sink exceptions are isolated from engine behavior and mark the publisher faulted rather than changing durability, retention, or publication decisions.
+
+Trace artifacts should be serialized with `ResearchTraceSerializer.SerializeCanonical(...)` and bound to the immutable `ExperimentManifest` hash. Canonical observation equivalence compares property-relevant recovery/availability/error/corruption/safety observations; terminal key/value equality alone is not a POR soundness oracle.
