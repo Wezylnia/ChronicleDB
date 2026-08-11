@@ -80,8 +80,8 @@ public sealed class ResearchExperimentSessionTests
         => new()
         {
             ExperimentId = Guid.Parse("00000000-0000-0000-0000-000000000001"),
-            ManifestFormatVersion = 1,
-            ResearchTraceFormatVersion = 1,
+            ManifestFormatVersion = ExperimentManifest.CurrentFormatVersion,
+            ResearchTraceFormatVersion = ResearchTraceSerializer.CurrentFormatVersion,
             ChronicleVersion = "v1.1-research",
             GitCommit = "0123456789abcdef",
             BuildConfiguration = "Release",
@@ -102,6 +102,7 @@ public sealed class ResearchExperimentSessionTests
             MachineBlock = "block-1",
             TrialOrder = 1,
             WorkloadFamily = "S0",
+            CacheState = "unspecified",
             DurationMilliseconds = 1000,
             BranchCount = 0,
             BranchDepth = 0,

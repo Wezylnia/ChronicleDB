@@ -99,6 +99,31 @@ public sealed class ResearchTelemetryIntegrationTests
         Assert.All(commitEvents, researchEvent => Assert.Equal(1UL, researchEvent.AuthorityGeneration));
     }
 
+
+    [Fact]
+    public void DeepInheritedReadPublishesProbeAndResolutionTelemetry()
+    {
+        using var directory = new StorageTestDirectory();
+        var sink = new TraceResearchEventSink();
+
+        using var database = ChronicleDatabase.Open(directory.Path, researchEventSink: sink);
+        database.Put([0x31], [0x41]);
+        using var branchA = database.CreateBranch("read-a");
+        using var branchB = branchA.CreateBranch("read-b");
+
+        Assert.True(branchB.TryGet([0x31], out var value));
+        Assert.Equal([0x41], value);
+
+        var read = Assert.Single(sink.Snapshot(), item => item.EventKind == ResearchEventKind.HistoryReadObserved);
+        Assert.NotNull(read.ReadObservation);
+        Assert.Equal(ResearchReadResolutionKind.InheritedValue, read.ReadObservation.Value.ResolutionKind);
+        Assert.Equal(2, read.ReadObservation.Value.AncestorProbeCount);
+        Assert.Equal(2, read.ReadObservation.Value.ResolvedAncestorDepth);
+        Assert.True(read.ReadObservation.Value.LocalMiss);
+        Assert.False(read.ReadObservation.Value.TombstoneShadow);
+        Assert.Equal(branchB.HistoryId, read.HistoryId.Value);
+    }
+
     [Fact]
     public void BranchCommitTraceUsesBranchHistoryAndResources()
     {
@@ -127,6 +152,35 @@ public sealed class ResearchTelemetryIntegrationTests
             branchEvents[0].ResourceSet,
             resource => resource.EndsWith("-wal", StringComparison.Ordinal));
         Assert.NotNull(branchEvents[0].ParentHistoryId);
+    }
+
+    [Fact]
+    public void ResearchRetentionSnapshotCapturesRawVersionsAndPersistentRoots()
+    {
+        using var directory = new StorageTestDirectory();
+        using var database = ChronicleDatabase.Open(directory.Path);
+        database.Put([0x51], [0x61, 0x62]);
+        Guid snapshotId;
+        using (var snapshot = database.CreateSnapshot("retention-research"))
+        {
+            snapshotId = snapshot.SnapshotId;
+        }
+        database.Put([0x51], [0x71, 0x72, 0x73]);
+
+        var captured = database.CaptureResearchRetentionSnapshot();
+
+        var mainHistoryId = database.GetHistoryTopologyDiagnostics().Main.HistoryId;
+        var main = Assert.Single(captured.Histories, history => history.HistoryId == mainHistoryId);
+        Assert.Equal(2, main.Versions.Count(version => version.KeyBytes == 1));
+        Assert.Contains(main.Versions, version => version.ValueBytes == 2 && !version.IsTombstone);
+        Assert.Contains(main.Versions, version => version.ValueBytes == 3 && !version.IsTombstone);
+        var root = Assert.Single(captured.PersistentRoots, item => item.RootId == snapshotId);
+        Assert.Equal(mainHistoryId, root.ProtectedHistoryId);
+        Assert.Empty(captured.ActiveBoundaries);
+
+        var inspector = new RetentionInspector(captured);
+        var explanation = inspector.ExplainRetention(snapshotId);
+        Assert.NotEmpty(explanation.RequiredVersionIds);
     }
 
     private sealed class ThrowingResearchEventSink : IResearchEventSink

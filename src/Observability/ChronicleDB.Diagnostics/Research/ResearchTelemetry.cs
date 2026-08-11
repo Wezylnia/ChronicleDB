@@ -24,6 +24,7 @@ public enum ResearchEventKind : byte
     CorruptionDetected = 10,
     RootTransition = 11,
     SafetyPredicateEvaluated = 12,
+    HistoryReadObserved = 13,
 }
 
 public enum ResearchDurabilityPhase : byte
@@ -57,7 +58,8 @@ public sealed class ResearchEvent
         string? logicalKeyId,
         ulong? versionId,
         long? offset,
-        long? bytes)
+        long? bytes,
+        ResearchReadObservation? readObservation = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(logicalEventId);
         ArgumentOutOfRangeException.ThrowIfNegative(logicalClock);
@@ -106,10 +108,25 @@ public sealed class ResearchEvent
         DurabilityPhase = durabilityPhase;
         AuthorityGeneration = authorityGeneration;
         DependencyEventIds = Array.AsReadOnly(dependencyEventIds.Distinct().Order().ToArray());
+        if (readObservation is not null && eventKind != ResearchEventKind.HistoryReadObserved)
+        {
+            throw new ArgumentException(
+                "Read observations are valid only for HistoryReadObserved events.",
+                nameof(readObservation));
+        }
+
+        if (eventKind == ResearchEventKind.HistoryReadObserved && readObservation is null)
+        {
+            throw new ArgumentException(
+                "HistoryReadObserved events require read observation metadata.",
+                nameof(readObservation));
+        }
+
         LogicalKeyId = logicalKeyId;
         VersionId = versionId;
         Offset = offset;
         Bytes = bytes;
+        ReadObservation = readObservation;
     }
 
     public long LogicalEventId { get; }
@@ -141,6 +158,8 @@ public sealed class ResearchEvent
     public long? Offset { get; }
 
     public long? Bytes { get; }
+
+    public ResearchReadObservation? ReadObservation { get; }
 }
 
 public interface IResearchEventSink
@@ -153,6 +172,20 @@ public interface IResearchEventSink
 public interface IResearchEventSequence
 {
     long LastLogicalEventId { get; }
+}
+
+/// <summary>
+/// Point-in-time health of the observational publication seam. Research runs
+/// must reject a faulted/incomplete telemetry stream, while the engine itself
+/// continues to preserve normal semantics when telemetry fails.
+/// </summary>
+public sealed record ResearchTelemetryStatus(
+    ResearchTelemetryMode Mode,
+    bool IsFaulted,
+    long PublicationFailures,
+    long LastLogicalEventId)
+{
+    public bool IsComplete => !IsFaulted && PublicationFailures == 0;
 }
 
 public sealed class NullResearchEventSink : IResearchEventSink

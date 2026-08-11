@@ -35,6 +35,18 @@ public sealed class ResearchEventPublisher
 
     public long PublicationFailures => Interlocked.Read(ref _publicationFailures);
 
+    public ResearchTelemetryStatus SnapshotStatus()
+    {
+        lock (_gate)
+        {
+            return new ResearchTelemetryStatus(
+                _sink.Mode,
+                _faulted,
+                Interlocked.Read(ref _publicationFailures),
+                _nextLogicalEventId);
+        }
+    }
+
     public bool TryPublish(Func<long, ResearchEvent> eventFactory, out long logicalEventId)
     {
         ArgumentNullException.ThrowIfNull(eventFactory);

@@ -17,7 +17,7 @@ public sealed class ResearchTraceSerializerTests
         Assert.Equal(
             ResearchTraceSerializer.ComputeCanonicalSha256(events),
             ResearchTraceSerializer.ComputeCanonicalSha256(events));
-        Assert.Contains("\"traceFormatVersion\":1", first, StringComparison.Ordinal);
+        Assert.Contains($"\"traceFormatVersion\":{ResearchTraceSerializer.CurrentFormatVersion}", first, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -51,6 +51,65 @@ public sealed class ResearchTelemetryTests
         Assert.Equal(1, snapshot.EventCounts[(int)ResearchEventKind.AuthorityPublished]);
     }
 
+
+    [Fact]
+    public void MetricsSinkAggregatesAncestryReadObservations()
+    {
+        var sink = new AncestryMetricsResearchEventSink();
+        var researchEvent = new ResearchEvent(
+            logicalEventId: 1,
+            logicalClock: 1,
+            ResearchEventKind.HistoryReadObserved,
+            HistoryId.New(),
+            parentHistoryId: HistoryId.New(),
+            Guid.NewGuid(),
+            transactionId: null,
+            ["history-read"],
+            ResearchDurabilityPhase.None,
+            authorityGeneration: 0,
+            dependencyEventIds: [],
+            logicalKeyId: "key",
+            versionId: null,
+            offset: null,
+            bytes: null,
+            readObservation: new ResearchReadObservation(
+                ResearchReadResolutionKind.InheritedValue,
+                ancestorProbeCount: 3,
+                resolvedAncestorDepth: 3,
+                resolvedHistoryId: HistoryId.New()));
+
+        sink.Publish(researchEvent);
+        var snapshot = sink.Snapshot();
+
+        Assert.Equal(1, snapshot.InheritedReadCount);
+        Assert.Equal(0, snapshot.LocalReadCount);
+        Assert.Equal(1, snapshot.LocalMissCount);
+        Assert.Equal(3, snapshot.AncestorProbeCount);
+        Assert.Equal(3, snapshot.MaximumResolvedAncestorDepth);
+        Assert.Equal(3, snapshot.PercentileResolvedAncestorDepth(0.99));
+    }
+
+    [Fact]
+    public void HistoryReadObservedRequiresReadObservationMetadata()
+    {
+        Assert.Throws<ArgumentException>(() => new ResearchEvent(
+            logicalEventId: 1,
+            logicalClock: 1,
+            ResearchEventKind.HistoryReadObserved,
+            HistoryId.New(),
+            parentHistoryId: null,
+            Guid.NewGuid(),
+            transactionId: null,
+            ["history-read"],
+            ResearchDurabilityPhase.None,
+            authorityGeneration: 0,
+            dependencyEventIds: [],
+            logicalKeyId: "key",
+            versionId: null,
+            offset: null,
+            bytes: null));
+    }
+
     [Fact]
     public void TraceSinkRequiresStrictLogicalEventOrder()
     {

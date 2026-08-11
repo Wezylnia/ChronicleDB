@@ -802,6 +802,24 @@ public sealed partial class ChronicleDatabase : IDisposable
         }
     }
 
+    /// <summary>
+    /// Returns research-observability health without affecting engine state.
+    /// Publication failures never change storage semantics, but a research run
+    /// that observes any failure is incomplete and must not be used as evidence.
+    /// </summary>
+    public ResearchTelemetryStatus GetResearchTelemetryStatus()
+    {
+        EnterOperation();
+        try
+        {
+            return _researchEvents.SnapshotStatus();
+        }
+        finally
+        {
+            ExitOperation();
+        }
+    }
+
     public ChronicleHistoryTopologyDiagnostics GetHistoryTopologyDiagnostics()
     {
         EnterOperation();

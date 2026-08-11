@@ -6,7 +6,7 @@ namespace ChronicleDB.Diagnostics.Research;
 
 public static class ResearchTraceSerializer
 {
-    public const int CurrentFormatVersion = 1;
+    public const int CurrentFormatVersion = 2;
 
     public static string SerializeCanonical(IEnumerable<ResearchEvent> events)
     {

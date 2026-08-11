@@ -46,6 +46,17 @@ public sealed class DeterministicResearchWorkloadGeneratorTests
         var erasure = DeterministicResearchWorkloadGenerator.Generate(ResearchWorkloadFamily.S6ErasureConflict, 1, 10);
 
         Assert.Contains(deep, operation => operation.Kind == ResearchWorkloadOperationKind.CreateBranch && operation.ParentHistorySlot >= 0);
+        Assert.Equal(ResearchWorkloadOperationKind.Put, deep[0].Kind);
+        Assert.Equal(0, deep[0].HistorySlot);
+        Assert.Equal(0, deep[0].KeyId);
+        foreach (var depth in new[] { 1, 2, 4, 8, 16 })
+        {
+            Assert.Contains(
+                deep,
+                operation => operation.Kind == ResearchWorkloadOperationKind.Read
+                    && operation.HistorySlot == depth
+                    && operation.KeyId == 0);
+        }
         Assert.Contains(recovery, operation => operation.Kind == ResearchWorkloadOperationKind.Crash);
         Assert.Contains(recovery, operation => operation.Kind == ResearchWorkloadOperationKind.Recover && operation.RequestedHistory);
         Assert.Contains(erasure, operation => operation.Kind == ResearchWorkloadOperationKind.Delete);

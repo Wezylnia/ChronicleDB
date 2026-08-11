@@ -32,6 +32,14 @@ public sealed class ExperimentManifestTests
     }
 
     [Fact]
+    public void UnknownManifestFormatVersionIsRejected()
+    {
+        var invalid = CreateManifest() with { ManifestFormatVersion = ExperimentManifest.CurrentFormatVersion + 1 };
+
+        Assert.Throws<InvalidOperationException>(() => invalid.Validate());
+    }
+
+    [Fact]
     public void NonUtcTimestampIsRejected()
     {
         var invalid = CreateManifest() with
@@ -48,7 +56,7 @@ public sealed class ExperimentManifestTests
         var manifest = CreateManifest();
         var serialized = manifest.SerializeCanonical();
 
-        Assert.Contains("\"manifestFormatVersion\":1", serialized, StringComparison.Ordinal);
+        Assert.Contains($"\"manifestFormatVersion\":{ExperimentManifest.CurrentFormatVersion}", serialized, StringComparison.Ordinal);
         Assert.Contains("\"candidateMode\":\"Paper1Baseline\"", serialized, StringComparison.Ordinal);
         Assert.Contains("\"telemetryMode\":1", serialized, StringComparison.Ordinal);
     }
@@ -57,8 +65,8 @@ public sealed class ExperimentManifestTests
         => new()
         {
             ExperimentId = Guid.Parse("00000000-0000-0000-0000-000000000001"),
-            ManifestFormatVersion = 1,
-            ResearchTraceFormatVersion = 1,
+            ManifestFormatVersion = ExperimentManifest.CurrentFormatVersion,
+            ResearchTraceFormatVersion = ResearchTraceSerializer.CurrentFormatVersion,
             ChronicleVersion = "v1.1-research",
             GitCommit = "0123456789abcdef",
             BuildConfiguration = "Release",
@@ -80,6 +88,7 @@ public sealed class ExperimentManifestTests
             TrialOrder = 1,
             WorkloadFamily = "S1",
             DurationMilliseconds = 1000,
+            CacheState = "warm",
             BranchCount = 4,
             BranchDepth = 2,
             Fanout = 2,

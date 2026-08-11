@@ -1,11 +1,11 @@
 # Deterministic S0–S7 workload inputs
 
-`DeterministicResearchWorkloadGenerator` defines the version-one logical input
+`DeterministicResearchWorkloadGenerator` defines the version-two logical input
 families used by the novelty-strike pilots. It does not execute engine commands and
 does not decide durability, recovery, retention, or publication semantics. A runner
 maps the operations to a selected baseline or candidate implementation.
 
-The generator is identified by `GeneratorFormatVersion = 1` and uses a local
+The generator is identified by `GeneratorFormatVersion = 2` and uses a local
 xorshift32 PRNG. Consequently, a workload is reproducible from the tuple
 `(generator format, family, seed, operation count)` without depending on the runtime's
 `System.Random` implementation. The workload seed belongs in the experiment manifest.
@@ -17,7 +17,7 @@ The eight families intentionally expose different stressors:
 | S0 | shallow control workload | control measurements |
 | S1 | old base with a thin branch and parent churn | marginal retention |
 | S2 | overlapping branch/snapshot roots | retention and erasure closure |
-| S3 | progressively deep inherited reads | ancestry routing/indexing |
+| S3 | seeded inherited data with depth 1/2/4/8/16 probes plus local, tombstone, and negative reads | ancestry routing/indexing |
 | S4 | many independent sibling histories | multi-log persistence ordering |
 | S5 | crash/recovery-heavy requested-history workload | readiness scheduling and recovery proofs |
 | S6 | parent/snapshot/overwrite/tombstone/branch conflict | erasure contract |

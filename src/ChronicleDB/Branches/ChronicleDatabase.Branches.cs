@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Security.Cryptography;
 using ChronicleDB.Core.Identifiers;
 using ChronicleDB.Core.Keys;
 using ChronicleDB.Core.Sequences;
@@ -262,23 +263,43 @@ public sealed partial class ChronicleDatabase
             var binaryKey = new BinaryKey(key);
             var runtime = GetBranchRuntime(branchId);
             var resolution = runtime.Versions.ResolveLatest(binaryKey);
+            HistoryReadObservation observation;
+            bool found;
             switch (resolution.Kind)
             {
                 case CommittedVersionResolutionKind.Value:
                     value = resolution.Value;
-                    return true;
+                    found = true;
+                    observation = new HistoryReadObservation(
+                        ResearchReadResolutionKind.LocalValue,
+                        AncestorProbes: 0,
+                        ResolvedDepth: 0,
+                        definition.HistoryId);
+                    break;
                 case CommittedVersionResolutionKind.Tombstone:
                     value = [];
-                    return false;
+                    found = false;
+                    observation = new HistoryReadObservation(
+                        ResearchReadResolutionKind.LocalTombstone,
+                        AncestorProbes: 0,
+                        ResolvedDepth: 0,
+                        definition.HistoryId);
+                    break;
                 case CommittedVersionResolutionKind.NoVisibleVersion:
-                    return ResolveHistoryRead(
+                    found = ResolveHistoryReadCore(
                         definition.ParentHistoryId,
                         definition.ParentBaseSequence,
                         binaryKey,
-                        out value);
+                        initialDepth: 1,
+                        out value,
+                        out observation);
+                    break;
                 default:
                     throw new InvalidOperationException("Unknown committed-version resolution result.");
             }
+
+            PublishHistoryReadObservation(definition, binaryKey, observation);
+            return found;
         }
         finally
         {
@@ -297,7 +318,16 @@ public sealed partial class ChronicleDatabase
         {
             var definition = _branches.GetRequired(branchId);
             ValidateBranchHistoricalBoundary(definition, visibilityBoundary);
-            return ResolveHistoryRead(definition.HistoryId, visibilityBoundary, new BinaryKey(key), out value);
+            var binaryKey = new BinaryKey(key);
+            var found = ResolveHistoryReadCore(
+                definition.HistoryId,
+                visibilityBoundary,
+                binaryKey,
+                initialDepth: 0,
+                out value,
+                out var observation);
+            PublishHistoryReadObservation(definition, binaryKey, observation);
+            return found;
         }
         finally
         {
@@ -324,7 +354,17 @@ public sealed partial class ChronicleDatabase
                     floor.Value,
                     definition.LocalCurrentSequence.Value);
             }
-            return ResolveHistoryRead(definition.HistoryId, visibilityBoundary, new BinaryKey(key), out value);
+
+            var binaryKey = new BinaryKey(key);
+            var found = ResolveHistoryReadCore(
+                definition.HistoryId,
+                visibilityBoundary,
+                binaryKey,
+                initialDepth: 0,
+                out value,
+                out var observation);
+            PublishHistoryReadObservation(definition, binaryKey, observation);
+            return found;
         }
         finally
         {
@@ -958,38 +998,111 @@ public sealed partial class ChronicleDatabase
         }
     }
 
-    private bool ResolveHistoryRead(
+    private bool ResolveHistoryReadCore(
         HistoryId historyId,
         CommitSequence boundary,
         BinaryKey key,
-        out byte[] value)
+        int initialDepth,
+        out byte[] value,
+        out HistoryReadObservation observation)
     {
-        if (historyId == _mainHistoryId)
-        {
-            return _versions.TryRead(key, boundary, out value);
-        }
+        var currentHistoryId = historyId;
+        var currentBoundary = boundary;
+        var depth = initialDepth;
 
-        if (!_branches.TryGetByHistory(historyId, out var definition) || definition is null)
+        while (true)
         {
-            throw new StorageCorruptionException($"History {historyId.Value} has no active branch owner.");
-        }
+            CommittedVersionResolution resolution;
+            if (currentHistoryId == _mainHistoryId)
+            {
+                resolution = _versions.Resolve(key, currentBoundary);
+            }
+            else
+            {
+                if (!_branches.TryGetByHistory(currentHistoryId, out var definition) || definition is null)
+                {
+                    throw new StorageCorruptionException(
+                        $"History {currentHistoryId.Value} has no active branch owner.");
+                }
 
-        var runtime = GetBranchRuntime(definition.BranchId);
-        var resolution = runtime.Versions.Resolve(key, boundary);
-        switch (resolution.Kind)
-        {
-            case CommittedVersionResolutionKind.Value:
-                value = resolution.Value;
-                return true;
-            case CommittedVersionResolutionKind.Tombstone:
-                value = [];
-                return false;
-            case CommittedVersionResolutionKind.NoVisibleVersion:
-                return ResolveHistoryRead(definition.ParentHistoryId, definition.ParentBaseSequence, key, out value);
-            default:
-                throw new InvalidOperationException("Unknown committed-version resolution result.");
+                var runtime = GetBranchRuntime(definition.BranchId);
+                resolution = runtime.Versions.Resolve(key, currentBoundary);
+                if (resolution.Kind == CommittedVersionResolutionKind.NoVisibleVersion)
+                {
+                    currentHistoryId = definition.ParentHistoryId;
+                    currentBoundary = definition.ParentBaseSequence;
+                    depth = checked(depth + 1);
+                    continue;
+                }
+            }
+
+            var readKind = resolution.Kind switch
+            {
+                CommittedVersionResolutionKind.Value when depth == 0 => ResearchReadResolutionKind.LocalValue,
+                CommittedVersionResolutionKind.Tombstone when depth == 0 => ResearchReadResolutionKind.LocalTombstone,
+                CommittedVersionResolutionKind.Value => ResearchReadResolutionKind.InheritedValue,
+                CommittedVersionResolutionKind.Tombstone => ResearchReadResolutionKind.InheritedTombstone,
+                CommittedVersionResolutionKind.NoVisibleVersion => ResearchReadResolutionKind.Missing,
+                _ => throw new InvalidOperationException("Unknown committed-version resolution result."),
+            };
+
+            value = resolution.Kind == CommittedVersionResolutionKind.Value
+                ? resolution.Value
+                : [];
+            observation = new HistoryReadObservation(
+                readKind,
+                AncestorProbes: depth,
+                ResolvedDepth: resolution.Kind == CommittedVersionResolutionKind.NoVisibleVersion ? null : depth,
+                resolution.Kind == CommittedVersionResolutionKind.NoVisibleVersion ? null : currentHistoryId);
+            return resolution.Kind == CommittedVersionResolutionKind.Value;
         }
     }
+
+    private void PublishHistoryReadObservation(
+        BranchDefinition requestedHistory,
+        BinaryKey key,
+        HistoryReadObservation observation)
+    {
+        if (_researchEvents.Mode == ResearchTelemetryMode.Disabled)
+        {
+            return;
+        }
+
+        var logicalKeyId = _researchEvents.Mode == ResearchTelemetryMode.Trace
+            ? Convert.ToHexString(SHA256.HashData(key.AsSpan())).ToLowerInvariant()
+            : null;
+        var readObservation = new ResearchReadObservation(
+            observation.Resolution,
+            observation.AncestorProbes,
+            observation.ResolvedDepth,
+            observation.ResolvedHistoryId);
+
+        _researchEvents.TryPublish(
+            logicalEventId => new ResearchEvent(
+                logicalEventId,
+                logicalEventId,
+                ResearchEventKind.HistoryReadObserved,
+                requestedHistory.HistoryId,
+                requestedHistory.ParentHistoryId,
+                Guid.NewGuid(),
+                transactionId: null,
+                [ResearchReadTelemetry.Resource],
+                ResearchDurabilityPhase.None,
+                authorityGeneration: 0,
+                dependencyEventIds: [],
+                logicalKeyId,
+                versionId: null,
+                offset: null,
+                bytes: null,
+                readObservation),
+            out _);
+    }
+
+    private readonly record struct HistoryReadObservation(
+        ResearchReadResolutionKind Resolution,
+        int AncestorProbes,
+        int? ResolvedDepth,
+        HistoryId? ResolvedHistoryId);
 
     private void ValidateHistoryBoundary(HistoryId historyId, CommitSequence boundary)
     {

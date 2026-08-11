@@ -10,6 +10,7 @@ namespace ChronicleDB.Diagnostics.Research;
 /// </summary>
 public sealed record ExperimentManifest
 {
+    public const int CurrentFormatVersion = 2;
     public required Guid ExperimentId { get; init; }
 
     public required int ManifestFormatVersion { get; init; }
@@ -57,6 +58,8 @@ public sealed record ExperimentManifest
     public required string WorkloadFamily { get; init; }
 
     public required long DurationMilliseconds { get; init; }
+
+    public required string CacheState { get; init; }
 
     public required int BranchCount { get; init; }
 
@@ -109,9 +112,10 @@ public sealed record ExperimentManifest
             throw new InvalidOperationException("ExperimentId must be non-empty.");
         }
 
-        if (ManifestFormatVersion <= 0)
+        if (ManifestFormatVersion != CurrentFormatVersion)
         {
-            throw new InvalidOperationException("ManifestFormatVersion must be positive.");
+            throw new InvalidOperationException(
+                $"Unsupported manifest format version {ManifestFormatVersion}; expected {CurrentFormatVersion}.");
         }
 
         if (ResearchTraceFormatVersion <= 0)
@@ -169,6 +173,7 @@ public sealed record ExperimentManifest
         yield return (nameof(DotNetVersion), DotNetVersion);
         yield return (nameof(MachineBlock), MachineBlock);
         yield return (nameof(WorkloadFamily), WorkloadFamily);
+        yield return (nameof(CacheState), CacheState);
         yield return (nameof(GcMode), GcMode);
         yield return (nameof(CompactionMode), CompactionMode);
         yield return (nameof(DurabilityMode), DurabilityMode);

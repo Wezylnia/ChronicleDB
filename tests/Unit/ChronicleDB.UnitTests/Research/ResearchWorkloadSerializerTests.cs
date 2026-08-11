@@ -35,6 +35,6 @@ public sealed class ResearchWorkloadSerializerTests
 
         var serialized = ResearchWorkloadSerializer.SerializeCanonical(operations);
 
-        Assert.Contains("\"generatorFormatVersion\":1", serialized, StringComparison.Ordinal);
+        Assert.Contains($"\"generatorFormatVersion\":{DeterministicResearchWorkloadGenerator.GeneratorFormatVersion}", serialized, StringComparison.Ordinal);
     }
 }

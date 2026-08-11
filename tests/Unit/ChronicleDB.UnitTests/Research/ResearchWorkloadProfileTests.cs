@@ -7,13 +7,13 @@ public sealed class ResearchWorkloadProfileTests
     [Fact]
     public void ProfileCapturesBranchTopologyAndOperationKinds()
     {
-        var operations = DeterministicResearchWorkloadGenerator.Generate(ResearchWorkloadFamily.S3DeepInheritance, 1, 20);
+        var operations = DeterministicResearchWorkloadGenerator.Generate(ResearchWorkloadFamily.S3DeepInheritance, 1, 40);
 
         var profile = ResearchWorkloadProfiler.Analyze(operations);
 
-        Assert.Equal(20, profile.OperationCount);
-        Assert.Equal(10, profile.BranchCount);
-        Assert.Equal(10, profile.MaximumBranchDepth);
+        Assert.Equal(40, profile.OperationCount);
+        Assert.Equal(16, profile.BranchCount);
+        Assert.Equal(16, profile.MaximumBranchDepth);
         Assert.Equal(1, profile.MaximumFanout);
         Assert.Equal(0, profile.SnapshotCount);
         Assert.Equal(0, profile.CrashCount);
