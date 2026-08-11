@@ -155,6 +155,39 @@ public sealed class ResearchTelemetryIntegrationTests
     }
 
     [Fact]
+    public void BranchReopenPublishesPerHistoryRecoveryValidationMilestones()
+    {
+        using var directory = new StorageTestDirectory();
+        Guid branchHistoryId;
+        using (var database = ChronicleDatabase.Open(directory.Path))
+        using (var branch = database.CreateBranch("recovery-trace"))
+        {
+            branchHistoryId = branch.HistoryId;
+            branch.Put([0x21], [0x31]);
+        }
+
+        var sink = new TraceResearchEventSink();
+        using var reopened = ChronicleDatabase.Open(directory.Path, researchEventSink: sink);
+
+        var events = sink.Snapshot();
+        var started = Assert.Single(events, item =>
+            item.EventKind == ResearchEventKind.OperationStarted
+            && item.HistoryId.Value == branchHistoryId
+            && item.TransactionId is null);
+        var validated = Assert.Single(events, item =>
+            item.EventKind == ResearchEventKind.HistoryValidated
+            && item.HistoryId.Value == branchHistoryId
+            && item.OperationId == started.OperationId);
+
+        Assert.Equal([started.LogicalEventId], validated.DependencyEventIds);
+        Assert.Contains(started.ResourceSet, resource => resource.EndsWith("-wal", StringComparison.Ordinal));
+        Assert.Contains(started.ResourceSet, resource => resource.EndsWith("-data", StringComparison.Ordinal));
+        Assert.Contains("branch-catalog", validated.ResourceSet);
+        Assert.Contains("history-roots", validated.ResourceSet);
+        Assert.True(validated.LogicalEventId < events.Single(item => item.EventKind == ResearchEventKind.RecoveryCompleted).LogicalEventId);
+    }
+
+    [Fact]
     public void ResearchRetentionSnapshotCapturesRawVersionsAndPersistentRoots()
     {
         using var directory = new StorageTestDirectory();

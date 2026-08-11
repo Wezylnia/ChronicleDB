@@ -356,7 +356,9 @@ public sealed partial class ChronicleDatabase : IDisposable
                 branchStore,
                 historyRootStore,
                 validatedOptions,
-                store.DatabaseId);
+                store.DatabaseId,
+                researchEvents,
+                recoveryStartedEventId);
             branchDefinitions = branchRuntimes.Values
                 .Select(runtime => runtime.Definition)
                 .OrderBy(branch => branch.Depth)

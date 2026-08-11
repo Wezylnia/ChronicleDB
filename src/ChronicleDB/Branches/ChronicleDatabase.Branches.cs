@@ -1491,13 +1491,42 @@ public sealed partial class ChronicleDatabase
         PersistentBranchMetadataStore branchStore,
         PersistentHistoryRootStore rootStore,
         StorageOptions options,
-        Guid databaseId)
+        Guid databaseId,
+        ResearchEventPublisher researchEvents,
+        long recoveryStartedEventId)
     {
         var runtimes = new ConcurrentDictionary<BranchId, BranchRuntime>();
         try
         {
             foreach (var branch in branches)
             {
+                var recoveryOperationId = Guid.NewGuid();
+                var resources = new[]
+                {
+                    $"branch-{branch.BranchId.Value:N}-data",
+                    $"branch-{branch.BranchId.Value:N}-wal",
+                    "branch-catalog",
+                    "history-roots",
+                };
+                researchEvents.TryPublish(
+                    logicalEventId => new ResearchEvent(
+                        logicalEventId,
+                        logicalEventId,
+                        ResearchEventKind.OperationStarted,
+                        branch.HistoryId,
+                        branch.ParentHistoryId,
+                        recoveryOperationId,
+                        transactionId: null,
+                        resources,
+                        ResearchDurabilityPhase.None,
+                        branch.LocalCurrentSequence.Value,
+                        recoveryStartedEventId > 0 ? [recoveryStartedEventId] : [],
+                        logicalKeyId: null,
+                        versionId: null,
+                        offset: null,
+                        bytes: null),
+                    out var branchRecoveryStartedEventId);
+
                 if (!branchStore.TryGet(branch.BranchId, out var publishedState) || publishedState is null)
                 {
                     throw new StorageCorruptionException("Active branch has no persistent lifecycle state.");
@@ -1510,6 +1539,26 @@ public sealed partial class ChronicleDatabase
                     branchStore,
                     options);
                 ReconcileBranchSnapshotRoots(rootStore, branch, runtime.SnapshotStore.ListActive(), databaseId);
+                researchEvents.TryPublish(
+                    logicalEventId => new ResearchEvent(
+                        logicalEventId,
+                        logicalEventId,
+                        ResearchEventKind.HistoryValidated,
+                        branch.HistoryId,
+                        branch.ParentHistoryId,
+                        recoveryOperationId,
+                        transactionId: null,
+                        resources,
+                        ResearchDurabilityPhase.AuthorityPublished,
+                        runtime.Definition.LocalCurrentSequence.Value,
+                        branchRecoveryStartedEventId > 0
+                            ? [branchRecoveryStartedEventId]
+                            : recoveryStartedEventId > 0 ? [recoveryStartedEventId] : [],
+                        logicalKeyId: null,
+                        versionId: null,
+                        offset: null,
+                        bytes: null),
+                    out _);
                 if (!runtimes.TryAdd(branch.BranchId, runtime))
                 {
                     runtime.Dispose();
