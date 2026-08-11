@@ -13,7 +13,11 @@ namespace ChronicleDB.Recovery;
 /// </summary>
 public static class WalRecovery
 {
-    public static RecoveryResult Reconcile(PersistentKeyValueStore store, WalLog wal)
+    public static RecoveryResult Reconcile(
+        PersistentKeyValueStore store,
+        WalLog wal,
+        CommitSequence? checkpointSequence = null,
+        IReadOnlySet<TransactionId>? checkpointTransactionIds = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(wal);
@@ -21,7 +25,12 @@ public static class WalRecovery
         var active = new Dictionary<TransactionId, List<StorageMutation>>();
         var seenTransactions = new HashSet<TransactionId>();
         var committed = new List<RecoveredTransaction>();
-        var currentCommitSequence = CommitSequence.Initial;
+        var recoveryBaseSequence = checkpointSequence ?? CommitSequence.Initial;
+        var currentCommitSequence = recoveryBaseSequence;
+        var lastSeenCommitSequence = CommitSequence.Initial;
+        var sawPreResetCheckpointGeneration = false;
+        var sawPostResetGeneration = false;
+        var highestCheckpointGenerationCommit = CommitSequence.Initial;
         long? previousRecoveryBase = null;
 
         foreach (var record in wal.ReadAll())
@@ -50,17 +59,62 @@ public static class WalRecovery
                         throw new WalCorruptionException("A WAL commit has no active transaction.");
                     }
 
-                    var commitInfo = DecodeCommitInfo(record, currentCommitSequence);
-                    ValidateRecoveryBase(commitInfo.BaseDataLength, previousRecoveryBase, store.DataLength);
+                    // Legacy v0.2 Commit records have no explicit sequence. Their
+                    // synthetic sequence belongs to the WAL's own historical order, not
+                    // to the newer checkpoint recovery base that may coexist with an
+                    // unreset pre-checkpoint WAL after a crash.
+                    var commitInfo = DecodeCommitInfo(record, lastSeenCommitSequence);
+                    ValidateRecoveryBase(
+                        commitInfo.BaseDataLength,
+                        previousRecoveryBase,
+                        store.DataLength,
+                        store.Header.PageSize);
                     if (commitInfo.BaseDataLength is { } recoveryBase)
                     {
                         previousRecoveryBase = recoveryBase;
                     }
 
                     var commitSequence = commitInfo.CommitSequence;
-                    if (commitSequence <= currentCommitSequence)
+                    if (!lastSeenCommitSequence.IsInitial && commitSequence <= lastSeenCommitSequence)
                     {
                         throw new WalCorruptionException("WAL commit sequences must be strictly increasing.");
+                    }
+                    lastSeenCommitSequence = commitSequence;
+
+                    // A newly published checkpoint may coexist with the pre-reset WAL
+                    // after a crash. That generation can contain only commits at/below
+                    // the checkpoint and must end exactly at the checkpoint boundary.
+                    // Once WAL reset has happened, the new generation may contain only
+                    // commits newer than the checkpoint. Mixing both shapes would make a
+                    // stale/corrupt reset WAL look like harmless pre-checkpoint history.
+                    if (commitSequence <= recoveryBaseSequence)
+                    {
+                        if (sawPostResetGeneration)
+                        {
+                            throw new WalCorruptionException(
+                                "WAL mixes pre-reset checkpoint history with post-reset commits.");
+                        }
+                        sawPreResetCheckpointGeneration = true;
+                        highestCheckpointGenerationCommit = commitSequence;
+                        break;
+                    }
+
+                    if (sawPreResetCheckpointGeneration)
+                    {
+                        throw new WalCorruptionException(
+                            "WAL mixes pre-reset checkpoint history with post-reset commits.");
+                    }
+                    sawPostResetGeneration = true;
+
+                    if (checkpointTransactionIds?.Contains(record.TransactionId) == true)
+                    {
+                        throw new WalCorruptionException(
+                            "A transaction identity is reused across the durable history checkpoint and post-checkpoint WAL.");
+                    }
+
+                    if (commitSequence <= currentCommitSequence)
+                    {
+                        throw new WalCorruptionException("WAL commit attempts to replay at or below the recovery base.");
                     }
 
                     currentCommitSequence = commitSequence;
@@ -84,6 +138,13 @@ public static class WalRecovery
             }
         }
 
+        if (sawPreResetCheckpointGeneration
+            && highestCheckpointGenerationCommit != recoveryBaseSequence)
+        {
+            throw new WalCorruptionException(
+                "A pre-reset WAL generation does not reach the durable checkpoint boundary.");
+        }
+
         var finalState = new Dictionary<ChronicleDB.Core.Keys.BinaryKey, StorageMutation>();
         foreach (var transaction in committed.OrderBy(entry => entry.CommitLsn))
         {
@@ -93,7 +154,6 @@ public static class WalRecovery
             }
         }
 
-        var mutationsToApply = finalState.Values.ToArray();
         // A partial/torn final physical page is never trusted. Keep it intact while
         // opening, and only discard it after WAL proves that committed history exists
         // from which the append-only tail can be reconstructed.
@@ -127,6 +187,14 @@ public static class WalRecovery
             }
         }
 
+        // Normal clean shutdown may leave WAL records whose physical effects are
+        // already present. Re-appending them on every open is logically idempotent but
+        // physically amplifies the append-only data file. After any torn-tail repair,
+        // redo only mutations whose current physical state disagrees with the durable
+        // WAL result.
+        var mutationsToApply = finalState.Values
+            .Where(mutation => NeedsPhysicalRedo(store, mutation))
+            .ToArray();
         store.ApplyBatch(mutationsToApply);
         return new RecoveryResult(
             committed.Count,
@@ -136,6 +204,17 @@ public static class WalRecovery
             CurrentCommitSequence = currentCommitSequence,
             CommittedTransactions = committed.ToArray()
         };
+    }
+
+    private static bool NeedsPhysicalRedo(PersistentKeyValueStore store, StorageMutation mutation)
+    {
+        var exists = store.TryGet(mutation.Key, out var current);
+        if (mutation.IsDelete)
+        {
+            return exists;
+        }
+
+        return !exists || !current.AsSpan().SequenceEqual(mutation.Value.Span);
     }
 
     private static WalCommitInfo DecodeCommitInfo(WalRecord record, CommitSequence previous)
@@ -160,7 +239,8 @@ public static class WalRecovery
     private static void ValidateRecoveryBase(
         long? recoveryBase,
         long? previousRecoveryBase,
-        long currentDataLength)
+        long currentDataLength,
+        int pageSize)
     {
         if (recoveryBase is not { } value)
         {
@@ -168,7 +248,7 @@ public static class WalRecovery
         }
 
         if (value < 0
-            || value % StorageOptions.DefaultPageSize != 0
+            || value % pageSize != 0
             || value > currentDataLength
             || previousRecoveryBase is { } previous && value < previous)
         {
