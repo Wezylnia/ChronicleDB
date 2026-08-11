@@ -249,6 +249,8 @@ public sealed class BoundedCrashPorExplorer
     private readonly Dictionary<long, PersistenceAction> _byId;
     private readonly Dictionary<long, HashSet<long>> _requiredPredecessors;
     private readonly IPersistenceActionIndependence _independence;
+    private readonly Dictionary<long, int> _indexByActionId;
+    private readonly bool[,] _independenceByIndex;
 
     public BoundedCrashPorExplorer(
         IEnumerable<PersistenceAction> actions,
@@ -284,6 +286,20 @@ public sealed class BoundedCrashPorExplorer
 
         _requiredPredecessors = BuildRequiredPredecessors(_actions);
         _independence = independence ?? new ConservativeHistoryIndependence(_actions);
+        _indexByActionId = _actions
+            .Select((action, index) => (action.ActionId, index))
+            .ToDictionary(pair => pair.ActionId, pair => pair.index);
+        _independenceByIndex = new bool[_actions.Length, _actions.Length];
+        for (var first = 0; first < _actions.Length; first++)
+        {
+            for (var second = first + 1; second < _actions.Length; second++)
+            {
+                var independent = _independence.AreIndependent(_actions[first], _actions[second]);
+                _independenceByIndex[first, second] = independent;
+                _independenceByIndex[second, first] = independent;
+            }
+        }
+
         EnsureAcyclic();
     }
 
@@ -355,6 +371,8 @@ public sealed class BoundedCrashPorExplorer
         var reducedCrashPlanSignatures = new HashSet<string>(StringComparer.Ordinal);
         var exhaustiveTraces = new HashSet<CanonicalTraceKey>();
         var reducedTraces = new HashSet<CanonicalTraceKey>();
+        var traceByRawPrefix = new Dictionary<string, CanonicalTraceKey>(StringComparer.Ordinal);
+        var canonicalSignatureByRawPrefix = new Dictionary<string, string>(StringComparer.Ordinal);
 
         EnumerateOrders(order =>
         {
@@ -365,10 +383,22 @@ public sealed class BoundedCrashPorExplorer
             {
                 exhaustiveCrashPlanCount = checked(exhaustiveCrashPlanCount + 1);
                 var prefix = order.Take(length).ToArray();
-                var traceKey = new CanonicalTraceKey(evaluator(prefix).Points);
+                var rawPrefixSignature = string.Join(',', prefix.Select(action => action.ActionId));
+                if (!traceByRawPrefix.TryGetValue(rawPrefixSignature, out var traceKey))
+                {
+                    traceKey = new CanonicalTraceKey(evaluator(prefix).Points);
+                    traceByRawPrefix.Add(rawPrefixSignature, traceKey);
+                }
+
                 exhaustiveTraces.Add(traceKey);
 
-                if (reducedCrashPlanSignatures.Add(CanonicalOrderSignature(prefix)))
+                if (!canonicalSignatureByRawPrefix.TryGetValue(rawPrefixSignature, out var canonicalSignature))
+                {
+                    canonicalSignature = CanonicalOrderSignature(prefix);
+                    canonicalSignatureByRawPrefix.Add(rawPrefixSignature, canonicalSignature);
+                }
+
+                if (reducedCrashPlanSignatures.Add(canonicalSignature))
                 {
                     reducedTraces.Add(traceKey);
                 }
@@ -441,7 +471,7 @@ public sealed class BoundedCrashPorExplorer
             for (var index = 0; index < order.Length - 1; index++)
             {
                 if (order[index].ActionId > order[index + 1].ActionId
-                    && _independence.AreIndependent(order[index], order[index + 1]))
+                    && AreIndependentCached(order[index], order[index + 1]))
                 {
                     (order[index], order[index + 1]) = (order[index + 1], order[index]);
                     changed = true;
@@ -451,6 +481,9 @@ public sealed class BoundedCrashPorExplorer
 
         return string.Join(',', order.Select(action => action.ActionId));
     }
+
+    private bool AreIndependentCached(PersistenceAction left, PersistenceAction right)
+        => _independenceByIndex[_indexByActionId[left.ActionId], _indexByActionId[right.ActionId]];
 
     private void Enumerate(
         List<PersistenceAction> prefix,
