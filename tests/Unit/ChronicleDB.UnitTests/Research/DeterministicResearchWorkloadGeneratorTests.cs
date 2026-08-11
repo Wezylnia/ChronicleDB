@@ -72,6 +72,30 @@ public sealed class DeterministicResearchWorkloadGeneratorTests
     }
 
     [Fact]
+    public void EveryGeneratedOperationReferencesAnAlreadyCreatedHistory()
+    {
+        foreach (var family in Enum.GetValues<ResearchWorkloadFamily>())
+        {
+            var created = new HashSet<int> { 0 };
+            var operations = DeterministicResearchWorkloadGenerator.Generate(family, 19, 96);
+
+            foreach (var operation in operations)
+            {
+                if (operation.Kind == ResearchWorkloadOperationKind.CreateBranch)
+                {
+                    Assert.DoesNotContain(operation.HistorySlot, created);
+                    Assert.Contains(operation.ParentHistorySlot, created);
+                    created.Add(operation.HistorySlot);
+                }
+                else
+                {
+                    Assert.Contains(operation.HistorySlot, created);
+                }
+            }
+        }
+    }
+
+    [Fact]
     public void NegativeOperationCountIsRejected()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() =>

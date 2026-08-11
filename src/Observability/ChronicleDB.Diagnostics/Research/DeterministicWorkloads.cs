@@ -132,12 +132,17 @@ public static class DeterministicResearchWorkloadGenerator
     }
 
     private static ResearchWorkloadOperation CreateWideHistories(int step, int key, int valueSize, DeterministicRandom random)
-        => step % 11 == 0
-            ? Branch(step, 1 + random.Next(16), 0, key, valueSize)
+        => step < 16
+            ? Branch(step, step + 1, 0, key, valueSize)
             : Data(step, ResearchWorkloadOperationKind.Put, 1 + random.Next(16), key, valueSize);
 
     private static ResearchWorkloadOperation CreateRecoveryHeavy(int step, int key, int valueSize, DeterministicRandom random)
     {
+        if (step < 8)
+        {
+            return Branch(step, step + 1, 0, key, valueSize);
+        }
+
         var history = 1 + random.Next(8);
         return (step % 9) switch
         {
@@ -148,25 +153,34 @@ public static class DeterministicResearchWorkloadGenerator
     }
 
     private static ResearchWorkloadOperation CreateErasureConflict(int step, int key, int valueSize)
-        => (step % 5) switch
+        => step switch
         {
             0 => Data(step, ResearchWorkloadOperationKind.Put, 0, key, valueSize),
             1 => Data(step, ResearchWorkloadOperationKind.CreateSnapshot, 0, key, valueSize),
-            2 => Data(step, ResearchWorkloadOperationKind.Put, 1, key, valueSize),
-            3 => Data(step, ResearchWorkloadOperationKind.Delete, 1, key, 0),
-            _ => Branch(step, 2, 1, key, valueSize),
+            2 => Branch(step, 1, 0, key, valueSize),
+            3 => Data(step, ResearchWorkloadOperationKind.Put, 1, key, valueSize),
+            4 => Data(step, ResearchWorkloadOperationKind.Delete, 1, key, 0),
+            5 => Branch(step, 2, 1, key, valueSize),
+            6 => Data(step, ResearchWorkloadOperationKind.Put, 2, key, valueSize),
+            7 => Data(step, ResearchWorkloadOperationKind.Delete, 2, key, 0),
+            8 => Data(step, ResearchWorkloadOperationKind.CreateSnapshot, 1, key, valueSize),
+            _ => Data(step, ResearchWorkloadOperationKind.Read, 2, key, valueSize),
         };
 
     private static ResearchWorkloadOperation CreateMixed(int step, int key, int valueSize, DeterministicRandom random)
     {
-        var history = random.Next(8);
+        if (step < 8)
+        {
+            return Branch(step, step + 1, 0, key, valueSize);
+        }
+
+        var history = random.Next(9);
         return (step % 13) switch
         {
-            0 => Branch(step, 1 + random.Next(8), history, key, valueSize),
-            1 => Data(step, ResearchWorkloadOperationKind.CreateSnapshot, history, key, valueSize),
-            2 => Data(step, ResearchWorkloadOperationKind.GarbageCollect, history, key, 0),
-            3 => Data(step, ResearchWorkloadOperationKind.Compact, history, key, 0),
-            4 => new ResearchWorkloadOperation(step, ResearchWorkloadOperationKind.Crash, history, -1, key, 0, false),
+            0 => Data(step, ResearchWorkloadOperationKind.CreateSnapshot, history, key, valueSize),
+            1 => Data(step, ResearchWorkloadOperationKind.GarbageCollect, history, key, 0),
+            2 => Data(step, ResearchWorkloadOperationKind.Compact, history, key, 0),
+            3 => new ResearchWorkloadOperation(step, ResearchWorkloadOperationKind.Crash, history, -1, key, 0, false),
             _ => Data(step, step % 4 == 0 ? ResearchWorkloadOperationKind.Delete : ResearchWorkloadOperationKind.Put, history, key, valueSize),
         };
     }
