@@ -981,6 +981,7 @@ public sealed partial class ChronicleDatabase : IDisposable
         IReadOnlyList<long> dependencies)
         => PublishResearchTransactionEvent(
             _mainHistoryId,
+            parentHistoryId: null,
             ["main-data", "main-wal"],
             transaction,
             eventKind,
@@ -990,6 +991,7 @@ public sealed partial class ChronicleDatabase : IDisposable
 
     private long PublishResearchTransactionEvent(
         HistoryId historyId,
+        HistoryId? parentHistoryId,
         IReadOnlyList<string> resources,
         Transaction transaction,
         ResearchEventKind eventKind,
@@ -1008,7 +1010,7 @@ public sealed partial class ChronicleDatabase : IDisposable
                     logicalEventId,
                     eventKind,
                     historyId,
-                    parentHistoryId: null,
+                    parentHistoryId,
                     transaction.TransactionId.Value,
                     transaction.TransactionId.Value,
                     resources,

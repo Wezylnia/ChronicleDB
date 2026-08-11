@@ -103,6 +103,7 @@ public sealed class ResearchTelemetryIntegrationTests
         Assert.Contains(
             branchEvents[0].ResourceSet,
             resource => resource.EndsWith("-wal", StringComparison.Ordinal));
+        Assert.NotNull(branchEvents[0].ParentHistoryId);
     }
 
     private sealed class ThrowingResearchEventSink : IResearchEventSink

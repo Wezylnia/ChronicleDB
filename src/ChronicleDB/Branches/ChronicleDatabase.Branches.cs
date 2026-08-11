@@ -717,6 +717,7 @@ public sealed partial class ChronicleDatabase
                 {
                     var operationStartedEventId = PublishResearchTransactionEvent(
                         definition.HistoryId,
+                        definition.ParentHistoryId,
                         [$"branch-{definition.BranchId.Value:N}-data", $"branch-{definition.BranchId.Value:N}-wal"],
                         transaction,
                         ResearchEventKind.OperationStarted,
@@ -742,6 +743,7 @@ public sealed partial class ChronicleDatabase
                     transaction.MarkDurableCommitted(commitSequence);
                     var barrierEventId = PublishResearchTransactionEvent(
                         definition.HistoryId,
+                        definition.ParentHistoryId,
                         [$"branch-{definition.BranchId.Value:N}-data", $"branch-{definition.BranchId.Value:N}-wal"],
                         transaction,
                         ResearchEventKind.DurabilityBarrier,
@@ -770,6 +772,7 @@ public sealed partial class ChronicleDatabase
                     transaction.MarkCommitted();
                     var authorityEventId = PublishResearchTransactionEvent(
                         definition.HistoryId,
+                        definition.ParentHistoryId,
                         [$"branch-{definition.BranchId.Value:N}-data", $"branch-{definition.BranchId.Value:N}-wal", "branch-catalog"],
                         transaction,
                         ResearchEventKind.AuthorityPublished,
@@ -780,6 +783,7 @@ public sealed partial class ChronicleDatabase
                     _faultInjector?.Hit(TransactionFaultPoint.BeforeAcknowledgement);
                     PublishResearchTransactionEvent(
                         definition.HistoryId,
+                        definition.ParentHistoryId,
                         [$"branch-{definition.BranchId.Value:N}-data", $"branch-{definition.BranchId.Value:N}-wal", "branch-catalog"],
                         transaction,
                         ResearchEventKind.OperationCompleted,
