@@ -12,6 +12,8 @@ public sealed class ResearchArtifactWriter
 {
     public const string ManifestFileName = "manifest.json";
     public const string ManifestHashFileName = "manifest.sha256";
+    public const string TraceFileName = "trace.json";
+    public const string TraceHashFileName = "trace.sha256";
 
     public ResearchArtifactWriter(string directoryPath)
     {
@@ -36,6 +38,23 @@ public sealed class ResearchArtifactWriter
         return new ResearchManifestArtifact(
             Path.Combine(DirectoryPath, ManifestFileName),
             Path.Combine(DirectoryPath, ManifestHashFileName),
+            hash);
+    }
+
+    public ResearchTraceArtifact WriteTrace(IEnumerable<ResearchEvent> events)
+    {
+        ArgumentNullException.ThrowIfNull(events);
+
+        var canonicalJson = ResearchTraceSerializer.SerializeCanonical(events);
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalJson)))
+            .ToLowerInvariant();
+
+        WriteImmutable(TraceFileName, canonicalJson);
+        WriteImmutable(TraceHashFileName, hash);
+
+        return new ResearchTraceArtifact(
+            Path.Combine(DirectoryPath, TraceFileName),
+            Path.Combine(DirectoryPath, TraceHashFileName),
             hash);
     }
 
@@ -84,4 +103,9 @@ public sealed class ResearchArtifactWriter
 public sealed record ResearchManifestArtifact(
     string ManifestPath,
     string ManifestHashPath,
+    string Sha256);
+
+public sealed record ResearchTraceArtifact(
+    string TracePath,
+    string TraceHashPath,
     string Sha256);

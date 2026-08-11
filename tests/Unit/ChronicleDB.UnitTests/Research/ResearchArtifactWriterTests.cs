@@ -54,6 +54,49 @@ public sealed class ResearchArtifactWriterTests
         Assert.Throws<IOException>(() => writer.WriteManifest(CreateManifest()));
     }
 
+    [Fact]
+    public void WritesCanonicalTraceAndMatchingHashSidecar()
+    {
+        using var directory = new TemporaryDirectory();
+        var events = new TraceResearchEventSink();
+        events.Publish(CreateEvent(1));
+
+        var artifact = new ResearchArtifactWriter(directory.Path).WriteTrace(events.Snapshot());
+
+        Assert.Equal(ResearchTraceSerializer.SerializeCanonical(events.Snapshot()), File.ReadAllText(artifact.TracePath));
+        Assert.Equal(ResearchTraceSerializer.ComputeCanonicalSha256(events.Snapshot()), artifact.Sha256);
+        Assert.Equal(artifact.Sha256, File.ReadAllText(artifact.TraceHashPath));
+    }
+
+    [Fact]
+    public void RewritingTraceWithDifferentContentIsRejected()
+    {
+        using var directory = new TemporaryDirectory();
+        var writer = new ResearchArtifactWriter(directory.Path);
+        writer.WriteTrace([CreateEvent(1)]);
+
+        Assert.Throws<IOException>(() => writer.WriteTrace([CreateEvent(1), CreateEvent(2)]));
+        Assert.Empty(Directory.GetFiles(directory.Path, "*.tmp"));
+    }
+
+    private static ResearchEvent CreateEvent(long id)
+        => new(
+            id,
+            id,
+            ResearchEventKind.OperationCompleted,
+            new ChronicleDB.Core.Identifiers.HistoryId(Guid.Parse("00000000-0000-0000-0000-000000000002")),
+            null,
+            Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            null,
+            ["main-data"],
+            ResearchDurabilityPhase.AuthorityPublished,
+            1,
+            id == 1 ? [] : [1],
+            null,
+            null,
+            null,
+            null);
+
     private static ExperimentManifest CreateManifest()
         => new()
         {
