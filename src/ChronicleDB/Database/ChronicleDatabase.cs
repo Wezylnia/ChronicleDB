@@ -973,6 +973,40 @@ public sealed partial class ChronicleDatabase : IDisposable
             : 0;
     }
 
+    private long PublishResearchTransactionEvent(
+        Transaction transaction,
+        ResearchEventKind eventKind,
+        ResearchDurabilityPhase durabilityPhase,
+        CommitSequence commitSequence,
+        IReadOnlyList<long> dependencies)
+    {
+        if (_researchEvents.Mode == ResearchTelemetryMode.Disabled)
+        {
+            return 0;
+        }
+
+        return _researchEvents.TryPublish(
+                logicalEventId => new ResearchEvent(
+                    logicalEventId,
+                    logicalEventId,
+                    eventKind,
+                    _mainHistoryId,
+                    parentHistoryId: null,
+                    transaction.TransactionId.Value,
+                    transaction.TransactionId.Value,
+                    ["main-data", "main-wal"],
+                    durabilityPhase,
+                    (ulong)commitSequence.Value,
+                    dependencies,
+                    logicalKeyId: null,
+                    versionId: null,
+                    offset: null,
+                    bytes: null),
+                out var logicalEventId)
+            ? logicalEventId
+            : 0;
+    }
+
     public void Dispose()
     {
         _lifecycle.EnterWriteLock();
@@ -1186,6 +1220,12 @@ public sealed partial class ChronicleDatabase : IDisposable
                 var walTouched = false;
                 try
                 {
+                    var operationStartedEventId = PublishResearchTransactionEvent(
+                        transaction,
+                        ResearchEventKind.OperationStarted,
+                        ResearchDurabilityPhase.Prepared,
+                        commitSequence,
+                        []);
                     _faultInjector?.Hit(TransactionFaultPoint.BeforeWalAppend);
                     walTouched = true;
                     _wal.Append(WalRecordType.Begin, transaction.TransactionId, []);
@@ -1200,6 +1240,12 @@ public sealed partial class ChronicleDatabase : IDisposable
                     _faultInjector?.Hit(TransactionFaultPoint.BeforeWalFlush);
                     _wal.Flush();
                     transaction.MarkDurableCommitted(commitSequence);
+                    var barrierEventId = PublishResearchTransactionEvent(
+                        transaction,
+                        ResearchEventKind.DurabilityBarrier,
+                        ResearchDurabilityPhase.StableStorageBarrier,
+                        commitSequence,
+                        operationStartedEventId > 0 ? [operationStartedEventId] : []);
                     _faultInjector?.Hit(TransactionFaultPoint.AfterWalFlush);
                     _faultInjector?.Hit(TransactionFaultPoint.BeforePhysicalPublication);
                     _store.ApplyBatch(mutations);
@@ -1211,8 +1257,20 @@ public sealed partial class ChronicleDatabase : IDisposable
                     _versions.PublishCommitted(transaction.TransactionId, commitSequence, writes);
                     transaction.MarkCommitted();
                     PublishCurrentCommitSequence(commitSequence);
+                    var authorityEventId = PublishResearchTransactionEvent(
+                        transaction,
+                        ResearchEventKind.AuthorityPublished,
+                        ResearchDurabilityPhase.AuthorityPublished,
+                        commitSequence,
+                        barrierEventId > 0 ? [barrierEventId] : []);
                     _counters.CommitSucceeded(Stopwatch.GetTimestamp() - started);
                     _faultInjector?.Hit(TransactionFaultPoint.BeforeAcknowledgement);
+                    PublishResearchTransactionEvent(
+                        transaction,
+                        ResearchEventKind.OperationCompleted,
+                        ResearchDurabilityPhase.AuthorityPublished,
+                        commitSequence,
+                        authorityEventId > 0 ? [authorityEventId] : []);
                 }
                 catch
                 {
