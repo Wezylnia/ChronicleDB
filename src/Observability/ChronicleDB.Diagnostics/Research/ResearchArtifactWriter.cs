@@ -16,6 +16,8 @@ public sealed class ResearchArtifactWriter
     public const string TraceHashFileName = "trace.sha256";
     public const string WorkloadFileName = "workload.json";
     public const string WorkloadHashFileName = "workload.sha256";
+    public const string CrashPlanFileName = "crash-plan.json";
+    public const string CrashPlanHashFileName = "crash-plan.sha256";
 
     public ResearchArtifactWriter(string directoryPath)
     {
@@ -77,6 +79,23 @@ public sealed class ResearchArtifactWriter
             hash);
     }
 
+    public ResearchCrashPlanArtifact WriteCrashPlan(ResearchCrashPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+
+        var canonicalJson = ResearchCrashPlanSerializer.SerializeCanonical(plan);
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalJson)))
+            .ToLowerInvariant();
+
+        WriteImmutable(CrashPlanFileName, canonicalJson);
+        WriteImmutable(CrashPlanHashFileName, hash);
+
+        return new ResearchCrashPlanArtifact(
+            Path.Combine(DirectoryPath, CrashPlanFileName),
+            Path.Combine(DirectoryPath, CrashPlanHashFileName),
+            hash);
+    }
+
     private void WriteImmutable(string fileName, string content)
     {
         var destination = Path.Combine(DirectoryPath, fileName);
@@ -132,4 +151,9 @@ public sealed record ResearchTraceArtifact(
 public sealed record ResearchWorkloadArtifact(
     string WorkloadPath,
     string WorkloadHashPath,
+    string Sha256);
+
+public sealed record ResearchCrashPlanArtifact(
+    string CrashPlanPath,
+    string CrashPlanHashPath,
     string Sha256);

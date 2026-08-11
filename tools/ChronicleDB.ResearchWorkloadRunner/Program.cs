@@ -37,12 +37,14 @@ var artifactDirectory = Path.Combine(outputDirectory, "artifacts");
 
 var operations = DeterministicResearchWorkloadGenerator.Generate(family, seed, operationCount);
 var profile = ResearchWorkloadProfiler.Analyze(operations);
+var crashPlan = ResearchCrashPlanFactory.Create(operations, seed: seed);
 var manifest = CreateManifest(family, seed, profile);
 var sink = new TraceResearchEventSink();
 var session = new ResearchExperimentSession(
     new ResearchArtifactWriter(artifactDirectory),
     manifest,
-    operations);
+    operations,
+    crashPlan);
 var branches = new Dictionary<int, ChronicleBranch>();
 var snapshots = new List<IDisposable>();
 
@@ -59,7 +61,8 @@ try
     var traceArtifact = session.Complete(events);
     Console.WriteLine(
         $"PASS family={family} seed={seed} operations={operationCount} events={events.Count} " +
-        $"manifest={session.ManifestArtifact.Sha256} workload={session.WorkloadArtifact.Sha256} trace={traceArtifact.Sha256} " +
+        $"manifest={session.ManifestArtifact.Sha256} workload={session.WorkloadArtifact.Sha256} " +
+        $"crash-plan={session.CrashPlanArtifact!.Sha256} trace={traceArtifact.Sha256} " +
         $"output={outputDirectory}");
     return 0;
 }

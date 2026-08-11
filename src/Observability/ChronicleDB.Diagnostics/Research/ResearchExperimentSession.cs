@@ -13,7 +13,8 @@ public sealed class ResearchExperimentSession
     public ResearchExperimentSession(
         ResearchArtifactWriter artifactWriter,
         ExperimentManifest manifest,
-        IEnumerable<ResearchWorkloadOperation> operations)
+        IEnumerable<ResearchWorkloadOperation> operations,
+        ResearchCrashPlan? crashPlan = null)
     {
         ArgumentNullException.ThrowIfNull(artifactWriter);
         ArgumentNullException.ThrowIfNull(manifest);
@@ -24,6 +25,8 @@ public sealed class ResearchExperimentSession
         Workload = operations.ToArray();
         ManifestArtifact = _artifactWriter.WriteManifest(manifest);
         WorkloadArtifact = _artifactWriter.WriteWorkload(Workload);
+        CrashPlan = crashPlan;
+        CrashPlanArtifact = crashPlan is null ? null : _artifactWriter.WriteCrashPlan(crashPlan);
     }
 
     public ExperimentManifest Manifest { get; }
@@ -33,6 +36,10 @@ public sealed class ResearchExperimentSession
     public ResearchManifestArtifact ManifestArtifact { get; }
 
     public ResearchWorkloadArtifact WorkloadArtifact { get; }
+
+    public ResearchCrashPlan? CrashPlan { get; }
+
+    public ResearchCrashPlanArtifact? CrashPlanArtifact { get; }
 
     public bool TraceCompleted => _traceCompleted;
 

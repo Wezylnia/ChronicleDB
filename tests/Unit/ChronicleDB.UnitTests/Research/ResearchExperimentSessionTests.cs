@@ -41,6 +41,23 @@ public sealed class ResearchExperimentSessionTests
         Assert.Throws<InvalidOperationException>(() => session.Complete([CreateEvent(1)]));
     }
 
+    [Fact]
+    public void OptionalCrashPlanIsPersistedWithTheSessionInputs()
+    {
+        using var directory = new TemporaryDirectory();
+        var workload = DeterministicResearchWorkloadGenerator.Generate(ResearchWorkloadFamily.S5RecoveryHeavy, 3, 16);
+        var plan = ResearchCrashPlanFactory.Create(workload, 4);
+
+        var session = new ResearchExperimentSession(
+            new ResearchArtifactWriter(directory.Path),
+            CreateManifest(),
+            workload,
+            plan);
+
+        Assert.NotNull(session.CrashPlanArtifact);
+        Assert.Equal(plan, session.CrashPlan);
+    }
+
     private static ResearchEvent CreateEvent(long id)
         => new(
             id,

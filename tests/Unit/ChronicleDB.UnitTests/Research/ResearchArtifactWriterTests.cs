@@ -104,6 +104,20 @@ public sealed class ResearchArtifactWriterTests
         Assert.Empty(Directory.GetFiles(directory.Path, "*.tmp"));
     }
 
+    [Fact]
+    public void WritesCanonicalCrashPlanAndMatchingHashSidecar()
+    {
+        using var directory = new TemporaryDirectory();
+        var operations = DeterministicResearchWorkloadGenerator.Generate(ResearchWorkloadFamily.S5RecoveryHeavy, 2, 16);
+        var plan = ResearchCrashPlanFactory.Create(operations, 3);
+
+        var artifact = new ResearchArtifactWriter(directory.Path).WriteCrashPlan(plan);
+
+        Assert.Equal(ResearchCrashPlanSerializer.SerializeCanonical(plan), File.ReadAllText(artifact.CrashPlanPath));
+        Assert.Equal(ResearchCrashPlanSerializer.ComputeCanonicalSha256(plan), artifact.Sha256);
+        Assert.Equal(artifact.Sha256, File.ReadAllText(artifact.CrashPlanHashPath));
+    }
+
     private static ResearchEvent CreateEvent(long id)
         => new(
             id,
