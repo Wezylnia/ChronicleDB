@@ -48,6 +48,29 @@ public sealed class ResearchTelemetryIntegrationTests
     }
 
     [Fact]
+    public void TraceLogicalIdsContinueAcrossDatabaseReopen()
+    {
+        using var directory = new StorageTestDirectory();
+        var sink = new TraceResearchEventSink();
+
+        using (var database = ChronicleDatabase.Open(directory.Path, researchEventSink: sink))
+        {
+            database.Put([0x01], [0x02]);
+        }
+
+        var firstCount = sink.Snapshot().Count;
+
+        using (var database = ChronicleDatabase.Open(directory.Path, researchEventSink: sink))
+        {
+            database.Put([0x03], [0x04]);
+        }
+
+        var events = sink.Snapshot();
+        Assert.True(firstCount > 0);
+        Assert.Equal(Enumerable.Range(1, events.Count).Select(value => (long)value), events.Select(item => item.LogicalEventId));
+    }
+
+    [Fact]
     public void CommitPublishesDurabilityAndAuthorityMilestones()
     {
         using var directory = new StorageTestDirectory();
