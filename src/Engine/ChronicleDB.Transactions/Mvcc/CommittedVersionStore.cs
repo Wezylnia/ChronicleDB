@@ -74,6 +74,51 @@ public sealed class CommittedVersionStore : IDisposable
     }
 
     /// <summary>
+    /// Reads the newest committed state under the same read lock that resolves the
+    /// index head. Current-state callers must not sample a commit sequence outside
+    /// this lock because concurrent GC may legitimately reclaim older unpinned
+    /// versions after a newer commit becomes current.
+    /// </summary>
+    public bool TryReadLatest(BinaryKey key, out byte[] value)
+    {
+        var resolution = ResolveLatest(key);
+        if (resolution.Kind == CommittedVersionResolutionKind.Value)
+        {
+            value = resolution.Value;
+            return true;
+        }
+
+        value = [];
+        return false;
+    }
+
+    /// <summary>
+    /// Resolves the newest local committed state while preserving tombstone versus
+    /// missing semantics for branch fallback.
+    /// </summary>
+    public CommittedVersionResolution ResolveLatest(BinaryKey key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        _gate.EnterReadLock();
+        try
+        {
+            if (!_index.TryGet(key, out var current))
+            {
+                return CommittedVersionResolution.Missing;
+            }
+
+            var version = GetVersion(current);
+            return version.Metadata.IsTombstone
+                ? CommittedVersionResolution.Deleted
+                : CommittedVersionResolution.Present(version.Value.ToArray());
+        }
+        finally
+        {
+            _gate.ExitReadLock();
+        }
+    }
+
+    /// <summary>
     /// Resolves a key while preserving the distinction between "no local version"
     /// and a visible tombstone. Branch fallback requires this distinction: a tombstone
     /// intentionally shadows inherited parent state, while no local version falls back.
@@ -246,6 +291,162 @@ public sealed class CommittedVersionStore : IDisposable
         }
     }
 
+    /// <summary>
+    /// Produces the exact retained projection used by v0.9 checkpoints. All versions
+    /// at/above the generic time-travel floor are preserved, while older history is
+    /// retained only at explicit root boundaries. The newest version is always kept.
+    /// </summary>
+    public IReadOnlyList<CommittedVersionSnapshot> CreateRetentionProjection(
+        CommitSequence retentionFloor,
+        IReadOnlyCollection<CommitSequence>? pinnedBoundaries = null)
+    {
+        _gate.EnterReadLock();
+        try
+        {
+            var keep = SelectRetainedHandles(retentionFloor, pinnedBoundaries);
+            return _versions.Values
+                .Where(version => keep.Contains(version.Handle))
+                .OrderBy(version => version.Metadata.CommitSequence.Value)
+                .ThenBy(version => Convert.ToHexString(version.Key.AsSpan()), StringComparer.Ordinal)
+                .Select(ToSnapshot)
+                .ToArray();
+        }
+        finally
+        {
+            _gate.ExitReadLock();
+        }
+    }
+
+    /// <summary>
+    /// Removes logically unreachable committed versions after an equivalent durable
+    /// checkpoint has been published. Readers continue to see the same values for the
+    /// generic retained range and every explicitly pinned historical boundary.
+    /// </summary>
+    public HistoryCompactionResult CompactHistory(
+        CommitSequence retentionFloor,
+        IReadOnlyCollection<CommitSequence>? pinnedBoundaries = null)
+    {
+        _gate.EnterWriteLock();
+        try
+        {
+            var keep = SelectRetainedHandles(retentionFloor, pinnedBoundaries);
+            var before = _versions.Count;
+            var all = _versions.Values.ToArray();
+            foreach (var version in all)
+            {
+                if (!keep.Contains(version.Handle))
+                {
+                    _versions.Remove(version.Handle);
+                }
+            }
+
+            _maximumChainLength = 0;
+            foreach (var group in _versions.Values.GroupBy(version => version.Key).ToArray())
+            {
+                var ordered = group.OrderBy(version => version.Metadata.CommitSequence.Value).ToArray();
+                var previous = VersionHandle.Invalid;
+                var chainLength = 0;
+                foreach (var version in ordered)
+                {
+                    chainLength = checked(chainLength + 1);
+                    _versions[version.Handle] = version with
+                    {
+                        Previous = previous,
+                        ChainLength = chainLength,
+                    };
+                    previous = version.Handle;
+                }
+
+                if (ordered.Length != 0)
+                {
+                    _index.Publish(group.Key, ordered[^1].Handle);
+                    _maximumChainLength = Math.Max(_maximumChainLength, chainLength);
+                }
+            }
+
+            return new HistoryCompactionResult(before - _versions.Count, _versions.Count);
+        }
+        finally
+        {
+            _gate.ExitWriteLock();
+        }
+    }
+
+    public IReadOnlyList<CommittedVersionSnapshot> SnapshotHistory()
+    {
+        _gate.EnterReadLock();
+        try
+        {
+            return _versions.Values
+                .OrderBy(version => version.Metadata.CommitSequence.Value)
+                .ThenBy(version => Convert.ToHexString(version.Key.AsSpan()), StringComparer.Ordinal)
+                .Select(ToSnapshot)
+                .ToArray();
+        }
+        finally
+        {
+            _gate.ExitReadLock();
+        }
+    }
+
+    private HashSet<VersionHandle> SelectRetainedHandles(
+        CommitSequence retentionFloor,
+        IReadOnlyCollection<CommitSequence>? pinnedBoundaries)
+    {
+        var boundaries = new HashSet<CommitSequence> { retentionFloor };
+        if (pinnedBoundaries is not null)
+        {
+            foreach (var boundary in pinnedBoundaries)
+            {
+                boundaries.Add(boundary);
+            }
+        }
+
+        var keep = new HashSet<VersionHandle>();
+        foreach (var group in _versions.Values.GroupBy(version => version.Key))
+        {
+            var ordered = group.OrderBy(version => version.Metadata.CommitSequence.Value).ToArray();
+            foreach (var version in ordered)
+            {
+                if (version.Metadata.CommitSequence >= retentionFloor)
+                {
+                    keep.Add(version.Handle);
+                }
+            }
+
+            foreach (var boundary in boundaries)
+            {
+                CommittedVersionRecord? visible = null;
+                foreach (var version in ordered)
+                {
+                    if (version.Metadata.CommitSequence > boundary)
+                    {
+                        break;
+                    }
+                    visible = version;
+                }
+                if (visible is not null)
+                {
+                    keep.Add(visible.Handle);
+                }
+            }
+
+            if (ordered.Length != 0)
+            {
+                keep.Add(ordered[^1].Handle);
+            }
+        }
+        return keep;
+    }
+
+    private static CommittedVersionSnapshot ToSnapshot(CommittedVersionRecord version)
+        => new(
+            version.CreatorTransaction,
+            version.Metadata.CommitSequence,
+            version.Key,
+            version.Metadata.IsTombstone,
+            version.Value.ToArray());
+
     public CommittedVersionStoreStatistics GetStatistics()
     {
         _gate.EnterReadLock();
@@ -377,3 +578,14 @@ public readonly record struct CommittedVersionStoreStatistics(
     double AverageChainLength,
     int MaximumChainLength,
     VersionIndexStatistics Index);
+
+public sealed record CommittedVersionSnapshot(
+    TransactionId TransactionId,
+    CommitSequence CommitSequence,
+    BinaryKey Key,
+    bool IsDelete,
+    ReadOnlyMemory<byte> Value);
+
+public readonly record struct HistoryCompactionResult(
+    int ReclaimedVersions,
+    int RetainedVersions);

@@ -44,6 +44,26 @@ public sealed class CommittedVersionStoreTests
     }
 
     [Fact]
+    public void LatestReadUsesCurrentHeadAndPreservesTombstones()
+    {
+        var store = new CommittedVersionStore(new SynchronizedVersionIndex());
+        var key = new ChronicleDB.Core.Keys.BinaryKey([5]);
+        Publish(store, 1, [5], [10]);
+        Publish(store, 2, [5], [20]);
+
+        Assert.True(store.TryReadLatest(key, out var latest));
+        Assert.Equal(new byte[] { 20 }, latest);
+
+        var deleting = new Transaction();
+        deleting.Begin();
+        deleting.Delete([5]);
+        store.PublishCommitted(TransactionId.New(), new CommitSequence(3), deleting.GetWriteSet());
+
+        Assert.False(store.TryReadLatest(key, out _));
+        Assert.Equal(CommittedVersionResolutionKind.Tombstone, store.ResolveLatest(key).Kind);
+    }
+
+    [Fact]
     public void BoundaryBeforeFirstVersionDoesNotSeeFutureValue()
     {
         var store = new CommittedVersionStore(new SynchronizedVersionIndex());
