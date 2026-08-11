@@ -541,17 +541,27 @@ internal static class ResearchPilotRunner
             || !int.TryParse(args[0], out var historyCount)
             || historyCount is < 2 or > 3)
         {
-            Console.Error.WriteLine("Usage: pilot P2R <history-count:2..3> [output-directory]");
+            Console.Error.WriteLine("Usage: pilot P2R <history-count:2..3> [siblings|chain] [output-directory]");
             return 2;
         }
 
-        var outputDirectory = args.Length >= 2
-            ? Path.GetFullPath(args[1])
+        var topology = args.Length >= 2
+            && (args[1].Equals("siblings", StringComparison.OrdinalIgnoreCase)
+                || args[1].Equals("chain", StringComparison.OrdinalIgnoreCase))
+            ? args[1].ToLowerInvariant()
+            : "siblings";
+        var outputArgumentIndex = topology == "siblings" && args.Length >= 2
+            && !args[1].Equals("siblings", StringComparison.OrdinalIgnoreCase)
+            && !args[1].Equals("chain", StringComparison.OrdinalIgnoreCase)
+                ? 1
+                : 2;
+        var outputDirectory = args.Length > outputArgumentIndex
+            ? Path.GetFullPath(args[outputArgumentIndex])
             : Path.Combine(
                 Environment.CurrentDirectory,
                 "artifacts",
                 "research-pilots",
-                $"p2r-{historyCount}-{Guid.NewGuid():N}");
+                $"p2r-{topology}-{historyCount}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(outputDirectory);
         var databaseDirectory = Path.Combine(outputDirectory, "database");
 
@@ -564,7 +574,10 @@ internal static class ResearchPilotRunner
             {
                 for (var index = 0; index < historyCount; index++)
                 {
-                    branches.Add(database.CreateBranch($"p2r-sibling-{index}"));
+                    var branch = topology == "chain" && index > 0
+                        ? branches[index - 1].CreateBranch($"p2r-chain-{index}")
+                        : database.CreateBranch($"p2r-{topology}-{index}");
+                    branches.Add(branch);
                 }
 
                 var watermark = sink.LastLogicalEventId;
@@ -646,6 +659,7 @@ internal static class ResearchPilotRunner
                 var sharedCatalogActions = actions.Count(action => action.ResourceSet.Contains("branch-catalog", StringComparer.Ordinal));
                 var result = new RealTraceCrashPorPilotResult(
                     Pilot: "P2R",
+                    Topology: topology,
                     HistoryCount: historyCount,
                     ActionCount: actions.Count,
                     ProductionTraceEventCount: productionEvents.Length,
@@ -676,7 +690,7 @@ internal static class ResearchPilotRunner
                     Path.Combine(outputDirectory, "p2r-result.json"),
                     JsonSerializer.Serialize(result, JsonOptions));
                 Console.WriteLine(
-                    $"P2R {(result.ObservationSetsEquivalent ? "PASS" : "FAIL")} histories={historyCount} " +
+                    $"P2R {(result.ObservationSetsEquivalent ? "PASS" : "FAIL")} topology={topology} histories={historyCount} " +
                     $"actions={result.ActionCount} shared={string.Join(',', result.SharedResources)} " +
                     $"exhaustive-plans={result.ExhaustiveCrashPlanCount} reduced-plans={result.ReducedCrashPlanCount} " +
                     $"crf={result.CrashPlanReductionFactor:F2} generic-crf={result.ResourceBaselineCrashPlanReductionFactor:F2} " +
@@ -1127,7 +1141,7 @@ internal static class ResearchPilotRunner
         Console.Error.WriteLine("  pilot P1 <seed> <base-key-count> <value-bytes> <private-bytes> [output-directory]");
         Console.Error.WriteLine("  pilot P1C <seed> <base-key-count> <value-bytes> [output-directory]");
         Console.Error.WriteLine("  pilot P2 <history-count:2..4> [output-directory]");
-        Console.Error.WriteLine("  pilot P2R <history-count:2..3> [output-directory]");
+        Console.Error.WriteLine("  pilot P2R <history-count:2..3> [siblings|chain] [output-directory]");
         Console.Error.WriteLine("  pilot P3 <seed> <reads-per-depth>=10+ [output-directory]");
         Console.Error.WriteLine("  pilot P3T <seed> <reads-per-depth>=100+ [output-directory]");
         Console.Error.WriteLine("  pilot P4 <seed> <history-count:4..64> <requested-index:1..count-1> [output-directory]");
@@ -1200,6 +1214,7 @@ internal static class ResearchPilotRunner
 
     private sealed record RealTraceCrashPorPilotResult(
         string Pilot,
+        string Topology,
         int HistoryCount,
         int ActionCount,
         int ProductionTraceEventCount,

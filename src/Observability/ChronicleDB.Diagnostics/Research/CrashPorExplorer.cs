@@ -129,8 +129,7 @@ public sealed class ConservativeHistoryIndependence : IPersistenceActionIndepend
             || left.DependencyActionIds.Contains(right.ActionId)
             || right.DependencyActionIds.Contains(left.ActionId)
             || left.ResourceSet.Intersect(right.ResourceSet, StringComparer.Ordinal).Any()
-            || IsAncestor(left.HistoryId, right.HistoryId)
-            || IsAncestor(right.HistoryId, left.HistoryId)
+            || HasAncestrySensitiveCoupling(left, right)
             || IsGlobalTransition(left.EventKind)
             || IsGlobalTransition(right.EventKind))
         {
@@ -139,6 +138,17 @@ public sealed class ConservativeHistoryIndependence : IPersistenceActionIndepend
 
         return true;
     }
+
+    private bool HasAncestrySensitiveCoupling(PersistenceAction left, PersistenceAction right)
+        => (IsAncestor(left.HistoryId, right.HistoryId) || IsAncestor(right.HistoryId, left.HistoryId))
+            && (IsAncestrySensitiveTransition(left.EventKind)
+                || IsAncestrySensitiveTransition(right.EventKind));
+
+    private static bool IsAncestrySensitiveTransition(ResearchEventKind kind)
+        => kind is ResearchEventKind.RootTransition
+            or ResearchEventKind.AuthorityAccepted
+            or ResearchEventKind.HistoryValidated
+            or ResearchEventKind.HistoryReady;
 
     private bool IsAncestor(HistoryId possibleAncestor, HistoryId history)
     {

@@ -73,12 +73,12 @@ public sealed class CrashPorExplorerTests
 
         var child = new PersistenceAction(
             2,
-            ResearchEventKind.OperationStarted,
+            ResearchEventKind.RootTransition,
             HistoryB,
             HistoryA,
             Guid.NewGuid(),
-            ["b.wal"],
-            ResearchDurabilityPhase.WalAppended,
+            ["b.roots"],
+            ResearchDurabilityPhase.Cleanup,
             1);
         var ancestryExplorer = new BoundedCrashPorExplorer(
         [
@@ -89,7 +89,7 @@ public sealed class CrashPorExplorerTests
     }
 
     [Fact]
-    public void GenericResourceBaselineDoesNotModelAncestry()
+    public void PostCreationParentAndChildCommitsCanCommuteWhenResourcesAreDisjoint()
     {
         var parent = Action(1, HistoryA, "a.wal");
         var child = new PersistenceAction(
@@ -100,6 +100,25 @@ public sealed class CrashPorExplorerTests
             Guid.Parse("00000000-0000-0000-0000-000000000002"),
             ["b.wal"],
             ResearchDurabilityPhase.WalAppended,
+            1);
+
+        var explorer = new BoundedCrashPorExplorer([parent, child]);
+
+        Assert.Single(explorer.EnumerateReducedOrders());
+    }
+
+    [Fact]
+    public void GenericResourceBaselineDoesNotModelAncestry()
+    {
+        var parent = Action(1, HistoryA, "a.wal");
+        var child = new PersistenceAction(
+            2,
+            ResearchEventKind.RootTransition,
+            HistoryB,
+            HistoryA,
+            Guid.Parse("00000000-0000-0000-0000-000000000002"),
+            ["b.roots"],
+            ResearchDurabilityPhase.Cleanup,
             1);
 
         var historyAware = new BoundedCrashPorExplorer([parent, child]);
