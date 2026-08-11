@@ -79,6 +79,31 @@ public sealed class ResearchArtifactWriterTests
         Assert.Empty(Directory.GetFiles(directory.Path, "*.tmp"));
     }
 
+    [Fact]
+    public void WritesCanonicalWorkloadAndMatchingHashSidecar()
+    {
+        using var directory = new TemporaryDirectory();
+        var operations = DeterministicResearchWorkloadGenerator.Generate(ResearchWorkloadFamily.S0Control, 9, 8);
+
+        var artifact = new ResearchArtifactWriter(directory.Path).WriteWorkload(operations);
+
+        Assert.Equal(ResearchWorkloadSerializer.SerializeCanonical(operations), File.ReadAllText(artifact.WorkloadPath));
+        Assert.Equal(ResearchWorkloadSerializer.ComputeCanonicalSha256(operations), artifact.Sha256);
+        Assert.Equal(artifact.Sha256, File.ReadAllText(artifact.WorkloadHashPath));
+    }
+
+    [Fact]
+    public void RewritingWorkloadWithDifferentContentIsRejected()
+    {
+        using var directory = new TemporaryDirectory();
+        var writer = new ResearchArtifactWriter(directory.Path);
+        writer.WriteWorkload(DeterministicResearchWorkloadGenerator.Generate(ResearchWorkloadFamily.S0Control, 9, 8));
+
+        Assert.Throws<IOException>(() => writer.WriteWorkload(
+            DeterministicResearchWorkloadGenerator.Generate(ResearchWorkloadFamily.S0Control, 10, 8)));
+        Assert.Empty(Directory.GetFiles(directory.Path, "*.tmp"));
+    }
+
     private static ResearchEvent CreateEvent(long id)
         => new(
             id,
