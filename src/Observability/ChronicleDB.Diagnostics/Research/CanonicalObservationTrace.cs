@@ -1,4 +1,7 @@
 using ChronicleDB.Core.Identifiers;
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace ChronicleDB.Diagnostics.Research;
 
@@ -92,7 +95,7 @@ public readonly record struct ObservationTracePoint
             envelope.Corruption.Detected,
             authorityGeneration,
             ToSafetyMask(envelope.SafetyPredicates),
-            logicalStateDigest,
+            logicalStateDigest ?? ObservationEnvelopeFingerprint.Compute(envelope),
             envelope.Error.Code);
     }
 
@@ -106,6 +109,75 @@ public readonly record struct ObservationTracePoint
         if (safety.NoPrematureReclaim) mask |= SafetyPredicateMask.NoPrematureReclaim;
         if (safety.NoEarlyPublication) mask |= SafetyPredicateMask.NoEarlyPublication;
         return mask;
+    }
+}
+
+public static class ObservationEnvelopeFingerprint
+{
+    public static string Compute(ObservationEnvelope envelope)
+    {
+        ArgumentNullException.ThrowIfNull(envelope);
+        var builder = new StringBuilder();
+        Append(builder, "logical");
+        if (envelope.LogicalData is { } logical)
+        {
+            Append(builder, logical.HistoryId.Value.ToString("N"));
+            Append(builder, logical.Boundary.Value.ToString(CultureInfo.InvariantCulture));
+            foreach (var entry in logical.Entries)
+            {
+                Append(builder, Convert.ToHexString(entry.Key.Span));
+                Append(builder, entry.IsTombstone ? "tombstone" : "value");
+                Append(builder, Convert.ToHexString(entry.Value.Span));
+            }
+        }
+
+        Append(builder, "topology");
+        foreach (var history in envelope.HistoryTopology)
+        {
+            Append(builder, history.HistoryId.Value.ToString("N"));
+            Append(builder, history.ParentHistoryId?.Value.ToString("N"));
+            Append(builder, history.BaseBoundary?.Value.ToString(CultureInfo.InvariantCulture));
+            Append(builder, ((byte)history.Lifecycle).ToString(CultureInfo.InvariantCulture));
+        }
+
+        Append(builder, "roots");
+        foreach (var root in envelope.RootLifecycle)
+        {
+            Append(builder, root.RootId.Value.ToString("N"));
+            Append(builder, ((byte)root.Kind).ToString(CultureInfo.InvariantCulture));
+            Append(builder, root.OwnerHistoryId.Value.ToString("N"));
+            Append(builder, root.ProtectedHistoryId.Value.ToString("N"));
+            Append(builder, root.Boundary.Value.ToString(CultureInfo.InvariantCulture));
+            Append(builder, ((byte)root.Lifecycle).ToString(CultureInfo.InvariantCulture));
+        }
+
+        Append(builder, "authority");
+        Append(builder, envelope.Authority.WalGeneration.ToString(CultureInfo.InvariantCulture));
+        Append(builder, envelope.Authority.CheckpointGeneration.ToString(CultureInfo.InvariantCulture));
+        Append(builder, envelope.Authority.PublishedAuthority);
+
+        Append(builder, "sequences");
+        foreach (var sequence in envelope.Sequences)
+        {
+            Append(builder, sequence.HistoryId.Value.ToString("N"));
+            Append(builder, sequence.CommittedSequence.Value.ToString(CultureInfo.InvariantCulture));
+            Append(builder, sequence.RetentionFloor.Value.ToString(CultureInfo.InvariantCulture));
+        }
+
+        Append(builder, ((byte)envelope.Availability.State).ToString(CultureInfo.InvariantCulture));
+        Append(builder, ((byte)envelope.Error.Kind).ToString(CultureInfo.InvariantCulture));
+        Append(builder, envelope.Error.Code);
+        Append(builder, envelope.Corruption.Detected ? "corrupt" : "clean");
+        Append(builder, envelope.Corruption.Code);
+        Append(builder, envelope.SafetyPredicates.ToString());
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString())))
+            .ToLowerInvariant();
+    }
+
+    private static void Append(StringBuilder builder, string? value)
+    {
+        value ??= "<null>";
+        builder.Append(value.Length).Append(':').Append(value).Append('|');
     }
 }
 
