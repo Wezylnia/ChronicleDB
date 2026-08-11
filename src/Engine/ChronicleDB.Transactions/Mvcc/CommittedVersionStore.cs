@@ -307,7 +307,7 @@ public sealed class CommittedVersionStore : IDisposable
             return _versions.Values
                 .Where(version => keep.Contains(version.Handle))
                 .OrderBy(version => version.Metadata.CommitSequence.Value)
-                .ThenBy(version => Convert.ToHexString(version.Key.AsSpan()), StringComparer.Ordinal)
+                .ThenBy(version => version.Key, BinaryKeyLexicographicComparer.Instance)
                 .Select(ToSnapshot)
                 .ToArray();
         }
@@ -379,7 +379,7 @@ public sealed class CommittedVersionStore : IDisposable
         {
             return _versions.Values
                 .OrderBy(version => version.Metadata.CommitSequence.Value)
-                .ThenBy(version => Convert.ToHexString(version.Key.AsSpan()), StringComparer.Ordinal)
+                .ThenBy(version => version.Key, BinaryKeyLexicographicComparer.Instance)
                 .Select(ToSnapshot)
                 .ToArray();
         }
@@ -406,37 +406,69 @@ public sealed class CommittedVersionStore : IDisposable
         foreach (var group in _versions.Values.GroupBy(version => version.Key))
         {
             var ordered = group.OrderBy(version => version.Metadata.CommitSequence.Value).ToArray();
-            foreach (var version in ordered)
+            if (ordered.Length == 0)
             {
-                if (version.Metadata.CommitSequence >= retentionFloor)
-                {
-                    keep.Add(version.Handle);
-                }
+                continue;
+            }
+
+            var firstGenericIndex = LowerBound(ordered, retentionFloor);
+            for (var index = firstGenericIndex; index < ordered.Length; index++)
+            {
+                keep.Add(ordered[index].Handle);
             }
 
             foreach (var boundary in boundaries)
             {
-                CommittedVersionRecord? visible = null;
-                foreach (var version in ordered)
+                var visibleIndex = UpperBound(ordered, boundary) - 1;
+                if (visibleIndex >= 0)
                 {
-                    if (version.Metadata.CommitSequence > boundary)
-                    {
-                        break;
-                    }
-                    visible = version;
-                }
-                if (visible is not null)
-                {
-                    keep.Add(visible.Handle);
+                    keep.Add(ordered[visibleIndex].Handle);
                 }
             }
 
-            if (ordered.Length != 0)
-            {
-                keep.Add(ordered[^1].Handle);
-            }
+            keep.Add(ordered[^1].Handle);
         }
         return keep;
+    }
+
+    private static int LowerBound(CommittedVersionRecord[] ordered, CommitSequence boundary)
+    {
+        var low = 0;
+        var high = ordered.Length;
+        while (low < high)
+        {
+            var middle = low + ((high - low) >> 1);
+            if (ordered[middle].Metadata.CommitSequence < boundary)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        return low;
+    }
+
+    private static int UpperBound(CommittedVersionRecord[] ordered, CommitSequence boundary)
+    {
+        var low = 0;
+        var high = ordered.Length;
+        while (low < high)
+        {
+            var middle = low + ((high - low) >> 1);
+            if (ordered[middle].Metadata.CommitSequence <= boundary)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        return low;
     }
 
     private static CommittedVersionSnapshot ToSnapshot(CommittedVersionRecord version)

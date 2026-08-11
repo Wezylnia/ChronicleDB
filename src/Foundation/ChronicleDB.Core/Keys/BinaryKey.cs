@@ -1,15 +1,23 @@
 namespace ChronicleDB.Core.Keys;
 
 /// <summary>
-/// An immutable, engine-owned binary key.
+/// Immutable, engine-owned binary key with structural equality.
 /// </summary>
 public sealed class BinaryKey : IEquatable<BinaryKey>
 {
     private readonly byte[] _bytes;
+    private readonly int _hashCode;
 
     public BinaryKey(ReadOnlySpan<byte> bytes)
     {
         _bytes = bytes.ToArray();
+
+        // BinaryKey instances are immutable, so hashing once avoids rescanning the key on
+        // every dictionary/index lookup. System.HashCode is process-seeded on modern .NET,
+        // which also avoids exposing a fixed public hash function to adversarial key sets.
+        var hash = new HashCode();
+        hash.AddBytes(_bytes);
+        _hashCode = hash.ToHashCode();
     }
 
     public int Length => _bytes.Length;
@@ -23,20 +31,7 @@ public sealed class BinaryKey : IEquatable<BinaryKey>
 
     public override bool Equals(object? obj) => obj is BinaryKey other && Equals(other);
 
-    public override int GetHashCode()
-    {
-        const uint offsetBasis = 2166136261;
-        const uint prime = 16777619;
-        var hash = offsetBasis;
-
-        foreach (var value in _bytes)
-        {
-            hash ^= value;
-            hash *= prime;
-        }
-
-        return unchecked((int)hash);
-    }
+    public override int GetHashCode() => _hashCode;
 
     public static bool operator ==(BinaryKey? left, BinaryKey? right) => Equals(left, right);
 

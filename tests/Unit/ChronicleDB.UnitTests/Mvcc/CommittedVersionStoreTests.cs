@@ -92,6 +92,41 @@ public sealed class CommittedVersionStoreTests
         Assert.Equal(new byte[] { 70 }, newValue);
     }
 
+    [Fact]
+    public void RetentionProjectionPreservesGenericRangeAndExactPinnedBoundaries()
+    {
+        using var store = new CommittedVersionStore(new SynchronizedVersionIndex());
+        for (ulong sequence = 1; sequence <= 10; sequence++)
+        {
+            Publish(store, sequence, [1], [(byte)sequence]);
+        }
+        Publish(store, 3, [2], [30]);
+        Publish(store, 9, [2], [90]);
+
+        var pins = new[] { new CommitSequence(2), new CommitSequence(5), new CommitSequence(7) };
+        var projection = store.CreateRetentionProjection(new CommitSequence(8), pins);
+
+        var keyOneSequences = projection
+            .Where(version => version.Key.AsSpan().SequenceEqual(new byte[] { 1 }))
+            .Select(version => version.CommitSequence.Value)
+            .ToArray();
+        Assert.Equal(new ulong[] { 2, 5, 7, 8, 9, 10 }, keyOneSequences);
+
+        var keyTwoSequences = projection
+            .Where(version => version.Key.AsSpan().SequenceEqual(new byte[] { 2 }))
+            .Select(version => version.CommitSequence.Value)
+            .ToArray();
+        Assert.Equal(new ulong[] { 3, 9 }, keyTwoSequences);
+
+        _ = store.CompactHistory(new CommitSequence(8), pins);
+        Assert.True(store.TryRead(new ChronicleDB.Core.Keys.BinaryKey([1]), new CommitSequence(2), out var atTwo));
+        Assert.Equal(new byte[] { 2 }, atTwo);
+        Assert.True(store.TryRead(new ChronicleDB.Core.Keys.BinaryKey([1]), new CommitSequence(7), out var atSeven));
+        Assert.Equal(new byte[] { 7 }, atSeven);
+        Assert.True(store.TryRead(new ChronicleDB.Core.Keys.BinaryKey([1]), new CommitSequence(10), out var latest));
+        Assert.Equal(new byte[] { 10 }, latest);
+    }
+
     private static void Publish(
         CommittedVersionStore store,
         ulong sequence,

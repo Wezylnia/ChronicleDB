@@ -8,7 +8,7 @@ using ChronicleDB.Transactions.Writes;
 namespace ChronicleDB.Transactions;
 
 /// <summary>
-/// Coarse-grained v0.3 Snapshot Isolation transaction descriptor. It owns writes until the commit protocol publishes them.
+/// Snapshot Isolation transaction descriptor. It owns a private write set until the owning history commits or aborts it.
 /// </summary>
 public sealed class Transaction
 {
