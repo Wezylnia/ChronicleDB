@@ -251,6 +251,8 @@ public sealed class BoundedCrashPorExplorer
     private readonly IPersistenceActionIndependence _independence;
     private readonly Dictionary<long, int> _indexByActionId;
     private readonly bool[,] _independenceByIndex;
+    private readonly UInt128[] _requiredPredecessorMaskByIndex;
+    private readonly UInt128 _allActionsMask;
 
     public BoundedCrashPorExplorer(
         IEnumerable<PersistenceAction> actions,
@@ -289,6 +291,13 @@ public sealed class BoundedCrashPorExplorer
         _indexByActionId = _actions
             .Select((action, index) => (action.ActionId, index))
             .ToDictionary(pair => pair.ActionId, pair => pair.index);
+        if (_actions.Length > 128)
+        {
+            throw new ArgumentException(
+                "Bounded exhaustive exploration supports at most 128 actions.",
+                nameof(actions));
+        }
+
         _independenceByIndex = new bool[_actions.Length, _actions.Length];
         for (var first = 0; first < _actions.Length; first++)
         {
@@ -299,6 +308,22 @@ public sealed class BoundedCrashPorExplorer
                 _independenceByIndex[second, first] = independent;
             }
         }
+
+        _requiredPredecessorMaskByIndex = new UInt128[_actions.Length];
+        for (var index = 0; index < _actions.Length; index++)
+        {
+            UInt128 mask = 0;
+            foreach (var predecessorId in _requiredPredecessors[_actions[index].ActionId])
+            {
+                mask |= (UInt128)1 << _indexByActionId[predecessorId];
+            }
+
+            _requiredPredecessorMaskByIndex[index] = mask;
+        }
+
+        _allActionsMask = _actions.Length == 128
+            ? UInt128.MaxValue
+            : ((UInt128)1 << _actions.Length) - 1;
 
         EnsureAcyclic();
     }
@@ -361,49 +386,21 @@ public sealed class BoundedCrashPorExplorer
     {
         ArgumentNullException.ThrowIfNull(evaluator);
 
-        // Verification is intentionally streamed. The first P2 prototype materialized
-        // every exhaustive order and every crash prefix several times, which made a
-        // three-history real trace needlessly expensive. Streaming keeps the exact same
-        // oracle semantics while retaining only canonical signatures and observation sets.
-        var exhaustiveOrderCount = 0;
+        // Visit each distinct legal raw prefix exactly once. The earlier implementation
+        // streamed complete orders and therefore re-evaluated the same prefix once per
+        // possible suffix. We preserve the exact exhaustive plan count by weighting each
+        // unique prefix with its number of legal completions, while observation and POR
+        // canonicalization work is performed only once per raw prefix.
+        var completionCounts = new Dictionary<UInt128, int>();
+        var exhaustiveOrderCount = CountLegalCompletions(0, completionCounts);
         var exhaustiveCrashPlanCount = 0;
         var reducedOrderSignatures = new HashSet<string>(StringComparer.Ordinal);
         var reducedCrashPlanSignatures = new HashSet<string>(StringComparer.Ordinal);
         var exhaustiveTraces = new HashSet<CanonicalTraceKey>();
         var reducedTraces = new HashSet<CanonicalTraceKey>();
-        var traceByRawPrefix = new Dictionary<string, CanonicalTraceKey>(StringComparer.Ordinal);
-        var canonicalSignatureByRawPrefix = new Dictionary<string, string>(StringComparer.Ordinal);
+        var prefix = new List<PersistenceAction>(_actions.Length);
 
-        EnumerateOrders(order =>
-        {
-            exhaustiveOrderCount = checked(exhaustiveOrderCount + 1);
-            reducedOrderSignatures.Add(CanonicalOrderSignature(order));
-
-            for (var length = 0; length <= order.Count; length++)
-            {
-                exhaustiveCrashPlanCount = checked(exhaustiveCrashPlanCount + 1);
-                var prefix = order.Take(length).ToArray();
-                var rawPrefixSignature = string.Join(',', prefix.Select(action => action.ActionId));
-                if (!traceByRawPrefix.TryGetValue(rawPrefixSignature, out var traceKey))
-                {
-                    traceKey = new CanonicalTraceKey(evaluator(prefix).Points);
-                    traceByRawPrefix.Add(rawPrefixSignature, traceKey);
-                }
-
-                exhaustiveTraces.Add(traceKey);
-
-                if (!canonicalSignatureByRawPrefix.TryGetValue(rawPrefixSignature, out var canonicalSignature))
-                {
-                    canonicalSignature = CanonicalOrderSignature(prefix);
-                    canonicalSignatureByRawPrefix.Add(rawPrefixSignature, canonicalSignature);
-                }
-
-                if (reducedCrashPlanSignatures.Add(canonicalSignature))
-                {
-                    reducedTraces.Add(traceKey);
-                }
-            }
-        });
+        VisitUniquePrefixes(0);
 
         return new PorVerificationResult(
             exhaustiveOrderCount,
@@ -413,6 +410,72 @@ public sealed class BoundedCrashPorExplorer
             exhaustiveTraces.Count,
             reducedTraces.Count,
             exhaustiveTraces.SetEquals(reducedTraces));
+
+        void VisitUniquePrefixes(UInt128 selectedMask)
+        {
+            exhaustiveCrashPlanCount = checked(
+                exhaustiveCrashPlanCount + CountLegalCompletions(selectedMask, completionCounts));
+
+            var traceKey = new CanonicalTraceKey(evaluator(prefix).Points);
+            exhaustiveTraces.Add(traceKey);
+
+            var canonicalSignature = CanonicalOrderSignature(prefix);
+            if (reducedCrashPlanSignatures.Add(canonicalSignature))
+            {
+                reducedTraces.Add(traceKey);
+            }
+
+            if (selectedMask == _allActionsMask)
+            {
+                reducedOrderSignatures.Add(canonicalSignature);
+                return;
+            }
+
+            for (var index = 0; index < _actions.Length; index++)
+            {
+                var actionBit = (UInt128)1 << index;
+                if ((selectedMask & actionBit) != 0
+                    || (_requiredPredecessorMaskByIndex[index] & selectedMask)
+                        != _requiredPredecessorMaskByIndex[index])
+                {
+                    continue;
+                }
+
+                prefix.Add(_actions[index]);
+                VisitUniquePrefixes(selectedMask | actionBit);
+                prefix.RemoveAt(prefix.Count - 1);
+            }
+        }
+    }
+
+    private int CountLegalCompletions(UInt128 selectedMask, Dictionary<UInt128, int> memo)
+    {
+        if (selectedMask == _allActionsMask)
+        {
+            return 1;
+        }
+
+        if (memo.TryGetValue(selectedMask, out var cached))
+        {
+            return cached;
+        }
+
+        var count = 0;
+        for (var index = 0; index < _actions.Length; index++)
+        {
+            var actionBit = (UInt128)1 << index;
+            if ((selectedMask & actionBit) != 0
+                || (_requiredPredecessorMaskByIndex[index] & selectedMask)
+                    != _requiredPredecessorMaskByIndex[index])
+            {
+                continue;
+            }
+
+            count = checked(count + CountLegalCompletions(selectedMask | actionBit, memo));
+        }
+
+        memo.Add(selectedMask, count);
+        return count;
     }
 
     public RandomCrashSamplingResult SampleRandomCrashPlans(
