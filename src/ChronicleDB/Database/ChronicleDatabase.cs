@@ -13,6 +13,7 @@ using ChronicleDB.Storage;
 using ChronicleDB.Storage.Branches;
 using ChronicleDB.Storage.Files;
 using ChronicleDB.Storage.Formats;
+using ChronicleDB.Storage.History;
 using ChronicleDB.Storage.HistoryRoots;
 using ChronicleDB.Storage.Snapshots;
 using ChronicleDB.Transactions;
@@ -42,6 +43,7 @@ public sealed partial class ChronicleDatabase : IDisposable
     private readonly object _stateGate = new();
     private readonly object _commitGate = new();
     private readonly object _historyGate = new();
+    private readonly ActiveHistoryBoundaryRegistry _activeHistoryBoundaries = new();
     private readonly ITransactionFaultInjector? _faultInjector;
     private readonly EngineCounters _counters;
     private readonly Guid _databaseId;
@@ -175,8 +177,39 @@ public sealed partial class ChronicleDatabase : IDisposable
                 Path.Combine(fullDirectory, WalOptions.DefaultFileName),
                 "WAL");
             wal = WalLog.Open(fullDirectory, store.DatabaseId, new WalOptions { FlushOnAppend = false });
-            var recovery = WalRecovery.Reconcile(store, wal);
+
+            var mainHistoryId = new HistoryId(store.DatabaseId);
+            HistoryCheckpoint? mainCheckpoint = null;
+            var checkpointPath = Path.Combine(fullDirectory, PersistentHistoryCheckpoint.FileName);
+            if (store.HasFormatFlag(DatabaseHeader.HistoryCheckpointInitializedFlag))
+            {
+                mainCheckpoint = PersistentHistoryCheckpoint.TryLoad(
+                    fullDirectory,
+                    store.DatabaseId,
+                    mainHistoryId)
+                    ?? throw new StorageCorruptionException("Main history checkpoint is required but missing.");
+            }
+            else if (File.Exists(checkpointPath) || File.Exists(checkpointPath + ".previous"))
+            {
+                // A checkpoint written before its capability flag was published is not
+                // recovery authority; the unreset WAL still contains complete history.
+                TryDeleteFile(checkpointPath);
+                TryDeleteFile(checkpointPath + ".previous");
+            }
+
+            var checkpointTransactionIds = mainCheckpoint?.Versions
+                .Select(version => version.TransactionId)
+                .ToHashSet();
+            var recovery = WalRecovery.Reconcile(
+                store,
+                wal,
+                mainCheckpoint?.CheckpointSequence,
+                checkpointTransactionIds);
             versions = new CommittedVersionStore(new SynchronizedVersionIndex());
+            if (mainCheckpoint is not null)
+            {
+                ReplayHistoryCheckpoint(mainCheckpoint, versions);
+            }
             foreach (var transaction in recovery.CommittedTransactions.OrderBy(entry => entry.CommitLsn))
             {
                 versions.ReplayCommitted(
@@ -210,6 +243,8 @@ public sealed partial class ChronicleDatabase : IDisposable
                     legacyCurrentState);
             }
 
+            ValidateMainPhysicalState(store, versions);
+
             // The capability flag is the durable statement that future opens may require
             // WAL-backed logical history. Publish it only after recovery/bootstrap succeeds.
             store.EnsureFormatFlags(DatabaseHeader.WalInitializedFlag);
@@ -239,7 +274,6 @@ public sealed partial class ChronicleDatabase : IDisposable
                     "Snapshot lifecycle metadata references history newer than the recovered database.");
             }
 
-            var mainHistoryId = new HistoryId(store.DatabaseId);
             RequireInitializedFileIfFlagged(
                 store,
                 DatabaseHeader.HistoryRootStoreInitializedFlag,
@@ -266,6 +300,7 @@ public sealed partial class ChronicleDatabase : IDisposable
             // before reconstructing the retention graph so an interrupted create cannot
             // pin arbitrary parent history indefinitely.
             ReconcileIncompleteBranchCreations(fullDirectory, branchStore, historyRootStore);
+            ReconcileIncompleteBranchDeletions(branchStore, historyRootStore);
             var branchDefinitions = branchStore.ListActive()
                 .Select(record => ToBranchDefinition(record, store.DatabaseId))
                 .ToArray();
@@ -285,24 +320,32 @@ public sealed partial class ChronicleDatabase : IDisposable
                 historyRootStore,
                 validatedOptions,
                 store.DatabaseId);
+            branchDefinitions = branchRuntimes.Values
+                .Select(runtime => runtime.Definition)
+                .OrderBy(branch => branch.Depth)
+                .ThenBy(branch => branch.Name, StringComparer.Ordinal)
+                .ToArray();
+            ValidateBranchGraph(branchDefinitions, mainHistoryId, currentCommitSequence);
 
             SnapshotCatalog snapshots;
             HistoryRootRegistry historyRoots;
             BranchCatalog branches;
             try
             {
+                var mainHistoryFloor = mainCheckpoint?.RetentionFloor ?? snapshotStore.Header.RetentionFloor;
                 snapshots = new SnapshotCatalog(
-                    snapshotStore.Header.RetentionFloor,
+                    mainHistoryFloor,
                     currentCommitSequence,
                     snapshotRecords.Select(ToSnapshotDefinition));
                 branches = new BranchCatalog(branchDefinitions);
                 historyRoots = new HistoryRootRegistry(
                     mainHistoryId,
-                    snapshotStore.Header.RetentionFloor,
+                    mainHistoryFloor,
                     historyRootStore.ListRetaining().Select(ToHistoryRoot));
                 foreach (var branch in branchDefinitions)
                 {
-                    historyRoots.RegisterHistory(branch.HistoryId, CommitSequence.Initial);
+                    var branchFloor = branchRuntimes[branch.BranchId].HistoryFloor;
+                    historyRoots.RegisterHistory(branch.HistoryId, branchFloor);
                 }
                 ValidateRecoveredHistoryRoots(
                     historyRoots,
@@ -396,12 +439,22 @@ public sealed partial class ChronicleDatabase : IDisposable
         EnterOperation();
         try
         {
-            var transaction = new Transaction(
-                startSequence: GetCurrentCommitSequence(),
-                historyId: _mainHistoryId);
-            transaction.Begin();
-            _counters.TransactionStarted();
-            return new ChronicleTransaction(new MainTransactionHost(this), transaction);
+            // Transaction start and process-local retention registration are one
+            // history-lifecycle operation. Otherwise GC could advance the generic
+            // floor after StartSequence is sampled but before that boundary becomes
+            // visible to the retention planner.
+            lock (_historyGate)
+            {
+                var transaction = new Transaction(
+                    startSequence: GetCurrentCommitSequence(),
+                    historyId: _mainHistoryId);
+                transaction.Begin();
+                var boundaryToken = _activeHistoryBoundaries.Register(
+                    _mainHistoryId,
+                    transaction.StartSequence);
+                _counters.TransactionStarted();
+                return new ChronicleTransaction(new MainTransactionHost(this, boundaryToken), transaction);
+            }
         }
         finally
         {
@@ -421,8 +474,7 @@ public sealed partial class ChronicleDatabase : IDisposable
         EnterOperation();
         try
         {
-            var boundary = GetCurrentCommitSequence();
-            return _versions.TryRead(new BinaryKey(key), boundary, out value);
+            return _versions.TryReadLatest(new BinaryKey(key), out value);
         }
         finally
         {
@@ -484,7 +536,8 @@ public sealed partial class ChronicleDatabase : IDisposable
                 }
 
                 _counters.SnapshotCreated(Stopwatch.GetTimestamp() - started);
-                return new ChronicleSnapshot(this, ToSnapshotInfo(definition));
+                var boundaryToken = _activeHistoryBoundaries.Register(_mainHistoryId, definition.Sequence);
+                return new ChronicleSnapshot(this, ToSnapshotInfo(definition), boundaryToken);
             }
         }
         finally
@@ -511,13 +564,17 @@ public sealed partial class ChronicleDatabase : IDisposable
         EnterOperation();
         try
         {
-            var id = new SnapshotId(snapshotId);
-            if (!id.IsValid || !_snapshots.TryGet(id, out var definition) || definition is null)
+            lock (_historyGate)
             {
-                throw new SnapshotNotFoundException(snapshotId.ToString());
-            }
+                var id = new SnapshotId(snapshotId);
+                if (!id.IsValid || !_snapshots.TryGet(id, out var definition) || definition is null)
+                {
+                    throw new SnapshotNotFoundException(snapshotId.ToString());
+                }
 
-            return new ChronicleSnapshot(this, ToSnapshotInfo(definition));
+                var boundaryToken = _activeHistoryBoundaries.Register(_mainHistoryId, definition.Sequence);
+                return new ChronicleSnapshot(this, ToSnapshotInfo(definition), boundaryToken);
+            }
         }
         finally
         {
@@ -530,12 +587,16 @@ public sealed partial class ChronicleDatabase : IDisposable
         EnterOperation();
         try
         {
-            if (!_snapshots.TryGet(name, out var definition) || definition is null)
+            lock (_historyGate)
             {
-                throw new SnapshotNotFoundException($"named '{name}'");
-            }
+                if (!_snapshots.TryGet(name, out var definition) || definition is null)
+                {
+                    throw new SnapshotNotFoundException($"named '{name}'");
+                }
 
-            return new ChronicleSnapshot(this, ToSnapshotInfo(definition));
+                var boundaryToken = _activeHistoryBoundaries.Register(_mainHistoryId, definition.Sequence);
+                return new ChronicleSnapshot(this, ToSnapshotInfo(definition), boundaryToken);
+            }
         }
         finally
         {
@@ -596,8 +657,13 @@ public sealed partial class ChronicleDatabase : IDisposable
         EnterOperation();
         try
         {
-            ValidateHistoricalBoundary(new CommitSequence(sequence));
-            return new ChronicleHistoricalView(this, sequence);
+            lock (_historyGate)
+            {
+                var boundary = new CommitSequence(sequence);
+                ValidateHistoricalBoundary(boundary);
+                var boundaryToken = _activeHistoryBoundaries.Register(_mainHistoryId, boundary);
+                return new ChronicleHistoricalView(this, sequence, boundaryToken);
+            }
         }
         finally
         {
@@ -610,52 +676,64 @@ public sealed partial class ChronicleDatabase : IDisposable
         EnterOperation();
         try
         {
-            var current = GetCurrentCommitSequence();
-            var counters = _counters.Snapshot();
-            var versions = _versions.GetStatistics();
-            var wal = _wal.GetStatistics();
-            var snapshots = _snapshots.List();
-            var averageWalFlushMilliseconds = wal.FlushCount == 0
-                ? 0
-                : wal.TotalFlushStopwatchTicks * 1000d / Stopwatch.Frequency / wal.FlushCount;
-            return new ChronicleDatabaseDiagnostics(
-                DatabaseId: _databaseId,
-                State: State,
-                CurrentCommitSequence: current.Value,
-                RetentionFloor: GetHistoryRetentionFloor().Value,
-                CurrentKeyCount: versions.CurrentKeyCount,
-                ActiveTransactions: counters.ActiveTransactions,
-                CommitAttempts: counters.CommitAttempts,
-                SuccessfulCommits: counters.SuccessfulCommits,
-                Aborts: counters.Aborts,
-                ConflictAborts: counters.ConflictAborts,
-                CommitSerializationContention: counters.CommitSerializationContention,
-                AverageCommitMilliseconds: counters.AverageCommitMilliseconds,
-                VersionCount: versions.VersionCount,
-                VersionChainCount: versions.ChainCount,
-                AverageVersionChainLength: versions.AverageChainLength,
-                MaximumVersionChainLength: versions.MaximumChainLength,
-                IndexContention: versions.Index.ContendedAcquisitions,
-                NextWalLsn: wal.NextLsn,
-                WalFileBytes: wal.FileLength,
-                WalBytesWrittenThisSession: wal.BytesWrittenThisSession,
-                WalFlushCount: wal.FlushCount,
-                AverageWalFlushMilliseconds: averageWalFlushMilliseconds,
-                RecoveryReplayedTransactions: counters.RecoveryReplayedTransactions,
-                SnapshotCount: snapshots.Count,
-                RetainingRootCount: _historyRoots.Count,
-                OldestSnapshotSequence: snapshots.Count == 0 ? null : snapshots.Min(item => item.Sequence.Value),
-                NewestSnapshotSequence: snapshots.Count == 0 ? null : snapshots.Max(item => item.Sequence.Value),
-                AverageSnapshotCreateMilliseconds: counters.AverageSnapshotCreateMilliseconds,
-                SnapshotMetadataBytes: _snapshotStore.FileLength,
-                DataFileBytes: _store.DataLength,
-                DataPageCount: _store.PageCount,
-                OverflowPageCount: _store.OverflowPageCount,
-                BranchCount: _branches.Count,
-                BranchMetadataBytes: _branchStore.FileLength,
-                BranchLocalDataBytes: _branchRuntimes.Values.Sum(runtime => runtime.Store.DataLength),
-                BranchLocalVersionCount: _branchRuntimes.Values.Sum(runtime => runtime.Versions.VersionCount),
-                BranchSnapshotCount: _branchRuntimes.Values.Sum(runtime => runtime.Snapshots.Count));
+            lock (_historyGate)
+            {
+                var current = GetCurrentCommitSequence();
+                var counters = _counters.Snapshot();
+                var versions = _versions.GetStatistics();
+                var wal = _wal.GetStatistics();
+                var snapshots = _snapshots.List();
+                var runtimes = _branchRuntimes.Values.ToArray();
+                var averageWalFlushMilliseconds = wal.FlushCount == 0
+                    ? 0
+                    : wal.TotalFlushStopwatchTicks * 1000d / Stopwatch.Frequency / wal.FlushCount;
+                return new ChronicleDatabaseDiagnostics(
+                    DatabaseId: _databaseId,
+                    State: State,
+                    CurrentCommitSequence: current.Value,
+                    RetentionFloor: GetHistoryRetentionFloor().Value,
+                    CurrentKeyCount: versions.CurrentKeyCount,
+                    ActiveTransactions: counters.ActiveTransactions,
+                    CommitAttempts: counters.CommitAttempts,
+                    SuccessfulCommits: counters.SuccessfulCommits,
+                    Aborts: counters.Aborts,
+                    ConflictAborts: counters.ConflictAborts,
+                    CommitSerializationContention: counters.CommitSerializationContention,
+                    AverageCommitMilliseconds: counters.AverageCommitMilliseconds,
+                    VersionCount: versions.VersionCount,
+                    VersionChainCount: versions.ChainCount,
+                    AverageVersionChainLength: versions.AverageChainLength,
+                    MaximumVersionChainLength: versions.MaximumChainLength,
+                    IndexContention: versions.Index.ContendedAcquisitions,
+                    NextWalLsn: wal.NextLsn,
+                    WalFileBytes: wal.FileLength,
+                    WalBytesWrittenThisSession: wal.BytesWrittenThisSession,
+                    WalFlushCount: wal.FlushCount,
+                    AverageWalFlushMilliseconds: averageWalFlushMilliseconds,
+                    RecoveryReplayedTransactions: counters.RecoveryReplayedTransactions,
+                    SnapshotCount: snapshots.Count,
+                    RetainingRootCount: _historyRoots.Count,
+                    OldestSnapshotSequence: snapshots.Count == 0 ? null : snapshots.Min(item => item.Sequence.Value),
+                    NewestSnapshotSequence: snapshots.Count == 0 ? null : snapshots.Max(item => item.Sequence.Value),
+                    AverageSnapshotCreateMilliseconds: counters.AverageSnapshotCreateMilliseconds,
+                    SnapshotMetadataBytes: _snapshotStore.FileLength,
+                    DataFileBytes: _store.DataLength,
+                    DataPageCount: _store.PageCount,
+                    OverflowPageCount: _store.OverflowPageCount,
+                    BranchCount: _branches.Count,
+                    BranchMetadataBytes: _branchStore.FileLength,
+                    BranchLocalDataBytes: runtimes.Sum(runtime => runtime.Store.DataLength),
+                    BranchLocalVersionCount: runtimes.Sum(runtime => runtime.Versions.VersionCount),
+                    BranchSnapshotCount: runtimes.Sum(runtime => runtime.Snapshots.Count),
+                    GarbageCollectionPasses: counters.GarbageCollectionPasses,
+                    GarbageCollectionReclaimedVersions: counters.GarbageCollectionReclaimedVersions,
+                    GarbageCollectionCheckpointBytes: counters.GarbageCollectionCheckpointBytes,
+                    GarbageCollectionMilliseconds: counters.GarbageCollectionMilliseconds,
+                    CompactionPasses: counters.CompactionPasses,
+                    CompactionBytesRewritten: counters.CompactionBytesRewritten,
+                    CompactionBytesReclaimed: counters.CompactionBytesReclaimed,
+                    CompactionMilliseconds: counters.CompactionMilliseconds);
+            }
         }
         finally
         {
@@ -668,16 +746,20 @@ public sealed partial class ChronicleDatabase : IDisposable
         EnterOperation();
         try
         {
-            EnterCommitSerialization();
-            try
+            lock (_historyGate)
             {
+                var runtimes = _branchRuntimes.Values
+                    .OrderBy(runtime => runtime.Definition.BranchId.Value)
+                    .ToArray();
+                var acquired = AcquireMaintenanceCommitGates(runtimes);
                 try
                 {
                     _store.Flush();
                     _wal.Flush();
-                    foreach (var runtime in _branchRuntimes.Values)
+                    foreach (var runtime in runtimes)
                     {
                         runtime.Store.Flush();
+                        runtime.Wal.Flush();
                     }
                 }
                 catch
@@ -685,10 +767,10 @@ public sealed partial class ChronicleDatabase : IDisposable
                     MarkFaulted();
                     throw;
                 }
-            }
-            finally
-            {
-                Monitor.Exit(_commitGate);
+                finally
+                {
+                    ReleaseMaintenanceCommitGates(acquired);
+                }
             }
         }
         finally
@@ -798,6 +880,30 @@ public sealed partial class ChronicleDatabase : IDisposable
         try
         {
             ValidateHistoricalBoundary(visibilityBoundary);
+            return _versions.TryRead(new BinaryKey(key), visibilityBoundary, out value);
+        }
+        finally
+        {
+            ExitOperation();
+        }
+    }
+
+    internal bool ReadPinnedHistorical(
+        ReadOnlySpan<byte> key,
+        CommitSequence visibilityBoundary,
+        out byte[] value)
+    {
+        EnterOperation();
+        try
+        {
+            var current = GetCurrentCommitSequence();
+            if (visibilityBoundary > current)
+            {
+                throw new HistoricalStateUnavailableException(
+                    visibilityBoundary.Value,
+                    GetHistoryRetentionFloor().Value,
+                    current.Value);
+            }
             return _versions.TryRead(new BinaryKey(key), visibilityBoundary, out value);
         }
         finally
@@ -966,7 +1072,14 @@ public sealed partial class ChronicleDatabase : IDisposable
         }
     }
 
-    internal void TransactionHandleCompleted() => _counters.TransactionFinished();
+    internal void TransactionHandleCompleted(long boundaryToken)
+    {
+        _activeHistoryBoundaries.Release(boundaryToken);
+        _counters.TransactionFinished();
+    }
+
+    internal void HistoricalHandleClosed(long boundaryToken)
+        => _activeHistoryBoundaries.Release(boundaryToken);
 
     private void ValidateWriteConflicts(
         Transaction transaction,
@@ -1032,8 +1145,37 @@ public sealed partial class ChronicleDatabase : IDisposable
     }
 
     private CommitSequence GetHistoryRetentionFloor()
-        => _historyRoots.GetRetentionFloor(_mainHistoryId)
+        => _historyRoots.GetHistoryFloor(_mainHistoryId)
             ?? throw new InvalidOperationException("The main history must always have a retention floor.");
+
+    private static void ReplayHistoryCheckpoint(
+        HistoryCheckpoint checkpoint,
+        CommittedVersionStore versions)
+    {
+        foreach (var transaction in checkpoint.Versions
+                     .GroupBy(version => (version.CommitSequence, version.TransactionId))
+                     .OrderBy(group => group.Key.CommitSequence.Value))
+        {
+            var mutations = transaction.Select(version => new StorageMutation(
+                version.Key,
+                version.IsDelete,
+                version.Value.Span)).ToArray();
+            versions.ValidateReplayCapacity(mutations);
+            versions.ReplayCommitted(transaction.Key.TransactionId, transaction.Key.CommitSequence, mutations);
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch (IOException)
+        {
+            // The authoritative WAL/checkpoint validation that follows decides open safety.
+        }
+    }
 
     private void EnterOperation()
     {
@@ -1211,6 +1353,39 @@ public sealed partial class ChronicleDatabase : IDisposable
             definition.Sequence.Value,
             DateTimeOffset.FromUnixTimeMilliseconds(definition.CreatedUnixMilliseconds));
 
+    private static void ValidateMainPhysicalState(
+        PersistentKeyValueStore store,
+        CommittedVersionStore versions)
+    {
+        var expected = new Dictionary<BinaryKey, byte[]>();
+        foreach (var group in versions.SnapshotHistory().GroupBy(version => version.Key))
+        {
+            var latest = group.OrderBy(version => version.CommitSequence.Value).Last();
+            if (!latest.IsDelete)
+            {
+                expected[latest.Key] = latest.Value.ToArray();
+            }
+        }
+
+        var actual = store.SnapshotCurrentState();
+        if (actual.Count != expected.Count)
+        {
+            throw new StorageCorruptionException(
+                "Physical Main current state does not match recovered MVCC history.");
+        }
+
+        foreach (var mutation in actual)
+        {
+            if (mutation.IsDelete
+                || !expected.TryGetValue(mutation.Key, out var expectedValue)
+                || !expectedValue.AsSpan().SequenceEqual(mutation.Value.Span))
+            {
+                throw new StorageCorruptionException(
+                    "Physical Main current state does not match recovered MVCC history.");
+            }
+        }
+    }
+
     private static CommitSequence PersistLegacyBootstrap(
         PersistentKeyValueStore store,
         WalLog wal,
@@ -1299,10 +1474,14 @@ public sealed partial class ChronicleDatabase : IDisposable
     }
 
     private void ValidateWalCapacity(int recordCount)
+        => ValidateWalCapacity(_wal, recordCount);
+
+    private static void ValidateWalCapacity(WalLog wal, int recordCount)
     {
+        ArgumentNullException.ThrowIfNull(wal);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(recordCount);
         var required = checked((ulong)recordCount);
-        var nextLsn = _wal.NextLsn;
+        var nextLsn = wal.NextLsn;
         if (nextLsn > ulong.MaxValue - required)
         {
             throw new ChronicleDB.Wal.Errors.WalLimitException(

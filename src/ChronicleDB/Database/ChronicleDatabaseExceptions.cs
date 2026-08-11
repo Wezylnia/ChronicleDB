@@ -83,11 +83,18 @@ public sealed class BranchNameConflictException : InvalidOperationException
 
 public sealed class BranchHistoricalStateUnavailableException : InvalidOperationException
 {
-    internal BranchHistoricalStateUnavailableException(Guid branchId, ulong requested, ulong current)
-        : base($"Branch {branchId} historical sequence {requested} is newer than local sequence {current}.")
+    internal BranchHistoricalStateUnavailableException(
+        Guid branchId,
+        ulong requested,
+        ulong retentionFloor,
+        ulong current)
+        : base(
+            $"Branch {branchId} historical sequence {requested} is outside the retained local range " +
+            $"[{retentionFloor}, {current}].")
     {
         BranchId = branchId;
         RequestedSequence = requested;
+        RetentionFloor = retentionFloor;
         CurrentSequence = current;
     }
 
@@ -95,5 +102,20 @@ public sealed class BranchHistoricalStateUnavailableException : InvalidOperation
 
     public ulong RequestedSequence { get; }
 
+    public ulong RetentionFloor { get; }
+
     public ulong CurrentSequence { get; }
+}
+
+public sealed class BranchInUseException : InvalidOperationException
+{
+    internal BranchInUseException(Guid branchId, string reason)
+        : base($"Branch {branchId} cannot be deleted because {reason}.")
+    {
+        BranchId = branchId;
+        Reason = reason;
+    }
+
+    public Guid BranchId { get; }
+    public string Reason { get; }
 }

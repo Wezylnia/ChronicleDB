@@ -4,7 +4,7 @@ using ChronicleDB.Transactions;
 
 namespace ChronicleDB;
 
-internal sealed class MainTransactionHost(ChronicleDatabase database) : ITransactionHost
+internal sealed class MainTransactionHost(ChronicleDatabase database, long boundaryToken) : ITransactionHost
 {
     public bool ReadAt(ReadOnlySpan<byte> key, CommitSequence visibilityBoundary, out byte[] value)
         => database.ReadAt(key, visibilityBoundary, out value);
@@ -14,18 +14,22 @@ internal sealed class MainTransactionHost(ChronicleDatabase database) : ITransac
     public void Abort(Transaction transaction, bool throwIfNotAbortable)
         => database.Abort(transaction, throwIfNotAbortable);
 
-    public void TransactionHandleCompleted() => database.TransactionHandleCompleted();
+    public void TransactionHandleCompleted() => database.TransactionHandleCompleted(boundaryToken);
 }
 
-internal sealed class BranchTransactionHost(ChronicleDatabase database, BranchId branchId) : ITransactionHost
+internal sealed class BranchTransactionHost(
+    ChronicleDatabase database,
+    BranchId branchId,
+    long boundaryToken) : ITransactionHost
 {
     public bool ReadAt(ReadOnlySpan<byte> key, CommitSequence visibilityBoundary, out byte[] value)
-        => database.ReadBranchAt(branchId, key, visibilityBoundary, out value);
+        => database.ReadBranchPinnedAt(branchId, key, visibilityBoundary, out value);
 
     public void Commit(Transaction transaction) => database.CommitBranch(branchId, transaction);
 
     public void Abort(Transaction transaction, bool throwIfNotAbortable)
         => database.Abort(transaction, throwIfNotAbortable);
 
-    public void TransactionHandleCompleted() => database.TransactionHandleCompleted();
+    public void TransactionHandleCompleted()
+        => database.BranchTransactionHandleCompleted(branchId, boundaryToken);
 }
