@@ -43,7 +43,19 @@ public sealed class SnapshotCatalog
         }
     }
 
-    public CommitSequence RetentionFloor { get; }
+    public CommitSequence RetentionFloor { get; private set; }
+
+    public void AdvanceRetentionFloor(CommitSequence newFloor, CommitSequence currentSequence)
+    {
+        lock (_gate)
+        {
+            if (newFloor < RetentionFloor || newFloor > currentSequence)
+            {
+                throw new ArgumentOutOfRangeException(nameof(newFloor));
+            }
+            RetentionFloor = newFloor;
+        }
+    }
 
     public int Count
     {
@@ -201,7 +213,7 @@ public sealed class SnapshotCatalog
         _byName.Add(snapshot.Name, snapshot.SnapshotId);
     }
 
-    private void ValidateDefinition(SnapshotDefinition snapshot, CommitSequence currentSequence)
+    private static void ValidateDefinition(SnapshotDefinition snapshot, CommitSequence currentSequence)
     {
         if (!snapshot.SnapshotId.IsValid)
         {
@@ -209,11 +221,11 @@ public sealed class SnapshotCatalog
         }
 
         ValidateName(snapshot.Name);
-        if (snapshot.Sequence < RetentionFloor || snapshot.Sequence > currentSequence)
+        if (snapshot.Sequence > currentSequence)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(snapshot),
-                "The snapshot boundary lies outside retained committed history.");
+                "The snapshot boundary lies beyond committed history.");
         }
 
         if (snapshot.CreatedUnixMilliseconds < 0

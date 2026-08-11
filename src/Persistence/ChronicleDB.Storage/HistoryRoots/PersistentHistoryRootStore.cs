@@ -16,7 +16,7 @@ public sealed class PersistentHistoryRootStore : IDisposable
     public const string FileName = "chronicle.history-roots";
 
     private readonly object _gate = new();
-    private readonly FileStream _stream;
+    private FileStream _stream;
     private readonly IStorageFaultInjector? _faultInjector;
     private readonly Dictionary<HistoryRootId, HistoryRootStoreRecord> _roots = [];
     private readonly HashSet<HistoryRootId> _seenIds = [];
@@ -214,6 +214,95 @@ public sealed class PersistentHistoryRootStore : IDisposable
             }
         }
     }
+
+    public void CompactJournal()
+    {
+        lock (_gate)
+        {
+            ThrowIfUsable();
+            const byte activeState = 2;
+            const byte deletedState = 4;
+            if (_roots.Values.Any(root => root.RootState != activeState && root.RootState != deletedState))
+            {
+                throw new StorageCorruptionException(
+                    "The history-root journal cannot be compacted while a root has an incomplete lifecycle state.");
+            }
+
+            var active = _roots.Values
+                .Where(root => root.RootState == activeState)
+                .OrderBy(root => root.Boundary.Value)
+                .ThenBy(root => root.RootId.Value)
+                .ToArray();
+            var path = _stream.Name;
+            var temp = path + "." + Guid.NewGuid().ToString("N") + ".compacting";
+            var backup = path + ".previous";
+            try
+            {
+                using (var output = new FileStream(
+                           temp, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                           bufferSize: 16 * 1024, options: FileOptions.WriteThrough))
+                {
+                    output.Write(HistoryRootStoreHeaderCodec.Encode(Header));
+                    ulong sequence = 1;
+                    foreach (var root in active)
+                    {
+                        output.Write(HistoryRootStoreRecordCodec.Encode(root with
+                        {
+                            Type = HistoryRootStoreRecordType.Create,
+                            EventSequence = sequence++,
+                            RootState = 2,
+                        }));
+                    }
+                    output.Flush(flushToDisk: true);
+                }
+
+                _stream.Flush(flushToDisk: true);
+                _stream.Dispose();
+                if (File.Exists(backup))
+                {
+                    File.Delete(backup);
+                }
+                File.Replace(temp, path, backup);
+                _stream = OpenJournal(path);
+                _nextEventSequence = checked((ulong)active.Length + 1);
+                var activeIds = active.Select(root => root.RootId).ToHashSet();
+                foreach (var rootId in _roots.Keys.Where(id => !activeIds.Contains(id)).ToArray())
+                {
+                    _roots.Remove(rootId);
+                }
+                _seenIds.Clear();
+                foreach (var rootId in activeIds)
+                {
+                    _seenIds.Add(rootId);
+                }
+                if (File.Exists(backup))
+                {
+                    File.Delete(backup);
+                }
+            }
+            catch
+            {
+                _faulted = true;
+                if (!File.Exists(path) && File.Exists(backup))
+                {
+                    File.Move(backup, path, overwrite: true);
+                }
+                throw;
+            }
+            finally
+            {
+                if (File.Exists(temp))
+                {
+                    File.Delete(temp);
+                }
+            }
+        }
+    }
+
+    private static FileStream OpenJournal(string path)
+        => new(
+            path, FileMode.Open, FileAccess.ReadWrite, FileShare.None,
+            bufferSize: 16 * 1024, options: FileOptions.SequentialScan);
 
     public void Dispose()
     {

@@ -88,6 +88,37 @@ public sealed class HistoryRootRegistry
         }
     }
 
+    /// <summary>
+    /// Removes a retired writable history domain after all retaining roots that
+    /// depend on it have been released. The baseline Main history is permanent.
+    /// </summary>
+    public void UnregisterHistory(HistoryId historyId)
+    {
+        if (!historyId.IsValid)
+        {
+            throw new ArgumentException("A history ID must be non-empty.", nameof(historyId));
+        }
+        if (historyId == _baselineHistoryId)
+        {
+            throw new InvalidOperationException("The baseline history cannot be unregistered.");
+        }
+
+        lock (_gate)
+        {
+            if (_roots.Values.Any(root => root.IsRetaining
+                && (root.HistoryId == historyId || root.ProtectedHistoryId == historyId)))
+            {
+                throw new InvalidOperationException(
+                    $"History {historyId.Value} is still referenced by an active retention root.");
+            }
+
+            if (!_historyFloors.Remove(historyId))
+            {
+                throw new KeyNotFoundException($"History {historyId.Value} is not registered.");
+            }
+        }
+    }
+
     public bool IsHistoryRegistered(HistoryId historyId)
     {
         if (!historyId.IsValid)
@@ -177,6 +208,22 @@ public sealed class HistoryRootRegistry
         }
     }
 
+    public int PruneDeleted()
+    {
+        lock (_gate)
+        {
+            var deleted = _roots
+                .Where(pair => pair.Value.State == HistoryRootState.Deleted)
+                .Select(pair => pair.Key)
+                .ToArray();
+            foreach (var rootId in deleted)
+            {
+                _roots.Remove(rootId);
+            }
+            return deleted.Length;
+        }
+    }
+
     public IReadOnlyList<HistoryRoot> ListAll()
     {
         lock (_gate)
@@ -207,9 +254,47 @@ public sealed class HistoryRootRegistry
     }
 
     /// <summary>
-    /// Returns the conservative oldest sequence that must remain reconstructable
-    /// for a history. Registered history floors are always honored, then retaining
-    /// roots may move the protected boundary further into the past.
+    /// Returns the generic point-in-time floor for a history. Explicit persistent
+    /// roots may protect isolated older states without moving this range boundary.
+    /// </summary>
+    public CommitSequence? GetHistoryFloor(HistoryId historyId)
+    {
+        if (!historyId.IsValid)
+        {
+            throw new ArgumentException("A history ID must be non-empty.", nameof(historyId));
+        }
+
+        lock (_gate)
+        {
+            return _historyFloors.TryGetValue(historyId, out var floor) ? floor : null;
+        }
+    }
+
+    public void AdvanceHistoryFloor(HistoryId historyId, CommitSequence newFloor)
+    {
+        if (!historyId.IsValid)
+        {
+            throw new ArgumentException("A history ID must be non-empty.", nameof(historyId));
+        }
+
+        lock (_gate)
+        {
+            if (!_historyFloors.TryGetValue(historyId, out var current))
+            {
+                throw new KeyNotFoundException($"History {historyId.Value} is not registered.");
+            }
+            if (newFloor < current)
+            {
+                throw new InvalidOperationException("A historical floor cannot move backwards.");
+            }
+            _historyFloors[historyId] = newFloor;
+        }
+    }
+
+    /// <summary>
+    /// Returns the oldest physical boundary protected either by the generic history
+    /// range or by an explicit snapshot/branch root. GC uses the complete requirement
+    /// set for precise per-key analysis rather than relying on this scalar alone.
     /// </summary>
     public CommitSequence? GetRetentionFloor(HistoryId historyId)
     {
