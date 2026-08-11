@@ -75,6 +75,53 @@ public sealed class ResearchTelemetryTests
         Assert.Equal(2, sink.Snapshot().Count);
     }
 
+    [Fact]
+    public void PublisherDoesNotInvokeFactoryWhenTelemetryIsDisabled()
+    {
+        var publisher = new ResearchEventPublisher();
+        var invoked = false;
+
+        var published = publisher.TryPublish(
+            _ =>
+            {
+                invoked = true;
+                return CreateEvent(1, ["wal"], []);
+            },
+            out var eventId);
+
+        Assert.False(published);
+        Assert.False(invoked);
+        Assert.Equal(0, eventId);
+    }
+
+    [Fact]
+    public void PublisherSerializesTraceIdsAndSuppressesSinkFailures()
+    {
+        var sink = new ThrowingResearchEventSink();
+        var publisher = new ResearchEventPublisher(sink);
+
+        var published = publisher.TryPublish(
+            id => CreateEvent(id, ["wal"], []),
+            out var eventId);
+
+        Assert.False(published);
+        Assert.Equal(1, eventId);
+        Assert.True(publisher.IsFaulted);
+        Assert.Equal(1, publisher.PublicationFailures);
+        Assert.False(publisher.TryPublish(
+            id => CreateEvent(id, ["wal"], []),
+            out var suppressedId));
+        Assert.Equal(0, suppressedId);
+    }
+
+    private sealed class ThrowingResearchEventSink : IResearchEventSink
+    {
+        public ResearchTelemetryMode Mode => ResearchTelemetryMode.Trace;
+
+        public void Publish(ResearchEvent researchEvent)
+            => throw new InvalidOperationException("Test sink failure.");
+    }
+
     private static ResearchEvent CreateEvent(
         long logicalEventId,
         IReadOnlyList<string> resources,

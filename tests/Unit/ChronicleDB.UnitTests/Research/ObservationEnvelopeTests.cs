@@ -41,9 +41,9 @@ public sealed class ObservationEnvelopeTests
     [Fact]
     public void ObservationEnvelopeCanonicalizesTopologyRootsAndSequences()
     {
-        var main = HistoryId.New();
-        var branch = HistoryId.New();
-        var root = HistoryRootId.New();
+        var main = new HistoryId(Guid.Parse("00000000-0000-0000-0000-000000000001"));
+        var branch = new HistoryId(Guid.Parse("00000000-0000-0000-0000-000000000002"));
+        var root = new HistoryRootId(Guid.Parse("00000000-0000-0000-0000-000000000003"));
         var envelope = new ObservationEnvelope(
             logicalData: null,
             historyTopology:
