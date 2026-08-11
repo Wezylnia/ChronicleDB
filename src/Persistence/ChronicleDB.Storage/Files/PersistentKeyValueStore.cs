@@ -59,6 +59,18 @@ public sealed class PersistentKeyValueStore : IDisposable
 
     public Guid DatabaseId => _databaseId;
 
+    /// <summary>
+    /// Effective logical key limit used by this opened store. Recovery uses the
+    /// same limit as normal writes rather than treating the wider on-disk/WAL
+    /// framing envelope as an application-level allowance.
+    /// </summary>
+    public int MaximumKeySize => _options.MaxKeySize;
+
+    /// <summary>
+    /// Effective logical value limit used by this opened store.
+    /// </summary>
+    public int MaximumValueSize => _options.MaxValueSize;
+
     public bool IsFaulted
     {
         get

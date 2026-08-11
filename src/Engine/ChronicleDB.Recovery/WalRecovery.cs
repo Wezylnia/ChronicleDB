@@ -106,6 +106,13 @@ public static class WalRecovery
                     }
                     sawPostResetGeneration = true;
 
+                    // Configured logical limits apply to history that is actually
+                    // authoritative after recovery. A crash may leave the old pre-reset
+                    // WAL beside a newer checkpoint; records at/below that checkpoint are
+                    // validated structurally but are intentionally not replayed and may
+                    // describe history that the current retained projection no longer owns.
+                    ValidateLogicalLimits(store, mutations);
+
                     if (checkpointTransactionIds?.Contains(record.TransactionId) == true)
                     {
                         throw new WalCorruptionException(
@@ -204,6 +211,31 @@ public static class WalRecovery
             CurrentCommitSequence = currentCommitSequence,
             CommittedTransactions = committed.ToArray()
         };
+    }
+
+    private static void ValidateLogicalLimits(
+        PersistentKeyValueStore store,
+        IReadOnlyList<StorageMutation> mutations)
+    {
+        foreach (var mutation in mutations)
+        {
+            if (mutation.Key.Length > store.MaximumKeySize)
+            {
+                throw new WalCorruptionException(
+                    $"Committed WAL key length {mutation.Key.Length} exceeds the configured database maximum of {store.MaximumKeySize} bytes.");
+            }
+
+            if (mutation.Value.Length > store.MaximumValueSize)
+            {
+                throw new WalCorruptionException(
+                    $"Committed WAL value length {mutation.Value.Length} exceeds the configured database maximum of {store.MaximumValueSize} bytes.");
+            }
+
+            if (mutation.IsDelete && !mutation.Value.IsEmpty)
+            {
+                throw new WalCorruptionException("A committed WAL tombstone contains a value.");
+            }
+        }
     }
 
     private static bool NeedsPhysicalRedo(PersistentKeyValueStore store, StorageMutation mutation)

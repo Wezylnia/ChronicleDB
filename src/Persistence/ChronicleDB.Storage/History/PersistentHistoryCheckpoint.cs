@@ -207,13 +207,22 @@ public static class PersistentHistoryCheckpoint
         var checkpointSequence = new CommitSequence(BinaryPrimitives.ReadUInt64LittleEndian(header.AsSpan(48, 8)));
         var retentionFloor = new CommitSequence(BinaryPrimitives.ReadUInt64LittleEndian(header.AsSpan(56, 8)));
         var recordCount = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(64, 4));
-        if (retentionFloor > checkpointSequence || recordCount > int.MaxValue)
+        var payloadBytes = stream.Length - HeaderSize;
+        var maximumRecordCountByLength = payloadBytes / RecordHeaderSize;
+        if (retentionFloor > checkpointSequence
+            || recordCount > int.MaxValue
+            || recordCount > maximumRecordCountByLength)
         {
-            throw new StorageCorruptionException("History checkpoint sequence metadata is invalid.");
+            throw new StorageCorruptionException("History checkpoint sequence/count metadata is invalid.");
         }
 
         var count = checked((int)recordCount);
-        var versions = new List<HistoryCheckpointVersion>(count);
+        // Do not trust a disk-declared count as an allocation request. The physical
+        // length check above proves the count is structurally possible, but a sparse
+        // or intentionally oversized corrupt file could still force an enormous
+        // up-front allocation before the first record is validated. Grow gradually
+        // while decoding instead.
+        var versions = new List<HistoryCheckpointVersion>(Math.Min(count, 4_096));
         for (var index = 0; index < count; index++)
         {
             var recordHeader = new byte[RecordHeaderSize];
@@ -232,12 +241,19 @@ public static class PersistentHistoryCheckpoint
             var valueLength = BinaryPrimitives.ReadUInt32LittleEndian(recordHeader.AsSpan(44, 4));
             if (totalLength < RecordHeaderSize
                 || totalLength > int.MaxValue
-                || keyLength == 0
                 || keyLength > ushort.MaxValue
                 || valueLength > StorageOptions.AbsoluteMaxValueSize
                 || totalLength != checked((uint)RecordHeaderSize + keyLength + valueLength))
             {
                 throw new StorageCorruptionException("History checkpoint version lengths are invalid.");
+            }
+
+            var remainingPayloadBytes = stream.Length - stream.Position;
+            var declaredPayloadBytes = checked((long)totalLength - RecordHeaderSize);
+            if (declaredPayloadBytes > remainingPayloadBytes)
+            {
+                throw new StorageCorruptionException(
+                    "History checkpoint version extends beyond the remaining file bytes.");
             }
 
             var encoded = new byte[checked((int)totalLength)];
@@ -302,7 +318,6 @@ public static class PersistentHistoryCheckpoint
             if (!version.TransactionId.IsValid
                 || version.CommitSequence.IsInitial
                 || version.CommitSequence > checkpoint.CheckpointSequence
-                || version.Key.Length == 0
                 || version.Key.Length > ushort.MaxValue
                 || version.Value.Length > StorageOptions.AbsoluteMaxValueSize
                 || version.IsDelete && !version.Value.IsEmpty)

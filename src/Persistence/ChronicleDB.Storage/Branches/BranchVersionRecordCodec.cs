@@ -106,7 +106,6 @@ public static class BranchVersionRecordCodec
             || record.MutationCount <= 0
             || record.MutationIndex < 0
             || record.MutationIndex >= record.MutationCount
-            || record.Key.Length == 0
             || record.Key.Length > ushort.MaxValue)
         {
             throw new StorageFormatException("Branch version record identity or sequence metadata is invalid.");
