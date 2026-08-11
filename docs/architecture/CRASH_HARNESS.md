@@ -47,3 +47,31 @@ dotnet run --project tools/ChronicleDB.CrashHarness -- run 100
 ```
 
 This is intentionally heavier than the normal unit suite and should be part of release/soak validation.
+
+## v0.8 branch scenarios
+
+The harness repeats every `TransactionFaultPoint` through a branch-local transaction. Reopen verifies the two-key branch update is atomic. Before the branch WAL durability barrier, absent or complete outcomes are accepted only where buffered bytes may have reached the OS; after WAL flush, the complete branch transaction is mandatory.
+
+Branch lifecycle persistence is exercised separately:
+
+- crash after branch create intent persistence;
+- crash after the branch-base retention root is durable;
+- crash after branch activation is durable;
+- crash after branch delete intent persistence;
+- crash after the branch-base root is deleted during branch deletion;
+- crash immediately after a branch snapshot is durably flushed.
+
+Reopen must expose either no branch or one fully active branch according to the durable activation boundary; interrupted deletion must converge to no active branch; and a durably flushed branch snapshot must reopen with identical historical contents. Partially initialized branch state is never accepted as an active history.
+
+## v0.9 maintenance scenarios
+
+Process-level failures are injected:
+
+- during retained-history checkpoint record output;
+- immediately before retained-history WAL reset;
+- immediately after retained-history WAL reset;
+- during compacted temporary-page output;
+- before compacted data publication;
+- after compacted data publication but before cleanup.
+
+Every restart validates both current state and a persistent historical snapshot. A child that exits normally instead of reaching the configured `FailFast` point is itself a harness failure.

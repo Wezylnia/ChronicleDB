@@ -1,10 +1,10 @@
 # ChronicleDB
 
-ChronicleDB is an experimental embedded, persistent, versioned key-value storage engine for .NET 10. The v0.7 baseline builds on generalized durable history roots and introduces correctness-first copy-on-write/shared-state database branches with independent history domains, fixed parent bases, branch-local MVCC, historical reads, and persistent branch snapshots.
+ChronicleDB is an experimental embedded, persistent, versioned key-value storage engine for .NET 10. The v0.9 baseline combines crash-safe MVCC and Snapshot Isolation with persistent historical roots, copy-on-write/shared-state branches, independent branch WAL/recovery, conservative branch lifecycle, retained-history garbage collection, and copy-and-publish physical compaction.
 
-The current release deliberately does **not** claim the independent branch WAL/recovery protocol, branch deletion lifecycle, garbage collection/compaction, latch-free indexing, epoch-based reclamation, native-memory hot paths, group commit, or SQL. Those remain staged for v0.8+ and v1.5.
+The current release deliberately does **not** claim branch merge/rebase, cross-history transactions, latch-free indexing, epoch-based reclamation, native-memory hot paths, distributed operation, group commit, or SQL. Those remain later-release work.
 
-## v0.7 guarantees
+## v0.9 guarantees
 
 - binary keys use full structural identity and engine-owned bytes;
 - acknowledged durable commits have a recoverable WAL decision before publication;
@@ -14,7 +14,7 @@ The current release deliberately does **not** claim the independent branch WAL/r
 - Snapshot Isolation is explicitly **not** serializable;
 - persistent named snapshots survive restart and keep a fixed historical boundary;
 - retained commit-sequence views are read-only and deterministic;
-- snapshot deletion removes the named root but v0.5 conservatively keeps historical versions;
+- snapshot deletion removes only that persistent root; GC later reclaims history only when no remaining root or active observer requires it;
 - persistent snapshots are represented as generalized history roots and survive restart through `chronicle.history-roots`;
 - interrupted root publication is reconciled deterministically during open;
 - branch creation is metadata-oriented: inherited state remains shared through a fixed historical base rather than being copied;
@@ -22,8 +22,14 @@ The current release deliberately does **not** claim the independent branch WAL/r
 - branch reads distinguish local values, local tombstones, and parent fallback through one resolver;
 - branch snapshots and branch-local historical reads remain stable while Main, siblings, and the branch continue evolving;
 - nested branching is correctness-first and bounded to 16 levels;
+- every writable branch owns an identity-bound WAL and durable branch commits are redone after interrupted physical publication;
+- branch deletion is crash-safe and is rejected while active handles, persistent branch snapshots, or child branches depend on the history;
+- generic time-travel floors are distinct from explicit snapshot/branch roots, allowing per-key historical reclamation instead of one global minimum;
+- GC publishes a complete retained-history checkpoint before rotating WAL or removing managed versions;
+- physical compaction uses copy/fsync/validate/publish rather than destructive in-place rewriting and supports bounded rewrite budgets;
+- lifecycle journals are compacted to canonical active state so bounded create/delete workloads do not leak metadata indefinitely;
 - complete persistent corruption is rejected rather than silently repaired;
-- only proven crash tails are truncated or rebuilt.
+- only proven crash tails or derived state recoverable from authoritative history are repaired.
 
 ## Start here
 
@@ -39,9 +45,16 @@ The current release deliberately does **not** claim the independent branch WAL/r
 - [Isolation contract](docs/architecture/ISOLATION.md)
 - [Recovery](docs/architecture/RECOVERY.md)
 - [Persistent snapshots and time travel](docs/architecture/SNAPSHOTS.md)
-- [History roots and retention](docs/architecture/HISTORY_ROOTS.md)
+- [History model](docs/architecture/HISTORY_MODEL.md)
+- [History roots](docs/architecture/HISTORY_ROOTS.md)
+- [Retention](docs/architecture/RETENTION.md)
 - [Branch semantics](docs/architecture/BRANCHING.md)
 - [Branch storage](docs/architecture/BRANCH_STORAGE.md)
+- [Branch WAL](docs/architecture/BRANCH_WAL.md)
+- [Branch recovery](docs/architecture/BRANCH_RECOVERY.md)
+- [Version GC](docs/architecture/VERSION_GC.md)
+- [Compaction](docs/architecture/COMPACTION.md)
+- [History ownership](docs/architecture/HISTORY_OWNERSHIP.md)
 - [Correctness invariants](docs/architecture/INVARIANTS.md)
 - [Crash harness](docs/architecture/CRASH_HARNESS.md)
 - [Testing methodology](docs/TESTING.md)
@@ -72,7 +85,7 @@ dotnet run --project tools/ChronicleDB.CrashHarness -- run 100
 Run baseline measurements and retain raw JSON:
 
 ```powershell
-dotnet run -c Release --project benchmarks/ChronicleDB.Benchmarks -- 1000 8 .artifacts/benchmarks/v05.json
+dotnet run -c Release --project benchmarks/ChronicleDB.Benchmarks -- 1000 8 .artifacts/benchmarks/v09.json
 ```
 
 The SDK is pinned by `global.json`. Package versions, compiler settings, analyzer policy, artifact paths, and the default unsafe-code prohibition are centralized at the repository root.

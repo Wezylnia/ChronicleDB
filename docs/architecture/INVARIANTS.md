@@ -68,3 +68,27 @@ These invariants are the release contract. Performance work may change implement
 **Branch historical stability.** A branch historical view or persistent branch snapshot resolves the same local boundary and inherited parent base regardless of later writes in Main, siblings, or the branch.
 
 **Committed-prefix integrity (v0.7).** Branch-local physical bytes are considered committed only through the latest durably published branch metadata prefix. Extra append bytes are orphan state and may be truncated; missing bytes inside a published prefix are corruption. This is a v0.7 baseline and is superseded by the independent branch WAL protocol in v0.8.
+
+## v0.8 branch durability invariants
+
+**Branch WAL identity.** Every branch WAL record belongs to exactly the branch/history domain that is recovering it; cross-history replay is rejected.
+
+**Branch durable commit.** Once a branch Commit record has crossed the configured WAL durability barrier, recovery must expose that complete transaction even if physical branch publication was interrupted.
+
+**Branch no-phantom-commit.** A branch transaction without a valid durable Commit record never becomes committed during recovery.
+
+**Branch deletion dependency safety.** A branch may not complete logical deletion while a persistent child or branch snapshot still requires its history.
+
+## v0.9 maintenance invariants
+
+**Retention reachability.** Every value observable by the generic retained range, an explicit root, or an active process observer remains reconstructable after GC.
+
+**Floor monotonicity.** A history's generic retention floor never moves backwards and never advances past current committed history.
+
+**Checkpoint-before-WAL-removal.** WAL history is never discarded before an equivalent retained-history checkpoint is durable.
+
+**GC observational equivalence.** GC changes storage/reclamation state only; every still-valid observer returns the same logical value before and after the pass.
+
+**Compaction observational equivalence.** Compaction may move physical bytes but cannot change Main, branch, snapshot, or retained historical query results.
+
+**Copy-publish safety.** Physical replacement always leaves either the old complete representation, the new complete representation, or a recoverably distinguishable pair; recovery never requires half of each.

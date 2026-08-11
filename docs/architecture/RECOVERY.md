@@ -1,4 +1,4 @@
-# v0.7 recovery
+# v0.9 recovery
 
 Opening a ChronicleDB database is a recovery operation. Application work is not exposed until storage metadata, WAL, current physical state, committed version history, persistent snapshot metadata, and the generalized history-root registry have all been validated and reconstructed.
 
@@ -50,9 +50,9 @@ A snapshot create/delete that was flushed before a process crash is recovered ev
 
 The durable root protocol publishes only complete Active or Deleted outcomes. The in-memory registry may hold Creating or Deleting intents while an operation is in flight; those intents retain history conservatively and are resolved by reopening after an uncertain operation.
 
-## Checkpoint policy
+## Checkpoint evolution
 
-v0.5 does **not** truncate historical WAL through a checkpoint. The WAL is currently the durable input used to reconstruct retained MVCC chains; truncating it without first persisting equivalent historical versions would violate time travel and snapshot stability. Recovery time is benchmarked and recorded. A later checkpoint design must preserve retained history before it can become an optimization.
+v0.5 deliberately did **not** truncate historical WAL because no independent retained-history representation existed yet. v0.9 introduces `chronicle.history`: WAL rotation is permitted only after an equivalent retained MVCC projection has been written, fsynced, re-read successfully, and its capability flag has become durable.
 
 
 ## v0.7 branch reopen baseline
@@ -60,3 +60,19 @@ v0.5 does **not** truncate historical WAL through a checkpoint. The WAL is curre
 An active v0.7 branch is reconstructed from its branch metadata plus branch-private append store. The latest `AdvanceSequence` record identifies the local commit sequence and exact `DataLengthAfterCommit`. A local file shorter than that boundary is corruption. A longer/torn tail is reduced to the published prefix only when its first untrusted byte is not inside that committed prefix; corruption within the published prefix is fatal. Every retained local version envelope must then match a published transaction descriptor and complete mutation index set, and the in-memory MVCC chains are replayed by local commit sequence.
 
 This committed-prefix protocol gives v0.7 deterministic reopen semantics and supports fault-boundary testing, but it is intentionally **not** described as the independent branch WAL protocol. v0.8 adds logically independent branch WAL streams, branch-specific replay, creation/deletion crash matrices, and the final branch durability claim.
+
+## v0.8 branch recovery
+
+Every active branch is recovered only after its parent/base metadata is validated. `branch.wal` is scanned with per-record `BranchId` and `HistoryId` verification. A durable commit absent from the branch physical store is redone; lifecycle metadata may be advanced to match WAL, but may never claim a commit not present in checkpoint/WAL history. Incomplete transactions are ignored. Missing initialized branch WAL or cross-history WAL data is corruption.
+
+Branch delete intents are reconciled before branch runtimes are exposed. A durable delete intent is completed only when no persistent child/snapshot dependency contradicts it.
+
+## v0.9 retained-history checkpoints
+
+`chronicle.history` is a complete checksummed retained MVCC projection for one history domain. Recovery loads it first, then validates/replays only WAL commits newer than its checkpoint sequence. A pre-reset WAL may coexist with a newly published checkpoint after a crash, but that WAL generation must end **exactly** at the checkpoint sequence. A post-reset WAL may contain only commits newer than the checkpoint; one WAL generation may never mix pre-reset and post-reset commits. Transaction identities retained by the checkpoint may not be reused by post-checkpoint WAL transactions.
+
+Main current physical state is byte-for-byte validated against the latest recovered logical MVCC state. Branch physical state is validated against retained checkpoint/WAL versions; unexplained records inside the retained range are fatal, while obsolete pre-floor records may remain until physical compaction.
+
+## Compaction recovery
+
+Compaction uses copy-and-publish. If `.previous` exists without the canonical data file, open restores it. If both generations exist after process interruption, the published canonical replacement is structurally/checksum validated before the previous generation is retired; a torn or structurally corrupt replacement falls back to `.previous`. Main and branch recovery then validate the accepted physical state against authoritative checkpoint/WAL history before the database is exposed.

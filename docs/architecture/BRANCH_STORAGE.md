@@ -54,3 +54,18 @@ The latest durable `AdvanceSequence` descriptor is authoritative for v0.7 branch
 5. the local MVCC version store is rebuilt in local commit order.
 
 This mechanism intentionally provides a conservative v0.7 committed-prefix baseline. It does not replace the independent branch WAL/recovery design scheduled for v0.8.
+
+## v0.8 files and authority
+
+An active branch additionally owns:
+
+- `branch.wal` — identity-bound transaction durability authority;
+- `chronicle.history` after the first v0.9 checkpoint — retained MVCC recovery projection.
+
+The branch-local `chronicle.data` file is derived append-oriented state. It is validated against checkpoint/WAL history and may be redone after a durable commit whose physical publication was interrupted. `AdvanceSequence` no longer decides whether a transaction committed.
+
+The branch metadata journal adds `DeleteIntent`, `DeleteComplete`, `PublishPhysicalBoundary`, and maintenance-only `RestoreActive` records. `RestoreActive` is emitted only when v0.9 compacts lifecycle metadata; it reconstructs canonical active branch state without duplicating transaction history already owned by branch WAL/checkpoint.
+
+## v0.9 physical rewrite
+
+Branch compaction rewrites only retained branch-local version records into a new data file. Inherited parent state remains shared and is never copied into the branch file. Before rewrite, a fresh branch history checkpoint is fsynced and `branch.wal` is rotated so recovery does not depend on obsolete append offsets.

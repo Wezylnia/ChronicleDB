@@ -1,4 +1,4 @@
-# v0.7 testing methodology
+# v0.9 testing methodology
 
 ChronicleDB uses independent validation layers because no single kind of test is sufficient for a storage engine.
 
@@ -43,3 +43,11 @@ Release evidence should preserve failing seeds, raw logs, runtime/OS details, an
 ## v0.7 branch gate
 
 The v0.7 suite must demonstrate that branch creation does not copy the parent data file; local puts/deletes remain private; parent and siblings cannot drift a branch base; local tombstones suppress fallback; branch-local Snapshot Isolation uses a stable `StartSequence`; branch snapshots and historical reads match the reference model; nested lookup is bounded; and reopen accepts only local physical data covered by published branch commit metadata. Full independent branch-WAL crash testing remains a v0.8 gate.
+
+## v0.8/v0.9 validation layers
+
+Branch durability tests cover per-record history identity, incomplete transactions, post-fsync redo, missing initialized WAL, legacy v0.7 WAL bootstrap, deletion dependencies, and interrupted deletion recovery.
+
+Maintenance tests separately cover retained-history checkpoint framing, generic-floor advancement, explicit snapshot/branch-base protection, active-reader pinning, lifecycle-journal compaction, strict compaction budgets, idempotent already-compacted state, and crash windows around checkpoint/WAL rotation and physical publication.
+
+`MaintenanceDifferentialTests` generates Main and sibling-branch histories against `ReferenceBranchingModel`, retains Main and branch snapshots plus recent branch historical views, then compares every observer before maintenance, after GC+compaction, and again after restart. Final-state-only comparison is intentionally insufficient.

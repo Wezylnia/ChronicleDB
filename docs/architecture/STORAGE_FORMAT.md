@@ -1,4 +1,4 @@
-# v0.7 storage format
+# v0.9 storage format
 
 This document describes the byte-level persistent storage owned by `ChronicleDB.Storage`. WAL framing is documented separately.
 
@@ -13,6 +13,8 @@ This document describes the byte-level persistent storage owned by `ChronicleDB.
 | `chronicle.branches` | 64-byte header + variable framed lifecycle/commit-prefix records | branch identity, ancestry, activation, local committed prefix |
 | `branches/<BranchId>/chronicle.data` | page-aligned append-only branch-private version records | branch-local MVCC history |
 | `branches/<BranchId>/chronicle.snapshots` | framed lifecycle records | persistent snapshots inside one branch |
+| `branches/<BranchId>/branch.wal` | common WAL framing + branch/history payload envelope | branch-local durability and recovery |
+| `chronicle.history` / `branches/<BranchId>/chronicle.history` | immutable checksummed retained-history projection | v0.9 checkpoint used before WAL rotation/physical reclamation |
 
 `chronicle.wal` is owned by `ChronicleDB.Wal`.
 
@@ -31,13 +33,13 @@ All encoded lengths are validated before allocation/slicing/file access.
 
 ## Database metadata journal
 
-Each `chronicle.meta` slot is 64 bytes. v1.3 slots use:
+Each `chronicle.meta` slot is 64 bytes. v1.4 slots use:
 
 | Offset | Size | Field |
 | ---: | ---: | --- |
 | 0 | 8 | `CHDBv001` |
 | 8 | 2 | major `1` |
-| 10 | 2 | minor `3` |
+| 10 | 2 | minor `4` |
 | 12 | 4 | slot size `64` |
 | 16 | 16 | database GUID |
 | 32 | 4 | page size |
@@ -47,7 +49,7 @@ Each `chronicle.meta` slot is 64 bytes. v1.3 slots use:
 | 52 | 8 | strictly increasing metadata generation |
 | 60 | 4 | CRC32C of bytes `0..59` |
 
-Capability flags record that WAL, persistent snapshot metadata, the generalized history-root registry, and the branch metadata journal have been durably initialized. Once a flag is present, a later generation may not remove it. This prevents accidental deletion of a critical persistence file from being mistaken for a first-time upgrade.
+Capability flags record that WAL, persistent snapshot metadata, the generalized history-root registry, the branch metadata journal, and retained-history checkpoints have been durably initialized. Once a flag is present, a later generation may not remove it. This prevents accidental deletion of a critical persistence file from being mistaken for a first-time upgrade.
 
 Legacy v1.0 single-slot headers remain readable only with zero flags/reserved bytes. Their in-memory generation is zero; the first capability update appends a v1.1 generation.
 
@@ -109,3 +111,17 @@ outcome is uncertain.
 `chronicle.branches` begins with a checksummed `CHBRN001` header bound to the Main database and Main history identities. Variable records contain redundant header/footer lengths, CRC32C, contiguous event sequence, `BranchId`, child/parent `HistoryId`, base root and parent boundary, local storage identity, local commit sequence, transaction identity, mutation count, committed data length, branch depth, creation time, and UTF-8 name. Complete corrupt frames are fatal; only an incomplete final frame may be truncated.
 
 Each activated branch owns a separate branch-local page store under `branches/<BranchId>/`. Physical keys identify individual local versions rather than logical user keys. The stored `BVR1` envelope carries full user-key bytes, branch/history/transaction identity, local commit sequence, mutation index/count, tombstone state, value bytes, and CRC32C. The parent dataset is not copied into this store. `AdvanceSequence` metadata records define the authoritative page-aligned committed prefix used by v0.7 reopen.
+
+## v0.8 branch WAL envelope
+
+Each branch uses the standard 64-byte WAL file header and standard record framing. The inner record payload is wrapped by a fixed branch envelope that redundantly identifies `BranchId` and `HistoryId`. Recovery verifies these identities before interpreting Begin/Put/Delete/Commit payloads. The branch WAL file name is `branch.wal` and its generic file identity is the branch-local storage GUID.
+
+## v0.9 retained-history checkpoint
+
+`chronicle.history` is a complete immutable file for one history domain. Its checksummed header contains database/storage identity, `HistoryId`, checkpoint sequence, generic retention floor, and version count. Each version record contains transaction identity, commit sequence, full binary key, tombstone/value metadata, explicit lengths, and CRC32C. The entire file must parse exactly; unexplained trailing bytes are corruption.
+
+Publication writes and fsyncs a temporary file, moves the previous checkpoint to `.previous`, publishes the replacement, re-reads it for validation, then retires the previous generation. A checkpoint becomes required only after the `HistoryCheckpointInitialized` database-header capability is durable.
+
+## v0.9 lifecycle journal compaction
+
+Snapshot, history-root, and branch lifecycle journals remain append-only during foreground operation. A GC maintenance pass may atomically rewrite them to canonical active state after all durable history/reclamation decisions for the pass are complete. Incomplete lifecycle states are never silently converted into active roots during compaction.

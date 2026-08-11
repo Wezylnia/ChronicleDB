@@ -44,3 +44,7 @@ Recovery also accepts empty legacy v0.2 Commit payloads and 8-byte sequence-only
 The ChronicleDB facade opens the WAL with `FlushOnAppend = false`, appends the complete transaction, then executes one explicit stable-storage flush after Commit. A successful durable commit is never acknowledged before this barrier.
 
 A WAL instance faults after uncertain append/flush I/O. It cannot be reused; database recovery must reopen and scan the durable prefix/tail. Cleanup deliberately does not issue an extra explicit durability flush on a faulted WAL.
+
+## Branch WAL payload envelope
+
+v0.8 branch WAL files reuse this generic framing but wrap every record payload with a branch envelope containing `BranchId` and `HistoryId`. The generic WAL header is bound to the branch-local storage identity; the envelope additionally prevents a syntactically valid WAL record from being replayed into another branch history. The inner Begin payload is empty, Put/Delete use the normal mutation codecs, and Commit uses the normal commit-sequence/recovery-base codec.

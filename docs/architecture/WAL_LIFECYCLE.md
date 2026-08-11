@@ -23,3 +23,7 @@ If append or explicit flush encounters uncertain I/O, the `WalLog` instance ente
 A faulted `WalLog.Dispose()` deliberately avoids issuing another explicit `Flush(true)` that could be mistaken for the transaction's missing application durability barrier. File-handle cleanup itself is not treated as a successful commit acknowledgement.
 
 The log is not a transaction manager: transaction grouping, commit semantics, recovery bases, MVCC reconstruction, and historical retention belong to higher layers.
+
+## v0.9 checkpoint rotation
+
+A history WAL may be reset only after a complete equivalent retained-history checkpoint has been fsynced and, on first use, the checkpoint capability has been durably published. Reset truncates the WAL back to its header and restarts local LSN allocation. Recovery accepts either checkpoint plus a pre-reset WAL or checkpoint plus the post-reset WAL prefix; commit records at or below the checkpoint sequence are validated but not replayed.

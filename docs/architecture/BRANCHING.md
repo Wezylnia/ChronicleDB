@@ -58,3 +58,13 @@ Nested branches are supported recursively for correctness. A child fixes the com
 - a local tombstone never exposes the inherited parent value;
 - a branch snapshot never drifts after later writes;
 - source snapshot deletion never invalidates a branch that has its own branch-base root.
+
+## v0.8 durability and lifecycle
+
+v0.8 supersedes the v0.7 committed-prefix authority described above. `branch.wal` is now the branch transaction durability authority; `AdvanceSequence` remains a recoverable lifecycle/cache publication used to track local current sequence and physical data boundaries. A branch WAL commit that crossed fsync survives even when subsequent physical publication fails.
+
+Branch deletion is explicit and conservative. Open branch handles, active transactions, historical/snapshot handles, persistent branch snapshots, and child branches block deletion. Delete intent is persisted before the base root is released; crash recovery completes an interrupted deletion deterministically.
+
+## v0.9 retention interaction
+
+Branch bases remain explicit roots even when a parent generic time-travel floor advances beyond the branch point. GC retains exactly the parent versions needed to reconstruct that branch base. Branch-local snapshots similarly pin local historical versions without forcing every intermediate local version to remain alive.
