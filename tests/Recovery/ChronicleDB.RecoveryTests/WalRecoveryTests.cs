@@ -93,6 +93,100 @@ public sealed class WalRecoveryTests
     }
 
     [Fact]
+    public void RecoveryRejectsCommittedWalKeyBeyondConfiguredLogicalLimitBeforePhysicalRedo()
+    {
+        using var directory = new StorageTestDirectory();
+        var options = new ChronicleDB.Storage.StorageOptions
+        {
+            MaxKeySize = 4,
+            MaxValueSize = 32,
+        };
+        using var store = PersistentKeyValueStore.Open(directory.Path, options);
+        var beforeLength = store.DataLength;
+        var transactionId = TransactionId.New();
+        var oversizedKey = new ChronicleDB.Core.Keys.BinaryKey(new byte[5]);
+
+        using var wal = WalLog.Open(
+            directory.Path,
+            store.DatabaseId,
+            new ChronicleDB.Wal.WalOptions { FlushOnAppend = false });
+        wal.Append(WalRecordType.Begin, transactionId, []);
+        wal.Append(WalRecordType.Put, transactionId, WalMutationCodec.EncodePut(oversizedKey, [7]));
+        wal.Append(WalRecordType.Commit, transactionId, []);
+        wal.Flush();
+
+        Assert.Throws<ChronicleDB.Wal.Errors.WalCorruptionException>(() =>
+            ChronicleDB.Recovery.WalRecovery.Reconcile(store, wal));
+        Assert.Equal(beforeLength, store.DataLength);
+        Assert.False(store.TryGet(oversizedKey, out _));
+    }
+
+    [Fact]
+    public void PreResetWalHistoryAtCheckpointIsNotReplayedAgainstCurrentLogicalLimits()
+    {
+        using var directory = new StorageTestDirectory();
+        var options = new ChronicleDB.Storage.StorageOptions
+        {
+            MaxKeySize = 4,
+            MaxValueSize = 32,
+        };
+        using var store = PersistentKeyValueStore.Open(directory.Path, options);
+        var transactionId = TransactionId.New();
+        var obsoleteKey = new ChronicleDB.Core.Keys.BinaryKey(new byte[5]);
+
+        using var wal = WalLog.Open(
+            directory.Path,
+            store.DatabaseId,
+            new ChronicleDB.Wal.WalOptions { FlushOnAppend = false });
+        wal.Append(WalRecordType.Begin, transactionId, []);
+        wal.Append(WalRecordType.Put, transactionId, WalMutationCodec.EncodePut(obsoleteKey, [7]));
+        wal.Append(
+            WalRecordType.Commit,
+            transactionId,
+            WalCommitCodec.Encode(new ChronicleDB.Core.Sequences.CommitSequence(1), 0));
+        wal.Flush();
+
+        var result = ChronicleDB.Recovery.WalRecovery.Reconcile(
+            store,
+            wal,
+            new ChronicleDB.Core.Sequences.CommitSequence(1),
+            new HashSet<TransactionId>());
+
+        Assert.Equal((ulong)1, result.CurrentCommitSequence.Value);
+        Assert.Empty(result.CommittedTransactions);
+        Assert.False(store.TryGet(obsoleteKey, out _));
+    }
+
+    [Fact]
+    public void RecoveryRejectsCommittedWalValueBeyondConfiguredLogicalLimitBeforePhysicalRedo()
+    {
+        using var directory = new StorageTestDirectory();
+        var options = new ChronicleDB.Storage.StorageOptions
+        {
+            MaxKeySize = 8,
+            MaxValueSize = 4,
+        };
+        using var store = PersistentKeyValueStore.Open(directory.Path, options);
+        var beforeLength = store.DataLength;
+        var transactionId = TransactionId.New();
+        var key = new ChronicleDB.Core.Keys.BinaryKey([1]);
+
+        using var wal = WalLog.Open(
+            directory.Path,
+            store.DatabaseId,
+            new ChronicleDB.Wal.WalOptions { FlushOnAppend = false });
+        wal.Append(WalRecordType.Begin, transactionId, []);
+        wal.Append(WalRecordType.Put, transactionId, WalMutationCodec.EncodePut(key, new byte[5]));
+        wal.Append(WalRecordType.Commit, transactionId, []);
+        wal.Flush();
+
+        Assert.Throws<ChronicleDB.Wal.Errors.WalCorruptionException>(() =>
+            ChronicleDB.Recovery.WalRecovery.Reconcile(store, wal));
+        Assert.Equal(beforeLength, store.DataLength);
+        Assert.False(store.TryGet(key, out _));
+    }
+
+    [Fact]
     public void MutationAfterCommitIsRejectedAsMalformedTransaction()
     {
         using var directory = new StorageTestDirectory();

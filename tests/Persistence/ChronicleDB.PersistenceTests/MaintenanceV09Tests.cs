@@ -38,6 +38,147 @@ public sealed class MaintenanceV09Tests
     }
 
     [Fact]
+    public void EmptyBinaryKeySurvivesHistoryCheckpointGarbageCollectionAndRestartInMainAndBranch()
+    {
+        using var directory = new StorageTestDirectory();
+        Guid branchId;
+        using (var database = ChronicleDB.ChronicleDatabase.Open(directory.Path))
+        {
+            database.Put([], [1]);
+            database.Put([], [2]);
+            using var branch = database.CreateBranch("empty-key-gc");
+            branchId = branch.BranchId;
+            branch.Put([], [3]);
+            branch.Put([], [4]);
+
+            _ = database.RunGarbageCollection(new GarbageCollectionOptions
+            {
+                RetainRecentCommits = 1,
+                IncludeBranches = true,
+            });
+
+            Assert.True(database.TryGet([], out var main));
+            Assert.Equal(new byte[] { 2 }, main);
+            Assert.True(branch.TryGet([], out var local));
+            Assert.Equal(new byte[] { 4 }, local);
+        }
+
+        using var reopened = ChronicleDB.ChronicleDatabase.Open(directory.Path);
+        using var recovered = reopened.OpenBranch(branchId);
+        Assert.True(reopened.TryGet([], out var mainAfterRestart));
+        Assert.Equal(new byte[] { 2 }, mainAfterRestart);
+        Assert.True(recovered.TryGet([], out var branchAfterRestart));
+        Assert.Equal(new byte[] { 4 }, branchAfterRestart);
+    }
+
+    [Fact]
+    public void MainCheckpointOutsideConfiguredLogicalLimitsIsRejectedBeforeRecoveryRedo()
+    {
+        using var directory = new StorageTestDirectory();
+        var options = new StorageOptions
+        {
+            MaxKeySize = 4,
+            MaxValueSize = 16,
+        };
+        Guid databaseId;
+        using (var database = ChronicleDB.ChronicleDatabase.Open(directory.Path, options))
+        {
+            database.Put([1], [1]);
+            database.Put([1], [2]);
+            _ = database.RunGarbageCollection(new GarbageCollectionOptions
+            {
+                RetainRecentCommits = 1,
+            });
+            databaseId = database.DatabaseId;
+        }
+
+        var historyId = new ChronicleDB.Core.Identifiers.HistoryId(databaseId);
+        var checkpoint = ChronicleDB.Storage.History.PersistentHistoryCheckpoint.TryLoad(
+            directory.Path,
+            databaseId,
+            historyId);
+        Assert.NotNull(checkpoint);
+        var anchor = checkpoint!.Versions
+            .OrderByDescending(version => version.CommitSequence.Value)
+            .First();
+        var versions = checkpoint.Versions
+            .Append(new ChronicleDB.Storage.History.HistoryCheckpointVersion(
+                anchor.TransactionId,
+                anchor.CommitSequence,
+                new ChronicleDB.Core.Keys.BinaryKey(new byte[5]),
+                false,
+                new byte[] { 9 }))
+            .ToArray();
+        _ = ChronicleDB.Storage.History.PersistentHistoryCheckpoint.Publish(
+            directory.Path,
+            checkpoint with { Versions = versions });
+
+        Assert.Throws<StorageCorruptionException>(() =>
+            ChronicleDB.ChronicleDatabase.Open(directory.Path, options));
+    }
+
+    [Fact]
+    public void BranchCheckpointOutsideConfiguredLogicalLimitsIsRejectedBeforeDerivedStateRecovery()
+    {
+        using var directory = new StorageTestDirectory();
+        var options = new StorageOptions
+        {
+            MaxKeySize = 4,
+            MaxValueSize = 16,
+        };
+        Guid branchId;
+        Guid historyId;
+        using (var database = ChronicleDB.ChronicleDatabase.Open(directory.Path, options))
+        {
+            database.Put([1], [1]);
+            using var branch = database.CreateBranch("checkpoint-limit");
+            branchId = branch.BranchId;
+            historyId = branch.HistoryId;
+            branch.Put([1], [2]);
+            branch.Put([1], [3]);
+            _ = database.RunGarbageCollection(new GarbageCollectionOptions
+            {
+                RetainRecentCommits = 1,
+                IncludeBranches = true,
+            });
+        }
+
+        var branchDirectory = Path.Combine(
+            directory.Path,
+            "branches",
+            branchId.ToString("N"));
+        Guid localStorageId;
+        using (var localStore = ChronicleDB.Storage.Files.PersistentKeyValueStore.Open(branchDirectory))
+        {
+            localStorageId = localStore.DatabaseId;
+        }
+
+        var typedHistoryId = new ChronicleDB.Core.Identifiers.HistoryId(historyId);
+        var checkpoint = ChronicleDB.Storage.History.PersistentHistoryCheckpoint.TryLoad(
+            branchDirectory,
+            localStorageId,
+            typedHistoryId);
+        Assert.NotNull(checkpoint);
+        var anchor = checkpoint!.Versions
+            .OrderByDescending(version => version.CommitSequence.Value)
+            .First();
+        var versions = checkpoint.Versions
+            .Append(new ChronicleDB.Storage.History.HistoryCheckpointVersion(
+                anchor.TransactionId,
+                anchor.CommitSequence,
+                new ChronicleDB.Core.Keys.BinaryKey(new byte[5]),
+                false,
+                new byte[] { 9 }))
+            .ToArray();
+        _ = ChronicleDB.Storage.History.PersistentHistoryCheckpoint.Publish(
+            branchDirectory,
+            checkpoint with { Versions = versions });
+
+        Assert.Throws<StorageCorruptionException>(() =>
+            ChronicleDB.ChronicleDatabase.Open(directory.Path, options));
+    }
+
+    [Fact]
     public void BranchSnapshotAndBranchHistorySurviveGarbageCollectionAndRestart()
     {
         using var directory = new StorageTestDirectory();

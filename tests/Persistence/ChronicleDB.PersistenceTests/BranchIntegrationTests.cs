@@ -330,6 +330,114 @@ public sealed class BranchIntegrationTests
         Assert.Equal(512, inherited.Length);
     }
 
+    [Fact]
+    public void EmptyBinaryKeyCanBeInheritedOverriddenDeletedAndRecoveredInBranches()
+    {
+        using var directory = new StorageTestDirectory();
+        Guid branchAId;
+        Guid branchBId;
+        using (var database = ChronicleDB.ChronicleDatabase.Open(directory.Path))
+        {
+            database.Put([], [1]);
+            using var branchA = database.CreateBranch("empty-key-a");
+            using var branchB = database.CreateBranch("empty-key-b");
+            branchAId = branchA.BranchId;
+            branchBId = branchB.BranchId;
+
+            Assert.True(branchA.TryGet([], out var inherited));
+            Assert.Equal(new byte[] { 1 }, inherited);
+
+            branchA.Put([], [2]);
+            Assert.True(branchA.TryGet([], out var overridden));
+            Assert.Equal(new byte[] { 2 }, overridden);
+            Assert.True(branchB.TryGet([], out var sibling));
+            Assert.Equal(new byte[] { 1 }, sibling);
+            Assert.True(database.TryGet([], out var main));
+            Assert.Equal(new byte[] { 1 }, main);
+
+            Assert.True(branchA.Delete([]));
+            Assert.False(branchA.TryGet([], out _));
+        }
+
+        using var reopened = ChronicleDB.ChronicleDatabase.Open(directory.Path);
+        using var recoveredA = reopened.OpenBranch(branchAId);
+        using var recoveredB = reopened.OpenBranch(branchBId);
+        Assert.False(recoveredA.TryGet([], out _));
+        Assert.True(recoveredB.TryGet([], out var siblingAfterRestart));
+        Assert.Equal(new byte[] { 1 }, siblingAfterRestart);
+        Assert.True(reopened.TryGet([], out var mainAfterRestart));
+        Assert.Equal(new byte[] { 1 }, mainAfterRestart);
+    }
+
+    [Fact]
+    public void BranchWalOutsideConfiguredLogicalLimitsIsRejectedBeforeDerivedStatePublication()
+    {
+        using var directory = new StorageTestDirectory();
+        var options = new ChronicleDB.Storage.StorageOptions
+        {
+            MaxKeySize = 4,
+            MaxValueSize = 16,
+        };
+        Guid branchId;
+        Guid historyId;
+        using (var database = ChronicleDB.ChronicleDatabase.Open(directory.Path, options))
+        {
+            database.Put([1], [1]);
+            using var branch = database.CreateBranch("logical-limit-wal");
+            branchId = branch.BranchId;
+            historyId = branch.HistoryId;
+        }
+
+        var branchDirectory = Path.Combine(
+            directory.Path,
+            "branches",
+            branchId.ToString("N"));
+        Guid localStorageId;
+        long baseDataLength;
+        using (var localStore = ChronicleDB.Storage.Files.PersistentKeyValueStore.Open(branchDirectory))
+        {
+            localStorageId = localStore.DatabaseId;
+            baseDataLength = localStore.DataLength;
+        }
+
+        var typedBranchId = new ChronicleDB.Core.Identifiers.BranchId(branchId);
+        var typedHistoryId = new ChronicleDB.Core.Identifiers.HistoryId(historyId);
+        var transactionId = ChronicleDB.Core.Identifiers.TransactionId.New();
+        using (var wal = ChronicleDB.Wal.Files.WalLog.Open(
+                   branchDirectory,
+                   localStorageId,
+                   new ChronicleDB.Wal.WalOptions
+                   {
+                       FileName = "branch.wal",
+                       FlushOnAppend = false,
+                   }))
+        {
+            byte[] Wrap(ReadOnlySpan<byte> payload)
+                => ChronicleDB.Wal.Branches.BranchWalEnvelopeCodec.Encode(
+                    typedBranchId,
+                    typedHistoryId,
+                    payload);
+
+            wal.Append(ChronicleDB.Wal.Records.WalRecordType.Begin, transactionId, Wrap([]));
+            wal.Append(
+                ChronicleDB.Wal.Records.WalRecordType.Put,
+                transactionId,
+                Wrap(ChronicleDB.Wal.Records.WalMutationCodec.EncodePut(
+                    new ChronicleDB.Core.Keys.BinaryKey(new byte[5]),
+                    [9])));
+            wal.Append(
+                ChronicleDB.Wal.Records.WalRecordType.Commit,
+                transactionId,
+                Wrap(ChronicleDB.Wal.Records.WalCommitCodec.Encode(
+                    new ChronicleDB.Core.Sequences.CommitSequence(1),
+                    baseDataLength)));
+            wal.Flush();
+        }
+
+        Assert.Throws<ChronicleDB.Storage.StorageCorruptionException>(() =>
+            ChronicleDB.ChronicleDatabase.Open(directory.Path, options));
+    }
+
     private static bool TryCommit(ChronicleDB.ChronicleTransaction transaction)
     {
         try

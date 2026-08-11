@@ -265,6 +265,26 @@ public sealed class BranchStoreTests
         Assert.Empty(decodedDelete.Value);
     }
 
+    [Fact]
+    public void BranchVersionEnvelopeRoundTripsEmptyBinaryKey()
+    {
+        var record = new BranchVersionRecord(
+            BranchId.New(),
+            HistoryId.New(),
+            TransactionId.New(),
+            new CommitSequence(1),
+            0,
+            1,
+            [],
+            IsDelete: false,
+            [7]);
+
+        var decoded = BranchVersionRecordCodec.Decode(BranchVersionRecordCodec.Encode(record));
+
+        Assert.Empty(decoded.Key);
+        Assert.Equal(new byte[] { 7 }, decoded.Value);
+    }
+
     private sealed class ThrowingBranchFaultInjector(StorageFaultPoint target) : IStorageFaultInjector
     {
         public void Hit(StorageFaultPoint point, PageId pageId)
