@@ -14,6 +14,10 @@ public sealed class ShadowRetentionPublicationPlanTests
         Assert.Equal(first.SerializeCanonical(), second.SerializeCanonical());
         Assert.Equal(first.ComputeCanonicalSha256(), second.ComputeCanonicalSha256());
         Assert.Equal(3, first.Families.Count);
+        Assert.Equal(4, first.SourceAnchors.Count);
+        Assert.Equal(
+            first.SourceAnchors.Select(anchor => anchor.AnchorId).Order(StringComparer.Ordinal),
+            first.SourceAnchors.Select(anchor => anchor.AnchorId));
         Assert.Contains(first.Families, family => family.IsNegativeControlFamily);
     }
 
@@ -69,9 +73,25 @@ public sealed class ShadowRetentionPublicationPlanTests
         var plan = ShadowRetentionPublicationPlan.CreateDefault();
         var negative = Assert.Single(plan.Families, family => family.IsNegativeControlFamily);
 
+        Assert.Contains(0.001, negative.ShadowFractions);
         Assert.Contains(0.01, negative.ShadowFractions);
         Assert.Contains(0.10, negative.ShadowFractions);
         Assert.Contains(plan.InterpretationRules, rule => rule.Contains("negative controls", StringComparison.Ordinal));
+    }
+
+
+    [Fact]
+    public void SourceAnchorsSeparateObservedEvidenceFromShadowMapping()
+    {
+        var plan = ShadowRetentionPublicationPlan.CreateDefault();
+
+        var decibel = Assert.Single(plan.SourceAnchors, anchor => anchor.AnchorId == "decibel-2016");
+        Assert.Contains("20% updates", decibel.ObservedEvidence, StringComparison.Ordinal);
+        Assert.Contains("not equivalent", decibel.MappingConstraint, StringComparison.Ordinal);
+
+        var matrixOne = Assert.Single(plan.SourceAnchors, anchor => anchor.AnchorId == "matrixone-2026");
+        Assert.Contains("600 million", matrixOne.ObservedEvidence, StringComparison.Ordinal);
+        Assert.Contains("negative-control", matrixOne.CampaignRole, StringComparison.Ordinal);
     }
 
     private sealed class TemporaryDirectory : IDisposable

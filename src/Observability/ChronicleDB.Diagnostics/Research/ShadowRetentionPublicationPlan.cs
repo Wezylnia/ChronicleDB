@@ -11,7 +11,7 @@ namespace ChronicleDB.Diagnostics.Research;
 /// </summary>
 public sealed record ShadowRetentionPublicationPlan
 {
-    public const int CurrentFormatVersion = 1;
+    public const int CurrentFormatVersion = 2;
 
     public required int FormatVersion { get; init; }
 
@@ -20,6 +20,8 @@ public sealed record ShadowRetentionPublicationPlan
     public required string ClaimVersion { get; init; }
 
     public required string LiteratureAnchorVersion { get; init; }
+
+    public required IReadOnlyList<ShadowRetentionLiteratureAnchor> SourceAnchors { get; init; }
 
     public required int ValueBytes { get; init; }
 
@@ -91,6 +93,23 @@ public sealed record ShadowRetentionPublicationPlan
             throw new InvalidOperationException("Pilot/Holdout seed partitions must be disjoint.");
         }
 
+        if (SourceAnchors.Count == 0
+            || SourceAnchors.Select(anchor => anchor.AnchorId).Distinct(StringComparer.Ordinal).Count() != SourceAnchors.Count)
+        {
+            throw new InvalidOperationException("Publication source anchors must be non-empty and uniquely named.");
+        }
+
+        var sortedAnchorIds = SourceAnchors.Select(anchor => anchor.AnchorId).Order(StringComparer.Ordinal).ToArray();
+        if (!SourceAnchors.Select(anchor => anchor.AnchorId).SequenceEqual(sortedAnchorIds, StringComparer.Ordinal))
+        {
+            throw new InvalidOperationException("Publication source anchors must be sorted by AnchorId for canonical ordering.");
+        }
+
+        foreach (var anchor in SourceAnchors)
+        {
+            anchor.Validate();
+        }
+
         if (Families.Count == 0
             || Families.Select(family => family.FamilyId).Distinct(StringComparer.Ordinal).Count() != Families.Count)
         {
@@ -120,7 +139,42 @@ public sealed record ShadowRetentionPublicationPlan
             FormatVersion = CurrentFormatVersion,
             CandidateId = "A1-shadow-retention",
             ClaimVersion = "semantic-shadow-aware-mvcc-projection-v2",
-            LiteratureAnchorVersion = "branchbench-arxiv-2604.17180+helios-zenodo-19242034+cow-clone-attack-2026-08-12",
+            LiteratureAnchorVersion = "a1-source-audit-2026-08-12-v2",
+            SourceAnchors =
+            [
+                new ShadowRetentionLiteratureAnchor
+                {
+                    AnchorId = "branchbench-2026",
+                    Source = "BranchBench (arXiv:2604.17180)",
+                    ObservedEvidence = "Published branch-workload characterization includes wide/flat failure-reproduction, simulation and data-curation patterns plus deep/narrow iterative refinement patterns.",
+                    CampaignRole = "Topology-family anchor.",
+                    MappingConstraint = "Does not establish a universal per-key shadow or tombstone distribution; mutation fractions remain preregistered sensitivity axes.",
+                },
+                new ShadowRetentionLiteratureAnchor
+                {
+                    AnchorId = "decibel-2016",
+                    Source = "Decibel: The Relational Dataset Branching System (PVLDB 2016)",
+                    ObservedEvidence = "Versioning benchmark uses 20% updates / 80% inserts by default, commits every 10,000 insert/update operations per branch, evaluates 10/50-branch settings, and reports a separate 50%-update stress workload over 10 branches.",
+                    CampaignRole = "Moderate/high mutation sensitivity anchor.",
+                    MappingConstraint = "Operation update share is not equivalent to the fraction of distinct inherited keys shadowed; the campaign samples nearby shadow fractions rather than relabeling Decibel's update ratio as shadow coverage.",
+                },
+                new ShadowRetentionLiteratureAnchor
+                {
+                    AnchorId = "matrixone-2026",
+                    Source = "Version Control System for Data with MatrixOne (arXiv:2604.03927)",
+                    ObservedEvidence = "TPC-H 100GB lineitem has about 600 million rows; change sets update 1,000, 10,000, 100,000 and 1,000,000 random rows, and a collaborative experiment uses four clones.",
+                    CampaignRole = "Very-low-divergence negative-control anchor.",
+                    MappingConstraint = "The MatrixOne row-update fractions are much smaller than most A1 sensitivity points and are not claimed to reproduce ChronicleDB branch lifetimes; they require retaining an explicit near-zero-benefit control region.",
+                },
+                new ShadowRetentionLiteratureAnchor
+                {
+                    AnchorId = "orpheusdb-2017",
+                    Source = "ORPHEUSDB: Bolt-on Versioning for Relational Databases (PVLDB 2017)",
+                    ObservedEvidence = "Reuses Decibel SCI/CUR versioning workloads; published configurations scale to 100 or 1,000 branches and up to 10,000/11,000 versions, with 1,000-8,000 insert-or-update changes from parent versions in the listed datasets.",
+                    CampaignRole = "Large version-graph and branch-count anchor.",
+                    MappingConstraint = "Insert-or-update count does not identify distinct-key shadow coverage; it motivates topology/scale coverage, not a direct A1 effect-size claim.",
+                },
+            ],
             ValueBytes = 4096,
             ProjectionKeyCounts = [4096, 16384],
             PhysicalKeyCount = 1024,
@@ -143,25 +197,25 @@ public sealed record ShadowRetentionPublicationPlan
                 },
                 new ShadowRetentionPublicationFamily
                 {
-                    FamilyId = "branchbench-wide-mutation-sensitivity",
-                    LiteratureBasis = "BranchBench failure-reproduction/simulation/data-curation: wide or flat branch sets with write-intensive or bulk update/delete mutations.",
-                    TopologyKind = "staggered-wide",
-                    BranchCountsOrDepths = [4, 8, 16, 32],
-                    ShadowFractions = [0.05, 0.10, 0.25, 0.50, 0.75, 1.00],
-                    TombstoneFractions = [0.00, 0.25, 1.00],
-                    IsNegativeControlFamily = false,
-                    Interpretation = "Topology is source-anchored; shadow/tombstone fractions are preregistered sensitivity axes and must not be described as measured production distributions.",
-                },
-                new ShadowRetentionPublicationFamily
-                {
                     FamilyId = "low-shadow-negative-control",
-                    LiteratureBasis = "A1 benefit-frontier control; deliberately outside the expected high-benefit regime.",
+                    LiteratureBasis = "MatrixOne evaluates 1K-1M random-row updates over ~600M lineitem rows; A1 retains a practical near-zero shadow region plus the existing 5/10% frontier controls rather than hiding low-divergence behavior.",
                     TopologyKind = "staggered-wide",
-                    BranchCountsOrDepths = [1, 8],
-                    ShadowFractions = [0.01, 0.05, 0.10],
+                    BranchCountsOrDepths = [1, 4, 8],
+                    ShadowFractions = [0.001, 0.01, 0.05, 0.10],
                     TombstoneFractions = [0.00],
                     IsNegativeControlFamily = true,
                     Interpretation = "Must be retained even when it weakens aggregate effect size; it prevents universal-benefit framing.",
+                },
+                new ShadowRetentionPublicationFamily
+                {
+                    FamilyId = "published-wide-mutation-sensitivity",
+                    LiteratureBasis = "Decibel supplies 20%-update default and 50%-update stress operation mixes at 10/50-branch scale; OrpheusDB reuses SCI/CUR and scales version graphs to 100/1000 branches; BranchBench supplies wide/flat topology motivation.",
+                    TopologyKind = "staggered-wide",
+                    BranchCountsOrDepths = [4, 8, 10, 16, 32, 50],
+                    ShadowFractions = [0.05, 0.10, 0.20, 0.25, 0.50, 0.75, 1.00],
+                    TombstoneFractions = [0.00, 0.25, 1.00],
+                    IsNegativeControlFamily = false,
+                    Interpretation = "Topology is source-anchored; shadow/tombstone fractions are preregistered sensitivity axes and must not be described as measured production distributions.",
                 },
             ],
             MandatoryCorrectnessGates =
@@ -204,6 +258,30 @@ public sealed record ShadowRetentionPublicationPlan
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         WriteIndented = false,
     };
+}
+
+public sealed record ShadowRetentionLiteratureAnchor
+{
+    public required string AnchorId { get; init; }
+
+    public required string Source { get; init; }
+
+    public required string ObservedEvidence { get; init; }
+
+    public required string CampaignRole { get; init; }
+
+    public required string MappingConstraint { get; init; }
+
+    internal void Validate()
+    {
+        foreach (var value in new[] { AnchorId, Source, ObservedEvidence, CampaignRole, MappingConstraint })
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                throw new InvalidOperationException("Publication source-anchor strings must not be empty.");
+            }
+        }
+    }
 }
 
 public sealed record ShadowRetentionPublicationFamily

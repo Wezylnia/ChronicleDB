@@ -229,16 +229,23 @@ It should be demoted or abandoned if any of the following occurs:
 The publication configuration is now represented by the canonical `ShadowRetentionPublicationPlan` rather than only prose. The runner command `--write-publication-plan` writes an immutable JSON artifact and SHA-256 sidecar. The current default plan hash is:
 
 ```text
-13fecb8806ac7b1eefd13e342d33545bf38f399b4c062c8a2afd94e36f2a1bcd
+f6f92f41efca986a092780244c2a59c5fad491598e3da9123d25fc105b224d86
 ```
 
-The topology axes are anchored in BranchBench's published workload characterization: wide/flat failure-reproduction, simulation and data-curation patterns, and deep/narrow MCTS refinement. ChronicleDB caps the deep family at its legal depth 16. BranchBench does **not** publish a universal per-key shadow/tombstone distribution, so the A1 plan deliberately treats those values as a preregistered sensitivity grid rather than inventing a production distribution.
+The v2 plan seals four source anchors and, crucially, separates what each source actually measured from how ChronicleDB maps it into A1 sensitivity axes:
+
+- **BranchBench (2026)** anchors wide/flat and deep/narrow topology families; it does not establish a universal per-key shadow/tombstone distribution.
+- **Decibel (PVLDB 2016)** uses a default 20% update / 80% insert operation mix, commits every 10,000 insert/update operations per branch, evaluates 10/50-branch settings, and also reports a 50%-update stress workload over 10 branches. Operation update share is **not** treated as unique inherited-key shadow coverage.
+- **ORPHEUSDB (PVLDB 2017)** reuses Decibel's SCI/CUR workload generator and scales published version graphs to 100/1,000 branches and roughly 10K versions. Its insert-or-update counts anchor scale, not A1 shadow percentage.
+- **MatrixOne (2026)** evaluates 1K/10K/100K/1M random-row updates over a ~600M-row TPC-H `lineitem` table and a four-clone collaboration scenario. This anchors an explicit very-low-divergence negative-control region rather than a favorable workload assumption.
 
 The frozen families are:
 
-- `branchbench-wide-mutation-sensitivity`: 4/8/16/32 staggered branch bases, 5/10/25/50/75/100% shadow, 0/25/100% tombstone fractions;
 - `branchbench-deep-refinement-sensitivity`: depth 2/4/8/16, 10/25/50/75/100% shadow, 0/25% tombstones;
-- `low-shadow-negative-control`: 1/8 branches at 1/5/10% overwrite shadow.
+- `low-shadow-negative-control`: 1/4/8 branches at 0.1/1/5/10% overwrite shadow;
+- `published-wide-mutation-sensitivity`: 4/8/10/16/32/50 staggered branch bases, 5/10/20/25/50/75/100% shadow, 0/25/100% tombstone fractions.
+
+The 20% and 50% shadow sensitivity points intentionally sit near Decibel's published operation-mix regimes but are **not** relabeled reproductions: repeated updates, inserts and key reuse make operation share and distinct-key shadow coverage different quantities.
 
 The plan freezes 4 KiB values, projection-scale key counts 4,096 and 16,384, a 1,024-key paired physical tier, three process repetitions, disjoint Pilot/Holdout-A/Holdout-B seed partitions, eight mandatory correctness gates and explicit anti-cherry-picking interpretation rules. Low-shadow controls cannot be removed merely because they weaken the aggregate effect.
 
@@ -276,6 +283,6 @@ A heterogeneous 1,024-key / four-branch smoke with branch profiles `10:0,25:20,5
 
 The A1 tooling now exposes an immutable publication-plan artifact before any publication holdout is opened. The default post-novelty-attack claim identifier is `semantic-shadow-aware-mvcc-projection-v2`; it explicitly incorporates the Helios branch-horizon and COW-clone prior-art attacks and forbids generic COW/reference-counting novelty claims.
 
-The preregistered family structure keeps three distinct regimes: a depth/refinement sensitivity family capped at ChronicleDB's legal depth 16, a wide/staggered mutation sensitivity family, and an explicit 1–10% low-shadow negative-control family. Shadow/tombstone fractions remain sensitivity axes rather than claimed production distributions. Pilot, Holdout-A and Holdout-B seed partitions are disjoint, and interpretation rules forbid retuning after opening Holdout-A or opening Holdout-B merely because A is weak.
+The preregistered family structure keeps three distinct regimes: a depth/refinement sensitivity family capped at ChronicleDB's legal depth 16, a wide/staggered mutation sensitivity family, and an explicit 0.1–10% low-shadow negative-control family. Shadow/tombstone fractions remain sensitivity axes rather than claimed production distributions. Pilot, Holdout-A and Holdout-B seed partitions are disjoint, and interpretation rules forbid retuning after opening Holdout-A or opening Holdout-B merely because A is weak.
 
-A deterministic CLI smoke sealed the default plan twice with the identical SHA-256 `13fecb8806ac7b1eefd13e342d33545bf38f399b4c062c8a2afd94e36f2a1bcd`. This demonstrates the preregistration mechanism; the smoke artifact itself is not publication evidence and does not mean Holdout-A has been opened.
+A deterministic CLI smoke sealed the default plan twice with the identical SHA-256 `f6f92f41efca986a092780244c2a59c5fad491598e3da9123d25fc105b224d86`. This demonstrates the preregistration mechanism; the smoke artifact itself is not publication evidence and does not mean Holdout-A has been opened.
