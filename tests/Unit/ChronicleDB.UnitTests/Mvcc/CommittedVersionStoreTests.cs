@@ -127,6 +127,40 @@ public sealed class CommittedVersionStoreTests
         Assert.Equal(new byte[] { 10 }, latest);
     }
 
+    [Fact]
+    public void ExactProjectionCanRemoveIntermediateHistoryWithoutChangingLatestState()
+    {
+        using var store = new CommittedVersionStore(new SynchronizedVersionIndex());
+        Publish(store, 1, [1], [10]);
+        Publish(store, 2, [1], [20]);
+        Publish(store, 3, [1], [30]);
+
+        var history = store.SnapshotHistory();
+        var projection = history.Where(version => version.CommitSequence.Value is 1 or 3).ToArray();
+        var result = store.CompactHistoryToProjection(projection);
+
+        Assert.Equal(1, result.ReclaimedVersions);
+        Assert.Equal(2, result.RetainedVersions);
+        Assert.True(store.TryReadLatest(new ChronicleDB.Core.Keys.BinaryKey([1]), out var latest));
+        Assert.Equal(new byte[] { 30 }, latest);
+        Assert.True(store.TryRead(new ChronicleDB.Core.Keys.BinaryKey([1]), new CommitSequence(2), out var historical));
+        Assert.Equal(new byte[] { 10 }, historical);
+    }
+
+    [Fact]
+    public void ExactProjectionRejectsRemovalOfLatestVersion()
+    {
+        using var store = new CommittedVersionStore(new SynchronizedVersionIndex());
+        Publish(store, 1, [1], [10]);
+        Publish(store, 2, [1], [20]);
+
+        var projection = store.SnapshotHistory()
+            .Where(version => version.CommitSequence.Value == 1)
+            .ToArray();
+
+        Assert.Throws<ArgumentException>(() => store.CompactHistoryToProjection(projection));
+    }
+
     private static void Publish(
         CommittedVersionStore store,
         ulong sequence,

@@ -329,42 +329,75 @@ public sealed class CommittedVersionStore : IDisposable
         _gate.EnterWriteLock();
         try
         {
-            var keep = SelectRetainedHandles(retentionFloor, pinnedBoundaries);
-            var before = _versions.Count;
-            var all = _versions.Values.ToArray();
-            foreach (var version in all)
+            return CompactToHandles(SelectRetainedHandles(retentionFloor, pinnedBoundaries));
+        }
+        finally
+        {
+            _gate.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Applies an exact retained projection that was computed by a higher-level
+    /// research/protocol layer. The projection must be a byte-for-byte subset of
+    /// this store's current immutable history and must retain every key's latest
+    /// version so current-state semantics and index heads cannot change.
+    /// </summary>
+    public HistoryCompactionResult CompactHistoryToProjection(
+        IReadOnlyCollection<CommittedVersionSnapshot> retainedProjection)
+    {
+        ArgumentNullException.ThrowIfNull(retainedProjection);
+
+        _gate.EnterWriteLock();
+        try
+        {
+            var currentByIdentity = _versions.Values.ToDictionary(
+                version => new VersionIdentity(
+                    version.CreatorTransaction,
+                    version.Metadata.CommitSequence,
+                    version.Key));
+            var requested = new Dictionary<VersionIdentity, CommittedVersionSnapshot>();
+            foreach (var snapshot in retainedProjection)
             {
-                if (!keep.Contains(version.Handle))
+                ArgumentNullException.ThrowIfNull(snapshot);
+                var identity = new VersionIdentity(snapshot.TransactionId, snapshot.CommitSequence, snapshot.Key);
+                if (!requested.TryAdd(identity, snapshot))
                 {
-                    _versions.Remove(version.Handle);
+                    throw new ArgumentException(
+                        "An exact retained projection cannot contain one logical version twice.",
+                        nameof(retainedProjection));
+                }
+
+                if (!currentByIdentity.TryGetValue(identity, out var current)
+                    || current.Metadata.IsTombstone != snapshot.IsDelete
+                    || !current.Value.AsSpan().SequenceEqual(snapshot.Value.Span))
+                {
+                    throw new ArgumentException(
+                        "The exact retained projection contains a version that is not identical to current history.",
+                        nameof(retainedProjection));
                 }
             }
 
-            _maximumChainLength = 0;
-            foreach (var group in _versions.Values.GroupBy(version => version.Key).ToArray())
+            foreach (var group in _versions.Values.GroupBy(version => version.Key))
             {
-                var ordered = group.OrderBy(version => version.Metadata.CommitSequence.Value).ToArray();
-                var previous = VersionHandle.Invalid;
-                var chainLength = 0;
-                foreach (var version in ordered)
+                var latest = group.MaxBy(version => version.Metadata.CommitSequence.Value)!;
+                var latestIdentity = new VersionIdentity(
+                    latest.CreatorTransaction,
+                    latest.Metadata.CommitSequence,
+                    latest.Key);
+                if (!requested.ContainsKey(latestIdentity))
                 {
-                    chainLength = checked(chainLength + 1);
-                    _versions[version.Handle] = version with
-                    {
-                        Previous = previous,
-                        ChainLength = chainLength,
-                    };
-                    previous = version.Handle;
-                }
-
-                if (ordered.Length != 0)
-                {
-                    _index.Publish(group.Key, ordered[^1].Handle);
-                    _maximumChainLength = Math.Max(_maximumChainLength, chainLength);
+                    throw new ArgumentException(
+                        "An exact retained projection must preserve every key's latest logical version.",
+                        nameof(retainedProjection));
                 }
             }
 
-            return new HistoryCompactionResult(before - _versions.Count, _versions.Count);
+            var keep = currentByIdentity
+                .Where(pair => requested.ContainsKey(pair.Key))
+                .Select(pair => pair.Value.Handle)
+                .ToHashSet();
+            return CompactToHandles(keep);
         }
         finally
         {
@@ -387,6 +420,45 @@ public sealed class CommittedVersionStore : IDisposable
         {
             _gate.ExitReadLock();
         }
+    }
+
+    private HistoryCompactionResult CompactToHandles(HashSet<VersionHandle> keep)
+    {
+        var before = _versions.Count;
+        var all = _versions.Values.ToArray();
+        foreach (var version in all)
+        {
+            if (!keep.Contains(version.Handle))
+            {
+                _versions.Remove(version.Handle);
+            }
+        }
+
+        _maximumChainLength = 0;
+        foreach (var group in _versions.Values.GroupBy(version => version.Key).ToArray())
+        {
+            var ordered = group.OrderBy(version => version.Metadata.CommitSequence.Value).ToArray();
+            var previous = VersionHandle.Invalid;
+            var chainLength = 0;
+            foreach (var version in ordered)
+            {
+                chainLength = checked(chainLength + 1);
+                _versions[version.Handle] = version with
+                {
+                    Previous = previous,
+                    ChainLength = chainLength,
+                };
+                previous = version.Handle;
+            }
+
+            if (ordered.Length != 0)
+            {
+                _index.Publish(group.Key, ordered[^1].Handle);
+                _maximumChainLength = Math.Max(_maximumChainLength, chainLength);
+            }
+        }
+
+        return new HistoryCompactionResult(before - _versions.Count, _versions.Count);
     }
 
     private HashSet<VersionHandle> SelectRetainedHandles(
@@ -601,6 +673,10 @@ public sealed class CommittedVersionStore : IDisposable
         VersionHandle Previous,
         byte[] Value,
         int ChainLength);
+    private readonly record struct VersionIdentity(
+        TransactionId TransactionId,
+        CommitSequence CommitSequence,
+        BinaryKey Key);
 }
 
 public readonly record struct CommittedVersionStoreStatistics(
