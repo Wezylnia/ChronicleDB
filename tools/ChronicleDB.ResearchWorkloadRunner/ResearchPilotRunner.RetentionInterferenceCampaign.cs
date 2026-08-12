@@ -55,17 +55,16 @@ internal static partial class ResearchPilotRunner
                 }
             }
 
-            var shuffleHash = new HashCode();
-            shuffleHash.Add(seedStart);
-            shuffleHash.Add(seedCount);
-            shuffleHash.Add(repetitions);
-            shuffleHash.Add(baseKeyCount);
-            shuffleHash.Add(valueBytes);
-            shuffleHash.Add(churnRounds);
-            shuffleHash.Add(hotKeyCount);
-            shuffleHash.Add(privateBytes);
-            shuffleHash.Add(readBudget);
-            var shuffle = new Random(shuffleHash.ToHashCode());
+            var shuffle = new Random(StableCampaignShuffleSeed(
+                seedStart,
+                seedCount,
+                repetitions,
+                baseKeyCount,
+                valueBytes,
+                churnRounds,
+                hotKeyCount,
+                privateBytes,
+                readBudget));
             for (var index = trials.Count - 1; index > 0; index--)
             {
                 var other = shuffle.Next(index + 1);
@@ -241,6 +240,28 @@ internal static partial class ResearchPilotRunner
         return sorted.Length % 2 == 0
             ? (sorted[middle - 1] + sorted[middle]) / 2d
             : sorted[middle];
+    }
+
+    private static int StableCampaignShuffleSeed(params int[] values)
+    {
+        // System.HashCode intentionally uses a process-randomized seed and therefore
+        // cannot define publication trial order. This simple FNV-1a fold is stable
+        // across processes/runtimes for the same integer campaign configuration.
+        unchecked
+        {
+            var hash = 2166136261u;
+            foreach (var value in values)
+            {
+                var bits = (uint)value;
+                for (var shift = 0; shift < 32; shift += 8)
+                {
+                    hash ^= (byte)(bits >> shift);
+                    hash *= 16777619u;
+                }
+            }
+
+            return (int)(hash & 0x7fff_ffffu);
+        }
     }
 
     private sealed record ChildProcessResult(int ExitCode, string StandardOutput, string StandardError);
