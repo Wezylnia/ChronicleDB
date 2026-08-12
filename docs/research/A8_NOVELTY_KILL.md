@@ -357,3 +357,91 @@ Hard O3 gates:
 7. **No production integration until the bounded model and mutants pass.**
 
 Kill A8 if O3 collapses to a generic journal-redaction protocol once O1's observer semantics are removed, if preserving non-target semantics requires whole-snapshot/whole-branch destruction, or if crash-safe acknowledgement adds no property beyond the reviewed redaction/snapshot-recovery prior art.
+
+## 13. A8-O3 bounded authority-model result
+
+The first A8-O3 implementation remains research-only. It does not add a production erasure API, alter public read semantics, or publish a durable redaction record in ChronicleDB.
+
+Two pieces were implemented:
+
+1. `ObserverScopedErasureAuthorityModel` — a bounded executable state machine for authorization, authority publication, recovery, checkpoint/WAL/physical rewrite, scan completeness, crash and acknowledgement;
+2. `ObserverScopedErasureAuthorityDescriptorCompiler` — the semantic bridge from an O2 force plan to an exact, canonical authority descriptor containing the concrete MVCC observer witnesses to revoke, observers that must quiesce, current histories that require deletion, preserved non-value target observations, and representation IDs to rewrite/reclaim.
+
+The descriptor is intentionally more specific than a generic redaction-log entry. A revocation binds:
+
+- observer identity and kind;
+- observing history and boundary;
+- exact resolved version identity;
+- exact resolved history and sequence;
+- parent-fallback hop count.
+
+For a nested inherited snapshot, the descriptor therefore records the child snapshot observer while binding the reconstructed value to the ancestor history that actually supplies it. `BranchBase` remains an ancestry edge rather than becoming an unconditional erasure authority target.
+
+### 13.1 Bounded protocol result
+
+The safe O3 model saturates by exploration depth 8:
+
+- **42 unique states**;
+- **91 transitions**;
+- **0 safe-model invariant violations** at depths 8, 10 and 12.
+
+The checked invariants include:
+
+- durable authority implies a revoked value cannot be served once the history is Ready;
+- rewrite cannot precede durable observer-scoped authority;
+- acknowledgement requires durable authority, complete physical scan and no remaining modeled target representation;
+- non-target observations remain stable;
+- target observations that did not reconstruct the erased value remain stable;
+- a durable authority must match the exact O1/O2 observer scope rather than a generic redaction scope.
+
+Six deliberate mutants are all rejected:
+
+1. recovery ignores the durable authority;
+2. acknowledgement occurs before representation closure;
+3. physical/recovery rewrite occurs before authority publication;
+4. authority revokes an unrelated observation;
+5. authority revokes a non-blocking target observation;
+6. a generic redaction scope is published instead of the exact observer scope.
+
+Targeted O3 tests: **11/11 PASS** after adding the exact-scope descriptor/compiler layer.
+
+### 13.2 Important interpretation
+
+The first state-machine skeleton by itself was intentionally judged insufficient: without O1/O2 witness binding it collapses to a generic journal-redaction protocol and therefore fails A8's own novelty kill condition after Amazon US10866865B1.
+
+The descriptor/compiler layer is what keeps the remaining hypothesis distinct. The protocol contribution, if it survives further testing, must be phrased as:
+
+> deriving a durable revocation authority from the minimum key-specific set of legal MVCC branch observers that actually reconstruct the target value, while preserving non-blocking observations and delaying physical-erasure acknowledgement until recovery and representation closure are complete.
+
+This remains a hypothesis. The bounded model does not prove that the descriptor can be durably integrated into ChronicleDB without unacceptable complexity or hidden semantic breakage.
+
+## 14. Score after A8-O3 bounded falsification
+
+This score is research priority/readiness, not acceptance probability.
+
+| Dimension | Score |
+|---|---:|
+| Novelty | 16/20 |
+| Importance | 15/15 |
+| Prior-art defensibility | 16/20 |
+| Experimental evidence | 19/20 |
+| ChronicleDB fit | 14/15 |
+| Readiness | 8/10 |
+| **Total** | **88/100** |
+
+The score rises only modestly from 86. O3 strengthened the evidence and showed that an exact observer scope can be made non-vacuous, but the broad durable-redaction mechanism remains established prior art and no production-grade durable authority/recovery integration exists yet.
+
+## 15. Next gate after O3 model
+
+**GO — to a research-only durable-authority prototype, still not production `ForceErasure`.**
+
+The next prototype must persist the canonical OSEA descriptor using its own experimental authority file/record and prove, with child-process crash injection, that:
+
+1. a published authority survives reopen with the same canonical hash;
+2. a recovery/read adapter consults the authority before returning a revoked target observation;
+3. stale target bytes may remain before cleanup but are not confused with successful physical erasure;
+4. acknowledgement cannot be emitted until a fresh fail-closed representation scan proves closure;
+5. corruption or truncation of the authority representation fails closed;
+6. non-target and preserved target observations remain byte-identical before/after authority publication and after reopen.
+
+The prototype must remain isolated from the default v1.0 public path. Production integration is forbidden until these gates pass and the true-main integration problem is separately resolved.
