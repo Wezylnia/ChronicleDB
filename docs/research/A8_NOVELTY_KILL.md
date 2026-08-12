@@ -134,6 +134,8 @@ Consequences:
 
 A second semantic gap is the **generic time-travel contract**. ChronicleDB v1.0 explicitly supports ordinary historical reads for every boundary from a history's retention floor through its current sequence. Those boundaries are legal observer contracts even when no persistent snapshot or process-local active root exists. Current P6 blocker classification is root-centric and therefore does not by itself prove that a requested erasure preserves the generic retained time-travel range. For a target key, A8-O1 must enumerate the semantically distinct target-key visibility boundaries in that range (floor/current plus target-key version boundaries) and treat any value-reading observer as a blocker. A force operation that wants to remove such a value would have to explicitly change/advance that public retention contract rather than silently erase beneath it.
 
+A third gap is **process-local active historical observers**. `CaptureResearchRetentionSnapshot()` exposes active transaction/historical boundaries explicitly, but the current P6 erasure capture is driven by the durable history-root registry and does not independently enumerate those active boundaries. A8-O1 must therefore treat active boundaries as direct observer contracts and differential-test them against open historical handles.
+
 ## 5. Required next falsification prototype
 
 ### A8-O1 — Observer-Exact Erasure Oracle
