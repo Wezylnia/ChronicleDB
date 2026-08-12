@@ -3,7 +3,7 @@
 Status date: 2026-08-12  
 Candidate: A2  
 Working title: **Boundary-Stable Ancestry Routing for Branchable MVCC Stores**  
-Disposition: **NARROW / CHALLENGER, not primary**
+Disposition: **WEAKENED / HOLD as standalone paper**
 
 ## 1. Research question
 
@@ -33,6 +33,7 @@ The following claims MUST NOT be made.
 | **Neon PageServer** | **Yes** | **Very close** | Partly | Novelty of fixed-boundary ancestor fallback | Official storage design describes recursive ancestor fallback at `ancestor_lsn`; targeted review did not identify a per-key resolved-ancestor route equivalent to P3B |
 | **Linux OverlayFS** | **Yes** | Partly | **Very close** | Generic memoized layered lookup, shadow/whiteout novelty | Lower-layer mutation while mounted is unsupported/undefined; no MVCC historical boundary or version visibility contract |
 | **VHD/VHDX differencing disks** | Yes | Partly | Close | Parent-chain read-amplification novelty | Block-level parent identity/chain, not writable-history MVCC at frozen per-edge commit boundaries |
+| **Oracle consistent-read clone-time patent family (priority 2001)** | **Yes** | **Close** | Close | Novelty of "fixed clone boundary avoids invalidation when current version advances" | Selects usable cached data-item versions for snapshot queries; does not describe ChronicleDB's per-key nested-history route cache |
 | **qcow2 backing chains** | Yes | Partly | Close | Backing-chain fallback novelty | Block-image semantics, not MVCC branch visibility or logical version identity |
 | **Decibel** | Yes | Partly | Close design space | Lineage traversal + branch indexing novelty | Relational fragment/bitmap representations rather than per-key fixed-boundary MVCC route cache |
 | **TardisDB** | Partly | Close | Partly | Branch-aware MVCC visibility novelty | Branch bitmap + version chain; not the same derived route-to-resolved-history mechanism |
@@ -73,7 +74,20 @@ A targeted review of the official storage documentation and code search did not 
 
 Primary source: https://github.com/neondatabase/neon/blob/main/docs/pageserver-storage.md
 
-## 6. VHDX/qcow2 make chain lookup non-novel
+
+## 6. Oracle clone-time prior art closes the invalidation-free-boundary idea
+
+A further targeted patent search found Oracle's *Consistent read in a distributed database environment* family (priority 2001). It explicitly models a current data-item version plus clones, including clones made from other clones. A `CLONE-TIME` records when the clone branch was separated from the current version. The patent explains that broadcasting invalidation to all clones whenever the current version changes is impractical, and instead combines clone time / query snapshot information to determine whether a cached version can satisfy a query.
+
+This is not the same data structure as P3B: it chooses usable cached data-item versions in a distributed database rather than memoizing the resolved history/boundary for a key in a nested branch tree. However, it is close enough to kill a stronger A2 story that would claim:
+
+> "a historical branch boundary makes cached routing stable even while the ancestor continues to mutate, avoiding ancestor-update invalidations."
+
+That semantic observation is now prior art. ChronicleDB can only claim the narrower engineering combination of per-key branch fallback, MVCC value/tombstone/no-visible-version resolution, logical history/boundary route identity, and compaction/reopen-safe derived state.
+
+Primary/patent record: https://patents.google.com/patent/EP1402414B1/en
+
+## 7. VHDX/qcow2 make chain lookup non-novel
 
 Microsoft's VHDX specification defines differencing disks where reads start at the latest child and walk toward the parent if needed. Parent identity is explicitly checked through linkage metadata. QEMU qcow2 similarly reads unallocated clusters from a backing file and permits backing-file chains.
 
@@ -84,7 +98,7 @@ Primary sources:
 - https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-vhdx/b6332a98-624d-46b8-bd0e-b77b573662f9
 - https://www.qemu.org/docs/master/interop/qcow2.html
 
-## 7. Surviving A2 claim
+## 8. Surviving A2 claim
 
 The broad "online ancestry acceleration" claim is weakened. The strongest surviving formulation is:
 
@@ -106,7 +120,7 @@ A defensible A2 mechanism must demonstrate all of the following together:
 8. **Mutation invalidation:** a local key mutation invalidates any route whose leaf-local shadow status changed.
 9. **Negative lookup soundness:** a cached negative result must remain valid under the same fixed-boundary visibility proof.
 
-## 8. What current P3B proves — and what it does not
+## 9. What current P3B proves — and what it does not
 
 Current P3B/P3BR already has valuable evidence:
 
@@ -121,7 +135,7 @@ Current P3B/P3BR already has valuable evidence:
 
 But current P3B is still closest to **simple per-key memoization**. Given OverlayFS and related layered-storage prior art, that implementation is not a strong enough centerpiece for a paper whose main claim is a new routing algorithm.
 
-## 9. Required baselines if A2 continues
+## 10. Required baselines if A2 continues
 
 Do not compare only against recursive ancestry. At minimum:
 
@@ -148,7 +162,7 @@ Measurements must include:
 - mean/P95/P99;
 - a low-depth/low-reuse negative region.
 
-## 10. Kill condition for the narrowed candidate
+## 11. Kill condition for the narrowed candidate
 
 A2 should be retired as a standalone paper if any of the following occurs:
 
@@ -157,31 +171,33 @@ A2 should be retired as a standalone paper if any of the following occurs:
 3. benefit disappears outside deep/high-reuse synthetic cases; or
 4. the only surviving difference from OverlayFS/Neon is terminology rather than a distinct validity/invalidation/compaction obligation.
 
-## 11. Current score
+## 12. Current score
 
 These are research-priority/readiness scores, not acceptance probabilities.
 
 | Dimension | Score |
 |---|---:|
-| Novelty | **15/20** |
+| Novelty | **13/20** |
 | Importance | **14/15** |
-| Prior-art defensibility | **15/20** |
+| Prior-art defensibility | **13/20** |
 | Experimental evidence | **18/20** |
 | ChronicleDB fit | **14/15** |
 | Publication readiness | **8/10** |
-| **Total** | **84/100** |
+| **Total** | **80/100** |
 
-Previous working score was about 89/100. The reduction is deliberate: BranchBench strengthens the problem, but OverlayFS/VHDX/qcow2 and Neon substantially weaken ownership of the mechanism.
+Previous working score was about 89/100 and the first cross-domain kill pass reduced it to 84/100. The additional Oracle clone-time prior art reduces it to **80/100**: BranchBench strengthens the problem, but OverlayFS/VHDX/qcow2, Neon, and historical database clone-time work substantially weaken ownership of both the mechanism and its boundary-stability rationale.
 
-## 12. Decision
+## 13. Decision
 
-**NARROW, do not kill yet.**
+**WEAKENED / HOLD. Do not invest in a new A2 mechanism yet.**
 
-A2 remains technically useful and scientifically interesting, but it is no longer the strongest immediate paper candidate. Current P3B should be treated as a strong **memoization baseline**. Further implementation is justified only if we prototype a mechanism whose contribution is specifically the MVCC-boundary validity/summary problem and which beats simple memoization on a preregistered Pareto matrix.
+A2 remains technically useful and the P3B result should be preserved, but the present mechanism is no longer strong enough to justify additional implementation effort as a standalone paper candidate. Current P3B should be treated as a strong **memoization baseline / engineering result**, not the proposed novel algorithm.
 
-Until that stronger mechanism exists, A2 ranks below A1 and likely below A8 on novelty defensibility.
+Do not search for novelty by merely combining Bloom filters, binary lifting, range summaries, or invalidation-free fixed-boundary caching; all of those components are now surrounded by strong prior art. A2 should only be reopened if a materially different MVCC-specific mechanism is identified before implementation.
 
-## 13. Sources used in this kill pass
+For the current A1/A2/A8 portfolio, A2 now ranks below A1 and A8. The next active novelty effort should move to **A8** rather than spending engineering effort trying to rescue A2.
+
+## 14. Sources used in this kill pass
 
 Repository full texts:
 
@@ -205,4 +221,5 @@ External primary/official sources checked in the final pass:
 - ORPHEUSDB publication page: https://www.microsoft.com/en-us/research/publication/orpheusdb-bolt-on-versioning-for-relational-databases/
 - Principles of Dataset Versioning: https://arxiv.org/abs/1505.05211
 - TardisDB publication record: https://portal.fis.tum.de/en/publications/tardisdb-extending-sql-to-support-versioning/
+- Oracle consistent-read clone-time patent family: https://patents.google.com/patent/EP1402414B1/en
 
