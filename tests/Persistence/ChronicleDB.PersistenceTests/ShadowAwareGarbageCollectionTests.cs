@@ -88,6 +88,86 @@ public sealed class ShadowAwareGarbageCollectionTests
     }
 
     [Fact]
+    public void PartialFloorAdvanceReleasesOnlyAfterShadowCommitBecomesFloorVisible()
+    {
+        using var beforeDirectory = new StorageTestDirectory();
+        using (var database = ChronicleDatabase.Open(beforeDirectory.Path))
+        {
+            database.Put([1], [10]);
+            using var branch = database.CreateBranch("retain-shadow-before-floor");
+            branch.Put([1], [20]);
+            branch.Put([2], [21]);
+            branch.Put([3], [22]);
+            database.Put([1], [30]);
+            database.Put([4], [40]);
+            database.Put([5], [50]);
+
+            var result = database.RunShadowAwareGarbageCollection(new GarbageCollectionOptions
+            {
+                RetainRecentCommits = 3,
+            });
+
+            Assert.Equal(0, result.ShadowReleasedPayloadBytes);
+            Assert.True(branch.TryGet([1], out var current));
+            Assert.Equal(new byte[] { 20 }, current);
+        }
+
+        using var afterDirectory = new StorageTestDirectory();
+        using (var database = ChronicleDatabase.Open(afterDirectory.Path))
+        {
+            database.Put([1], [10]);
+            using var branch = database.CreateBranch("retain-shadow-at-floor");
+            branch.Put([1], [20]);
+            branch.Put([2], [21]);
+            branch.Put([3], [22]);
+            database.Put([1], [30]);
+            database.Put([4], [40]);
+            database.Put([5], [50]);
+
+            var result = database.RunShadowAwareGarbageCollection(new GarbageCollectionOptions
+            {
+                RetainRecentCommits = 2,
+            });
+
+            Assert.Equal(1, result.ShadowReleasedPayloadBytes);
+            Assert.True(branch.TryGet([1], out var current));
+            Assert.Equal(new byte[] { 20 }, current);
+        }
+    }
+
+    [Fact]
+    public void ActivePreShadowHistoricalViewPreventsParentReleaseUntilDisposed()
+    {
+        using var directory = new StorageTestDirectory();
+        using var database = ChronicleDatabase.Open(directory.Path);
+        database.Put([1], [10]);
+        using var branch = database.CreateBranch("active-pre-shadow");
+        using var historical = branch.OpenHistoricalView(branch.CurrentSequence);
+        branch.Put([1], [20]);
+        database.Put([1], [30]);
+
+        var protectedResult = database.RunShadowAwareGarbageCollection(new GarbageCollectionOptions
+        {
+            RetainRecentCommits = 0,
+        });
+
+        Assert.Equal(0, protectedResult.ShadowReleasedPayloadBytes);
+        Assert.True(historical.TryGet([1], out var oldValue));
+        Assert.Equal(new byte[] { 10 }, oldValue);
+        Assert.True(branch.TryGet([1], out var current));
+        Assert.Equal(new byte[] { 20 }, current);
+
+        historical.Dispose();
+        var afterDispose = database.RunShadowAwareGarbageCollection(new GarbageCollectionOptions
+        {
+            RetainRecentCommits = 0,
+        });
+        Assert.Equal(1, afterDispose.ShadowReleasedPayloadBytes);
+        Assert.True(branch.TryGet([1], out var afterRelease));
+        Assert.Equal(new byte[] { 20 }, afterRelease);
+    }
+
+    [Fact]
     public void NestedProjectionPublishesDescendantsBeforeAncestorsAndSurvivesRestart()
     {
         using var directory = new StorageTestDirectory();

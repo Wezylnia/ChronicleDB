@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Buffers.Binary;
 using System.Text.Json;
 using ChronicleDB;
@@ -25,59 +26,63 @@ var physicalCases = new List<PhysicalCaseResult>();
 var mixedCases = new List<MixedCaseResult>();
 var ordinal = 0;
 
-foreach (var fraction in fractions)
+if (!options.PhysicalOnly)
 {
-    foreach (var mode in modes)
-    {
-        foreach (var snapshotMode in snapshots)
-        {
-            ordinal++;
-            var caseDirectory = Path.Combine(options.OutputDirectory, $"case-{ordinal:D2}");
-            cases.Add(RunCase(options, fraction, mode, snapshotMode, caseDirectory));
-        }
-    }
-}
-
-var fanoutOrdinal = 0;
-foreach (var branchCount in new[] { 1, 2, 4, 8 })
-{
-    foreach (var fraction in new[] { 25, 50, 75, 100 })
+    foreach (var fraction in fractions)
     {
         foreach (var mode in modes)
         {
-            fanoutOrdinal++;
-            var caseDirectory = Path.Combine(options.OutputDirectory, $"fanout-{fanoutOrdinal:D2}");
-            fanoutCases.Add(RunStaggeredFanoutCase(options, branchCount, fraction, mode, caseDirectory));
+            foreach (var snapshotMode in snapshots)
+            {
+                ordinal++;
+                var caseDirectory = Path.Combine(options.OutputDirectory, $"case-{ordinal:D2}");
+                cases.Add(RunCase(options, fraction, mode, snapshotMode, caseDirectory));
+            }
         }
     }
-}
 
-foreach (var depth in new[] { 1, 2, 4, 8, 16 })
-{
-    foreach (var fraction in new[] { 50, 100 })
+    var fanoutOrdinal = 0;
+    foreach (var branchCount in new[] { 1, 2, 4, 8 })
     {
-        var caseDirectory = Path.Combine(options.OutputDirectory, $"nested-d{depth:D2}-s{fraction:D3}");
-        nestedCases.Add(RunNestedCase(options, depth, fraction, caseDirectory));
-    }
-}
-
-foreach (var seed in new[] { 17, 53 })
-{
-    foreach (var branchCount in new[] { 4, 8 })
-    {
-        foreach (var fraction in new[] { 25, 50, 75 })
+        foreach (var fraction in new[] { 25, 50, 75, 100 })
         {
-            var caseDirectory = Path.Combine(
-                options.OutputDirectory,
-                $"mixed-seed{seed}-b{branchCount:D2}-s{fraction:D3}");
-            mixedCases.Add(RunMixedFanoutCase(
-                options,
-                seed,
-                branchCount,
-                fraction,
-                caseDirectory));
+            foreach (var mode in modes)
+            {
+                fanoutOrdinal++;
+                var caseDirectory = Path.Combine(options.OutputDirectory, $"fanout-{fanoutOrdinal:D2}");
+                fanoutCases.Add(RunStaggeredFanoutCase(options, branchCount, fraction, mode, caseDirectory));
+            }
         }
     }
+
+    foreach (var depth in new[] { 1, 2, 4, 8, 16 })
+    {
+        foreach (var fraction in new[] { 50, 100 })
+        {
+            var caseDirectory = Path.Combine(options.OutputDirectory, $"nested-d{depth:D2}-s{fraction:D3}");
+            nestedCases.Add(RunNestedCase(options, depth, fraction, caseDirectory));
+        }
+    }
+
+    foreach (var seed in new[] { 17, 53 })
+    {
+        foreach (var branchCount in new[] { 4, 8 })
+        {
+            foreach (var fraction in new[] { 25, 50, 75 })
+            {
+                var caseDirectory = Path.Combine(
+                    options.OutputDirectory,
+                    $"mixed-seed{seed}-b{branchCount:D2}-s{fraction:D3}");
+                mixedCases.Add(RunMixedFanoutCase(
+                    options,
+                    seed,
+                    branchCount,
+                    fraction,
+                    caseDirectory));
+            }
+        }
+    }
+
 }
 
 if (options.RunPhysical)
@@ -111,7 +116,17 @@ var allRatios = eligible.Select(item => item.ShadowAwareReclamationRatio)
     .Concat(fanoutCases.Select(item => item.ShadowAwareReclamationRatio))
     .Concat(nestedCases.Select(item => item.ShadowAwareReclamationRatio))
     .Concat(mixedCases.Select(item => item.ShadowAwareReclamationRatio))
+    .Concat(physicalCases.Select(item => item.CandidateLogicalReclamationRatio))
     .ToArray();
+var maximumReleasedPayloadBytes = new long[]
+{
+    cases.Count == 0 ? 0 : cases.Max(item => item.ShadowReleasedPayloadBytes),
+    fanoutCases.Count == 0 ? 0 : fanoutCases.Max(item => item.ShadowReleasedPayloadBytes),
+    nestedCases.Count == 0 ? 0 : nestedCases.Max(item => item.ShadowReleasedPayloadBytes),
+    mixedCases.Count == 0 ? 0 : mixedCases.Max(item => item.ShadowReleasedPayloadBytes),
+    physicalCases.Count == 0 ? 0 : physicalCases.Max(item => item.CandidateShadowReleasedPayloadBytes),
+}.Max();
+
 var result = new PilotResult(
     Pilot: "A1-SHADOW",
     MainCommitUnderTest: options.MainCommit,
@@ -121,6 +136,8 @@ var result = new PilotResult(
     FanoutCaseCount: fanoutCases.Count,
     NestedCaseCount: nestedCases.Count,
     PhysicalCaseCount: physicalCases.Count,
+    PhysicalObserverMismatchCount: physicalCases.Count(item => !item.ObserverStateEqualAfterRestart),
+    PhysicalAllocationIncompleteCount: physicalCases.Count(item => !item.AllocationMeasurementExact),
     MixedCaseCount: mixedCases.Count,
     CandidateSubsetFailures: cases.Count(item => !item.CandidateIsSubsetOfBaseline)
         + fanoutCases.Count(item => !item.CandidateIsSubsetOfBaseline)
@@ -144,13 +161,7 @@ var result = new PilotResult(
         + mixedCases.Count(item => !item.ObserverMinimalityVerified),
     MaximumReclamationRatio: allRatios.Length == 0 ? 1d : allRatios.Max(),
     MedianReclamationRatio: Median(allRatios),
-    MaximumReleasedPayloadBytes: Math.Max(
-        cases.Max(item => item.ShadowReleasedPayloadBytes),
-        Math.Max(
-            Math.Max(
-                fanoutCases.Max(item => item.ShadowReleasedPayloadBytes),
-                nestedCases.Max(item => item.ShadowReleasedPayloadBytes)),
-            mixedCases.Max(item => item.ShadowReleasedPayloadBytes))),
+    MaximumReleasedPayloadBytes: maximumReleasedPayloadBytes,
     Cases: cases,
     FanoutCases: fanoutCases,
     NestedCases: nestedCases,
@@ -164,7 +175,9 @@ var pass = result.CandidateSubsetFailures == 0
     && result.ExpectedReleaseMismatches == 0
     && result.PreShadowSafetyFailures == 0
     && result.ObserverEquivalenceFailures == 0
-    && result.ObserverMinimalityFailures == 0;
+    && result.ObserverMinimalityFailures == 0
+    && result.PhysicalObserverMismatchCount == 0
+    && result.PhysicalAllocationIncompleteCount == 0;
 Console.WriteLine(
     $"A1-SHADOW {(pass ? "PASS" : "FAIL")} cases={result.CaseCount} " +
     $"median-SAR={result.MedianReclamationRatio:F3}x max-SAR={result.MaximumReclamationRatio:F3}x " +
@@ -679,26 +692,38 @@ static PhysicalCaseResult RunPhysicalFanoutCase(
 
     GarbageCollectionResult baselineGc;
     CompactionResult baselineCompaction;
+    double baselineGcMilliseconds;
+    double baselineCompactionMilliseconds;
     using (var baseline = ChronicleDatabase.Open(baselineDirectory))
     {
+        var started = Stopwatch.GetTimestamp();
         baselineGc = baseline.RunGarbageCollection(new GarbageCollectionOptions { RetainRecentCommits = 0 });
+        baselineGcMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        started = Stopwatch.GetTimestamp();
         baselineCompaction = baseline.RunCompaction(new CompactionOptions
         {
             MaxHistoriesPerPass = branchCount + 1,
             MinimumReclaimableBytes = 1,
         });
+        baselineCompactionMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
     }
 
     ShadowAwareGarbageCollectionResult candidateGc;
     CompactionResult candidateCompaction;
+    double candidateGcMilliseconds;
+    double candidateCompactionMilliseconds;
     using (var candidate = ChronicleDatabase.Open(candidateDirectory))
     {
+        var started = Stopwatch.GetTimestamp();
         candidateGc = candidate.RunShadowAwareGarbageCollection(new GarbageCollectionOptions { RetainRecentCommits = 0 });
+        candidateGcMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        started = Stopwatch.GetTimestamp();
         candidateCompaction = candidate.RunCompaction(new CompactionOptions
         {
             MaxHistoriesPerPass = branchCount + 1,
             MinimumReclaimableBytes = 1,
         });
+        candidateCompactionMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
     }
 
     var observerStateEqual = CompareCurrentObserverState(
@@ -722,6 +747,11 @@ static PhysicalCaseResult RunPhysicalFanoutCase(
         CandidateGcReclaimedVersions: candidateGc.ReclaimedVersions,
         CandidateShadowReleasedPayloadBytes: candidateGc.ShadowReleasedPayloadBytes,
         CandidateLogicalReclamationRatio: candidateGc.ShadowAwareReclamationRatio,
+        BaselineGcMilliseconds: baselineGcMilliseconds,
+        CandidateGcMilliseconds: candidateGcMilliseconds,
+        CandidateProjectionAnalysisMilliseconds: candidateGc.ProjectionAnalysisMilliseconds,
+        BaselineCompactionMilliseconds: baselineCompactionMilliseconds,
+        CandidateCompactionMilliseconds: candidateCompactionMilliseconds,
         BaselineCheckpointLogicalBytes: baselineCheckpointLogical,
         CandidateCheckpointLogicalBytes: candidateCheckpointLogical,
         CheckpointLogicalReductionBytes: Math.Max(0, baselineCheckpointLogical - candidateCheckpointLogical),
@@ -817,7 +847,7 @@ static Options Parse(string[] args)
         || baseKeyCount is < 8 or > 4096
         || valueBytes is < 1 or > 1_048_576)
     {
-        Console.Error.WriteLine("Usage: <base-key-count:8..4096> <value-bytes:1..1048576> [output-directory] [main-commit]");
+        Console.Error.WriteLine("Usage: <base-key-count:8..4096> <value-bytes:1..1048576> [output-directory] [main-commit] [--physical|--physical-only]");
         Environment.Exit(2);
     }
 
@@ -825,8 +855,10 @@ static Options Parse(string[] args)
         ? Path.GetFullPath(args[2])
         : Path.Combine(Environment.CurrentDirectory, "artifacts", "a1-shadow", Guid.NewGuid().ToString("N"));
     var commit = args.Length >= 4 ? args[3] : "5fa3d3835c42e929cef14ab90288e04b9e5c113b";
-    var runPhysical = args.Length >= 5 && args[4].Equals("--physical", StringComparison.OrdinalIgnoreCase);
-    return new Options(baseKeyCount, valueBytes, output, commit, runPhysical);
+    var physicalOnly = args.Length >= 5 && args[4].Equals("--physical-only", StringComparison.OrdinalIgnoreCase);
+    var runPhysical = physicalOnly
+        || (args.Length >= 5 && args[4].Equals("--physical", StringComparison.OrdinalIgnoreCase));
+    return new Options(baseKeyCount, valueBytes, output, commit, runPhysical, physicalOnly);
 }
 
 static byte[] Key(int value)
@@ -874,7 +906,8 @@ internal sealed record Options(
     int ValueBytes,
     string OutputDirectory,
     string MainCommit,
-    bool RunPhysical);
+    bool RunPhysical,
+    bool PhysicalOnly);
 
 internal enum ShadowMode : byte
 {
@@ -978,6 +1011,11 @@ internal sealed record PhysicalCaseResult(
     int CandidateGcReclaimedVersions,
     long CandidateShadowReleasedPayloadBytes,
     double CandidateLogicalReclamationRatio,
+    double BaselineGcMilliseconds,
+    double CandidateGcMilliseconds,
+    double CandidateProjectionAnalysisMilliseconds,
+    double BaselineCompactionMilliseconds,
+    double CandidateCompactionMilliseconds,
     long BaselineCheckpointLogicalBytes,
     long CandidateCheckpointLogicalBytes,
     long CheckpointLogicalReductionBytes,
@@ -1001,6 +1039,8 @@ internal sealed record PilotResult(
     int FanoutCaseCount,
     int NestedCaseCount,
     int PhysicalCaseCount,
+    int PhysicalObserverMismatchCount,
+    int PhysicalAllocationIncompleteCount,
     int MixedCaseCount,
     int CandidateSubsetFailures,
     int ExpectedReleaseMismatches,
