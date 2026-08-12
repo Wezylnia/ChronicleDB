@@ -48,3 +48,27 @@ are available for the first deterministic injection/recovery smoke. S6 is execut
 erasure-conflict workload, but this runner does not claim secure deletion or erasure
 correctness. A rejected family is not a negative research result and must not be
 included as a completed pilot.
+
+## Focused v1.1 pilot examples
+
+Repeat P1 foreground-interference measurements in independent child processes:
+
+```text
+dotnet run --project tools/ChronicleDB.ResearchWorkloadRunner --configuration Release -- \
+  pilot P1IR 100 5 5 256 4096 32 32 512 30000 C:\research\p1ir
+```
+
+The runner writes `p1ir-plan.json` before executing the shuffled seed/repetition order and
+aggregates P95/P99 interference plus reclamation work in `p1ir-result.json`.
+
+Attack the Candidate 9 topology claim with real branch lifecycle traces:
+
+```text
+dotnet run --project tools/ChronicleDB.ResearchWorkloadRunner --configuration Release -- \
+  pilot P2A 3 siblings C:\research\p2a-siblings
+```
+
+`P2A` compares the proposed relation with resource-only and strong resource+dependency
+baselines. A zero relation difference is preserved as negative novelty evidence; the
+pilot passes when the bounded observer-equivalence checks are sound, not when topology
+necessarily improves reduction.
