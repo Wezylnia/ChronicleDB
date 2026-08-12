@@ -224,13 +224,30 @@ It should be demoted or abandoned if any of the following occurs:
 5. publication-scale projection overhead becomes prohibitive after reasonable implementation cleanup;
 6. the candidate can be reduced to routine COW/reference-count reachability without a distinct MVCC observer-semantics, durable-authority, or empirical contribution.
 
+## Publication workload freeze
+
+The publication configuration is now represented by the canonical `ShadowRetentionPublicationPlan` rather than only prose. The runner command `--write-publication-plan` writes an immutable JSON artifact and SHA-256 sidecar. The current default plan hash is:
+
+```text
+13fecb8806ac7b1eefd13e342d33545bf38f399b4c062c8a2afd94e36f2a1bcd
+```
+
+The topology axes are anchored in BranchBench's published workload characterization: wide/flat failure-reproduction, simulation and data-curation patterns, and deep/narrow MCTS refinement. ChronicleDB caps the deep family at its legal depth 16. BranchBench does **not** publish a universal per-key shadow/tombstone distribution, so the A1 plan deliberately treats those values as a preregistered sensitivity grid rather than inventing a production distribution.
+
+The frozen families are:
+
+- `branchbench-wide-mutation-sensitivity`: 4/8/16/32 staggered branch bases, 5/10/25/50/75/100% shadow, 0/25/100% tombstone fractions;
+- `branchbench-deep-refinement-sensitivity`: depth 2/4/8/16, 10/25/50/75/100% shadow, 0/25% tombstones;
+- `low-shadow-negative-control`: 1/8 branches at 1/5/10% overwrite shadow.
+
+The plan freezes 4 KiB values, projection-scale key counts 4,096 and 16,384, a 1,024-key paired physical tier, three process repetitions, disjoint Pilot/Holdout-A/Holdout-B seed partitions, eight mandatory correctness gates and explicit anti-cherry-picking interpretation rules. Low-shadow controls cannot be removed merely because they weaken the aggregate effect.
+
 ## Next publication work
 
-1. Rebase/apply the A1 research commits onto the current GitHub `main` and rerun the complete gate there; the current local checkout was older, although the production retention/GC blobs used by the hypothesis were verified byte-identical to the then-current main.
-2. Perform one final targeted novelty-kill search centered on Tardis/branch visibility + precise MVCC GC composition and any 2025–2026 shadow-aware branch reclamation work.
-3. Replace the current explicit proxy profiles with publication workload families whose parameter distributions are justified by external systems/workload evidence; do not relabel the proxy results as real-world evidence.
-4. Freeze the strong baseline, benefit-frontier thresholds and candidate configuration.
-5. Preregister and run independent-process Pilot-A, then sealed Holdout-A. Do not tune after opening holdout data.
+1. Rebase/apply the A1 research commits onto the current GitHub `main` and rerun the complete gate there; the production retention/GC blobs used by the hypothesis were verified byte-identical to the current main during the attack, but a clean-main application remains the final integration check.
+2. Run the frozen independent-process Pilot-A from the sealed publication plan. Pilot-A may expose implementation/correctness problems, but the workload axes and candidate mechanics must not be retuned to improve effect size.
+3. If Pilot-A remains correct, seal and open Holdout-A. Holdout-B remains unopened unless Holdout-A is invalidated by a preregistered correctness/infrastructure failure.
+4. Preserve every sensitivity point and report where A1 does not help; do not collapse the result into a single favorable aggregate.
 
 
 ## Final falsification-gate validation
