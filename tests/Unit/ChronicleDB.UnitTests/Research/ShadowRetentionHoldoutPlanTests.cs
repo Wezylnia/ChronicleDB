@@ -185,6 +185,67 @@ public sealed class ShadowRetentionHoldoutPlanTests
             registration with { MachineBlockId = "different-machine-block" }));
     }
 
+
+    [Fact]
+    public void HoldoutBInvalidationRequiresCorrectnessOrInfrastructureEvidenceBoundToRegistration()
+    {
+        var publication = ShadowRetentionPublicationPlan.CreateDefault();
+        var execution = ShadowRetentionHoldoutExecutionPlan.Create(publication);
+        var analysis = ShadowRetentionHoldoutAnalysisPlan.Create(publication, execution);
+        var registration = CreateRegistration(publication, execution, analysis);
+        var invalidation = new ShadowRetentionHoldoutInvalidation
+        {
+            FormatVersion = ShadowRetentionHoldoutInvalidation.CurrentFormatVersion,
+            CandidateId = publication.CandidateId,
+            RegistrationSha256 = registration.ComputeCanonicalSha256(),
+            HoldoutExecutionPlanSha256 = execution.ComputeCanonicalSha256(),
+            InvalidatedPartition = ShadowRetentionHoldoutPartition.HoldoutA,
+            Category = ShadowRetentionHoldoutInvalidationCategory.CorrectnessFailure,
+            FailedRunId = execution.Runs.First(run => run.Partition == ShadowRetentionHoldoutPartition.HoldoutA).RunId,
+            FailureEvidenceSha256 = new string('f', 64),
+            Reason = "Required observer-equivalence gate failed.",
+        };
+
+        invalidation.ValidateAgainst(registration);
+        Assert.Throws<InvalidOperationException>(() => (invalidation with
+        {
+            InvalidatedPartition = ShadowRetentionHoldoutPartition.HoldoutB,
+        }).Validate());
+        Assert.Throws<InvalidOperationException>(() => (invalidation with
+        {
+            RegistrationSha256 = new string('0', 64),
+        }).ValidateAgainst(registration));
+    }
+
+    [Fact]
+    public void HoldoutInvalidationArtifactIsImmutable()
+    {
+        using var directory = new TemporaryDirectory();
+        var publication = ShadowRetentionPublicationPlan.CreateDefault();
+        var execution = ShadowRetentionHoldoutExecutionPlan.Create(publication);
+        var analysis = ShadowRetentionHoldoutAnalysisPlan.Create(publication, execution);
+        var registration = CreateRegistration(publication, execution, analysis);
+        var invalidation = new ShadowRetentionHoldoutInvalidation
+        {
+            FormatVersion = ShadowRetentionHoldoutInvalidation.CurrentFormatVersion,
+            CandidateId = publication.CandidateId,
+            RegistrationSha256 = registration.ComputeCanonicalSha256(),
+            HoldoutExecutionPlanSha256 = execution.ComputeCanonicalSha256(),
+            InvalidatedPartition = ShadowRetentionHoldoutPartition.HoldoutA,
+            Category = ShadowRetentionHoldoutInvalidationCategory.InfrastructureFailure,
+            FailedRunId = "HoldoutA:case:seed=1:rep=0",
+            FailureEvidenceSha256 = new string('f', 64),
+            Reason = "Child process exited before producing a complete result artifact.",
+        };
+
+        var first = ShadowRetentionHoldoutInvalidationWriter.Write(directory.Path, invalidation);
+        var repeated = ShadowRetentionHoldoutInvalidationWriter.Write(directory.Path, invalidation);
+        Assert.Equal(first.Sha256, repeated.Sha256);
+        Assert.Throws<IOException>(() => ShadowRetentionHoldoutInvalidationWriter.Write(
+            directory.Path,
+            invalidation with { Reason = "Different reason" }));
+    }
+
     private static ShadowRetentionHoldoutRegistration CreateRegistration(
         ShadowRetentionPublicationPlan publication,
         ShadowRetentionHoldoutExecutionPlan execution,
