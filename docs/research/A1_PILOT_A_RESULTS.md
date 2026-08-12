@@ -105,11 +105,11 @@ The source state that freezes this Pilot-A result passed the complete Release re
 
 - solution build: **0 warnings / 0 errors**;
 - Architecture: **8 / 8 PASS**;
-- Unit: **209 / 209 PASS**;
+- Unit: **214 / 214 PASS**;
 - Persistence: **180 / 180 PASS**;
 - Correctness: **25 / 25 PASS**;
 - Recovery: **55 / 55 PASS**;
-- total xUnit: **477 / 477 PASS**.
+- total xUnit: **482 / 482 PASS**.
 
 ## Before Holdout-A
 

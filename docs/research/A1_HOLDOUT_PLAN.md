@@ -91,3 +91,17 @@ Two executor-only smoke campaigns were run with separate smoke candidate IDs and
 2. fallback smoke: a deliberately invalid synthetic case produced an A infrastructure invalidation and immutable failure evidence; only then did B pass the fallback gate and start its own deliberately invalid child.
 
 These are tooling/protocol checks, not Holdout evidence. Current publication status remains **Holdout-A 0/210; Holdout-B 0/210**.
+## Current local validation before main composition
+
+The source state containing the complete holdout planning/registration/executor tooling passes the Release validation gate:
+
+- solution build: **0 warnings / 0 errors**;
+- Architecture: **8 / 8 PASS**;
+- Unit: **214 / 214 PASS**;
+- Persistence: **180 / 180 PASS**;
+- Correctness: **25 / 25 PASS**;
+- Recovery: **55 / 55 PASS**;
+- total xUnit: **482 / 482 PASS**.
+
+This validates the local A1 source state only. It does not replace the required regression after composing the A1 chain onto the actual GitHub `main` checkout.
+
