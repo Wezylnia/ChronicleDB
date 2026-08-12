@@ -188,6 +188,34 @@ internal static class A1PublicationPilot
                     "runs",
                     $"trial-{trial.TrialOrder:D4}-{trial.CaseId}-seed-{trial.Seed}-rep-{trial.ProcessRepetition:D2}");
                 Directory.CreateDirectory(runDirectory);
+                var resultPath = Path.Combine(runDirectory, "publication-case-result.json");
+
+                if (File.Exists(resultPath))
+                {
+                    var resumedResult = ReadAndValidateExistingCaseResult(trial, resultPath);
+                    executions.Add(new PilotATrialExecution(
+                        trial.RunId,
+                        trial.Tier,
+                        trial.TrialOrder,
+                        trial.CaseId,
+                        trial.Seed,
+                        trial.ProcessRepetition,
+                        0,
+                        Sha256(File.ReadAllBytes(resultPath)),
+                        resumedResult.MeasuredReclamationRatio,
+                        resumedResult.MeasuredReleasedPayloadBytes,
+                        resumedResult.VerifiedProjectionMilliseconds,
+                        "RESUMED: verified immutable existing result artifact.",
+                        string.Empty));
+                    continue;
+                }
+
+                if (Directory.EnumerateFileSystemEntries(runDirectory).Any())
+                {
+                    throw new InvalidOperationException(
+                        $"Pilot-A run directory is non-empty without a completed immutable result for run '{trial.RunId}'.");
+                }
+
                 var childArgs = new[]
                 {
                     "--publication-case",
@@ -202,7 +230,6 @@ internal static class A1PublicationPilot
                 };
 
                 var child = RunChild(childArgs);
-                var resultPath = Path.Combine(runDirectory, "publication-case-result.json");
                 PublicationCaseResult? caseResult = null;
                 string? resultHash = null;
                 if (child.ExitCode == 0)
@@ -213,9 +240,7 @@ internal static class A1PublicationPilot
                             $"Publication child succeeded without result artifact for run '{trial.RunId}'.");
                     }
 
-                    caseResult = JsonSerializer.Deserialize<PublicationCaseResult>(File.ReadAllText(resultPath), ReadOptions)
-                        ?? throw new InvalidOperationException("Could not deserialize publication-case result.");
-                    ValidateCaseIdentity(trial, caseResult);
+                    caseResult = ReadAndValidateExistingCaseResult(trial, resultPath);
                     resultHash = Sha256(File.ReadAllBytes(resultPath));
                 }
 
@@ -313,6 +338,17 @@ internal static class A1PublicationPilot
         }
 
         return trials;
+    }
+
+    private static PublicationCaseResult ReadAndValidateExistingCaseResult(
+        ShadowRetentionPilotRunSpec trial,
+        string resultPath)
+    {
+        var result = JsonSerializer.Deserialize<PublicationCaseResult>(File.ReadAllText(resultPath), ReadOptions)
+            ?? throw new InvalidOperationException(
+                $"Could not deserialize existing publication-case result for run '{trial.RunId}'.");
+        ValidateCaseIdentity(trial, result);
+        return result;
     }
 
     private static void ValidateCaseIdentity(
