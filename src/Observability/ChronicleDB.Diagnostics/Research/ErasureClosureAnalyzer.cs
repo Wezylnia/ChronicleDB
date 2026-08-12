@@ -24,6 +24,8 @@ public enum ErasureRepresentationKind : byte
     DerivedCurrentState = 5,
     CompactionTemporary = 6,
     ActiveTransactionRoot = 7,
+    PhysicalDataRecord = 8,
+    PhysicalOverflowChunk = 9,
 }
 
 public enum ErasureContentState : byte
@@ -84,6 +86,8 @@ public sealed record ErasureClosureAnalysis(
     int CheckpointOccurrences,
     int DerivedStateOccurrences,
     int CompactionTemporaryOccurrences,
+    int PhysicalDataRecordOccurrences,
+    int PhysicalOverflowChunkOccurrences,
     bool PhysicalRepresentationScanComplete,
     IReadOnlyList<string> UnscannedPhysicalRepresentations)
 {
@@ -134,6 +138,8 @@ public static class ErasureClosureAnalyzer
             scoped.Count(item => item.Kind == ErasureRepresentationKind.CheckpointVersion && item.ReconstructsValue),
             scoped.Count(item => item.Kind == ErasureRepresentationKind.DerivedCurrentState && item.ReconstructsValue),
             scoped.Count(item => item.Kind == ErasureRepresentationKind.CompactionTemporary),
+            scoped.Count(item => item.Kind == ErasureRepresentationKind.PhysicalDataRecord),
+            scoped.Count(item => item.Kind == ErasureRepresentationKind.PhysicalOverflowChunk),
             input.PhysicalRepresentationScanComplete,
             input.UnscannedPhysicalRepresentations);
     }

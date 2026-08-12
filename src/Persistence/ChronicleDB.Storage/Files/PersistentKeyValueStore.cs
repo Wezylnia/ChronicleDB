@@ -203,6 +203,41 @@ public sealed class PersistentKeyValueStore : IDisposable
         }
     }
 
+    /// <summary>
+    /// Research-only structural scan of every record page in the currently opened
+    /// physical data generation, including superseded append-only records.
+    /// </summary>
+    internal PhysicalDataFileScanResult CapturePhysicalDataRecords()
+    {
+        lock (_gate)
+        {
+            ThrowIfUsable();
+            return PhysicalDataFileScanner.Scan(_data, _data.Name, _options);
+        }
+    }
+
+    /// <summary>
+    /// Research-only structural scan of a non-authoritative data generation (for
+    /// example chronicle.data.previous or an orphaned compaction output) using the
+    /// same storage limits as this opened history.
+    /// </summary>
+    internal PhysicalDataFileScanResult CapturePhysicalDataRecords(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        lock (_gate)
+        {
+            ThrowIfUsable();
+            using var stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete,
+                bufferSize: 64 * 1024,
+                options: FileOptions.SequentialScan);
+            return PhysicalDataFileScanner.Scan(stream, path, _options);
+        }
+    }
+
     internal bool CanRepairFrom(long baseDataLength)
     {
         lock (_gate)

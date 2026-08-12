@@ -3,6 +3,9 @@ using ChronicleDB.Core.Identifiers;
 using ChronicleDB.Core.Keys;
 using ChronicleDB.Diagnostics.Research;
 using ChronicleDB.History.Roots;
+using ChronicleDB.Storage;
+using ChronicleDB.Storage.Branches;
+using ChronicleDB.Storage.Files;
 using ChronicleDB.Storage.History;
 using ChronicleDB.Transactions.Mvcc;
 using ChronicleDB.Wal.Branches;
@@ -15,9 +18,9 @@ public sealed partial class ChronicleDatabase
 {
     /// <summary>
     /// Captures a key-specific erasure closure input without changing visibility,
-    /// retention, or recovery authority. WAL/checkpoint occurrences are decoded
-    /// exactly. Historical/stale bytes inside append-oriented data pages are not yet
-    /// decoded by v1.1, so physical closure is explicitly marked incomplete.
+    /// retention, or recovery authority. WAL/checkpoint occurrences and every
+    /// structurally decodable record in engine-controlled current/previous/compaction
+    /// data generations are scanned without consulting the live key index.
     /// </summary>
     public ErasureClosureInput CaptureResearchErasureClosureInput(
         ReadOnlySpan<byte> key,
@@ -126,27 +129,45 @@ public sealed partial class ChronicleDatabase
                         keyBytes);
                 }
 
-                var unscanned = new List<string>
+                var unscanned = new List<string>();
+                var physicalScanComplete = AddPhysicalDataRepresentations(
+                    representations,
+                    unscanned,
+                    _store.CapturePhysicalDataRecords(),
+                    _mainHistoryId.Value,
+                    branchId: null,
+                    keyBytes,
+                    "main/current");
+                physicalScanComplete &= ScanAdditionalDataGenerations(
+                    representations,
+                    unscanned,
+                    _store,
+                    _databaseDirectory,
+                    _mainHistoryId.Value,
+                    branchId: null,
+                    keyBytes,
+                    "main");
+
+                foreach (var runtime in _branchRuntimes.Values.OrderBy(item => item.Definition.HistoryId.Value))
                 {
-                    "chronicle.data/branch data historical or stale page bytes are not key-decoded by the v1.1 erasure probe",
-                };
-                foreach (var (directory, historyId) in EnumerateHistoryDirectories())
-                {
-                    foreach (var path in Directory.EnumerateFiles(directory)
-                                 .Where(path => path.EndsWith(".creating", StringComparison.Ordinal)
-                                     || path.EndsWith(".previous", StringComparison.Ordinal)
-                                     || path.Contains("compaction", StringComparison.OrdinalIgnoreCase)))
-                    {
-                        representations.Add(new ErasureRepresentation(
-                            $"temporary:{Path.GetFileName(path)}:{historyId:N}",
-                            ErasureRepresentationKind.CompactionTemporary,
-                            historyId,
-                            historyId,
-                            null,
-                            ErasureContentState.Unknown,
-                            IsObserverContract: false));
-                        unscanned.Add(path);
-                    }
+                    var label = $"branch-{runtime.Definition.BranchId.Value:N}";
+                    physicalScanComplete &= AddPhysicalDataRepresentations(
+                        representations,
+                        unscanned,
+                        runtime.Store.CapturePhysicalDataRecords(),
+                        runtime.Definition.HistoryId.Value,
+                        runtime.Definition.BranchId,
+                        keyBytes,
+                        label + "/current");
+                    physicalScanComplete &= ScanAdditionalDataGenerations(
+                        representations,
+                        unscanned,
+                        runtime.Store,
+                        runtime.Directory,
+                        runtime.Definition.HistoryId.Value,
+                        runtime.Definition.BranchId,
+                        keyBytes,
+                        label);
                 }
 
                 return new ErasureClosureInput(
@@ -154,23 +175,164 @@ public sealed partial class ChronicleDatabase
                     origin,
                     Array.AsReadOnly(topology.ToArray()),
                     Array.AsReadOnly(representations.ToArray()),
-                    PhysicalRepresentationScanComplete: false,
-                    Array.AsReadOnly(unscanned.ToArray()));
-
-                IEnumerable<(string Directory, Guid HistoryId)> EnumerateHistoryDirectories()
-                {
-                    yield return (_databaseDirectory, _mainHistoryId.Value);
-                    foreach (var runtime in _branchRuntimes.Values)
-                    {
-                        yield return (runtime.Directory, runtime.Definition.HistoryId.Value);
-                    }
-                }
+                    PhysicalRepresentationScanComplete: physicalScanComplete,
+                    Array.AsReadOnly(unscanned.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray()));
             }
         }
         finally
         {
             ExitOperation();
         }
+    }
+
+    private static bool ScanAdditionalDataGenerations(
+        List<ErasureRepresentation> target,
+        List<string> unscanned,
+        PersistentKeyValueStore store,
+        string historyDirectory,
+        Guid historyId,
+        BranchId? branchId,
+        byte[] key,
+        string sourcePrefix)
+    {
+        var complete = true;
+        var previous = Path.Combine(historyDirectory, PersistentKeyValueStore.DataFileName + ".previous");
+        if (File.Exists(previous))
+        {
+            complete &= AddPhysicalDataRepresentations(
+                target,
+                unscanned,
+                store.CapturePhysicalDataRecords(previous),
+                historyId,
+                branchId,
+                key,
+                sourcePrefix + "/previous");
+        }
+
+        foreach (var compactDirectory in Directory.EnumerateDirectories(historyDirectory, ".compact-*", SearchOption.TopDirectoryOnly)
+                     .Order(StringComparer.Ordinal))
+        {
+            var dataPath = Path.Combine(compactDirectory, PersistentKeyValueStore.DataFileName);
+            if (!File.Exists(dataPath))
+            {
+                continue;
+            }
+
+            var compactId = Path.GetFileName(compactDirectory);
+            complete &= AddPhysicalDataRepresentations(
+                target,
+                unscanned,
+                store.CapturePhysicalDataRecords(dataPath),
+                historyId,
+                branchId,
+                key,
+                sourcePrefix + "/" + compactId);
+        }
+
+        return complete;
+    }
+
+    private static bool AddPhysicalDataRepresentations(
+        List<ErasureRepresentation> target,
+        List<string> unscanned,
+        PhysicalDataFileScanResult scan,
+        Guid historyId,
+        BranchId? branchId,
+        byte[] key,
+        string sourceLabel)
+    {
+        var complete = scan.IsComplete;
+        foreach (var issue in scan.Issues)
+        {
+            unscanned.Add(issue);
+        }
+
+        foreach (var physical in scan.Records)
+        {
+            ErasureContentState content;
+            ulong? sequence = null;
+            if (branchId is null)
+            {
+                if (!physical.PhysicalKey.AsSpan().SequenceEqual(key))
+                {
+                    continue;
+                }
+
+                content = physical.IsStorageTombstone
+                    ? ErasureContentState.Tombstone
+                    : ErasureContentState.Value;
+            }
+            else
+            {
+                if (physical.IsStorageTombstone)
+                {
+                    // Store-level tombstones carry no logical value bytes and therefore
+                    // cannot themselves reconstruct the target key. The prior put page, if
+                    // present, is scanned independently and remains represented.
+                    continue;
+                }
+
+                BranchVersionRecord record;
+                try
+                {
+                    record = BranchVersionRecordCodec.Decode(physical.Value);
+                }
+                catch (StorageException exception)
+                {
+                    complete = false;
+                    unscanned.Add(
+                        $"{scan.SourceName}: branch record page {physical.RecordPageId.Value} " +
+                        $"could not be interpreted as a logical branch version: {exception.Message}");
+                    continue;
+                }
+
+                if (record.BranchId != branchId.Value || record.HistoryId.Value != historyId)
+                {
+                    complete = false;
+                    unscanned.Add(
+                        $"{scan.SourceName}: branch record page {physical.RecordPageId.Value} " +
+                        "belongs to a different branch/history identity.");
+                    continue;
+                }
+
+                if (!record.Key.AsSpan().SequenceEqual(key))
+                {
+                    continue;
+                }
+
+                content = record.IsDelete ? ErasureContentState.Tombstone : ErasureContentState.Value;
+                sequence = record.CommitSequence.Value;
+            }
+
+            var recordId = $"physical:{historyId:N}:{sourceLabel}:page-{physical.RecordPageId.Value}";
+            target.Add(new ErasureRepresentation(
+                recordId,
+                ErasureRepresentationKind.PhysicalDataRecord,
+                historyId,
+                historyId,
+                sequence,
+                content,
+                IsObserverContract: false));
+
+            if (content != ErasureContentState.Value)
+            {
+                continue;
+            }
+
+            foreach (var overflowPage in physical.OverflowPages)
+            {
+                target.Add(new ErasureRepresentation(
+                    $"physical-overflow:{historyId:N}:{sourceLabel}:record-{physical.RecordPageId.Value}:page-{overflowPage.Value}",
+                    ErasureRepresentationKind.PhysicalOverflowChunk,
+                    historyId,
+                    historyId,
+                    sequence,
+                    ErasureContentState.Value,
+                    IsObserverContract: false));
+            }
+        }
+
+        return complete;
     }
 
     private static void AddVersionRepresentations(

@@ -332,16 +332,6 @@ internal static partial class ResearchPilotRunner
                 ErasureScope.Global,
                 ErasureMode.Force,
                 forceAuthorized: true);
-            var logicalOnlyInput = input with
-            {
-                PhysicalRepresentationScanComplete = true,
-                UnscannedPhysicalRepresentations = [],
-            };
-            var forceLogical = ErasureContractEvaluator.Evaluate(
-                logicalOnlyInput,
-                ErasureScope.Global,
-                ErasureMode.Force,
-                forceAuthorized: true);
             var mainCurrentTombstoned = input.Representations.Any(item =>
                 item.Kind == ErasureRepresentationKind.DerivedCurrentState
                 && item.OwnerHistoryId == input.OriginHistoryId
@@ -358,12 +348,13 @@ internal static partial class ResearchPilotRunner
                 WalOccurrences: analysis.WalOccurrences,
                 CheckpointOccurrences: analysis.CheckpointOccurrences,
                 DerivedStateOccurrences: analysis.DerivedStateOccurrences,
+                PhysicalDataRecordOccurrences: analysis.PhysicalDataRecordOccurrences,
+                PhysicalOverflowChunkOccurrences: analysis.PhysicalOverflowChunkOccurrences,
                 MainCurrentStateIsTombstoned: mainCurrentTombstoned,
                 RequestOutcome: request.Outcome.ToString(),
                 AuthorizedForcePhysicalOutcome: forcePhysical.Outcome.ToString(),
-                AuthorizedForceLogicalOnlyOutcome: forceLogical.Outcome.ToString(),
-                RequiredLogicalRevocations: forceLogical.RequiredRevocations.Count,
-                ProposedLogicalRewriteCount: forceLogical.ProposedRewritePlan.Count,
+                RequiredLogicalRevocations: forcePhysical.RequiredRevocations.Count,
+                ProposedRewriteCount: forcePhysical.ProposedRewritePlan.Count,
                 PhysicalClosureComplete: analysis.ClosureIsComplete,
                 UnscannedPhysicalRepresentations: input.UnscannedPhysicalRepresentations);
             File.WriteAllText(
@@ -375,12 +366,14 @@ internal static partial class ResearchPilotRunner
                 && analysis.WalOccurrences > 0
                 && analysis.CheckpointOccurrences > 0
                 && request.Outcome == ErasureContractOutcome.BlockedByObserverContract
-                && forcePhysical.Outcome == ErasureContractOutcome.BlockedByIncompleteClosure
-                && forceLogical.Outcome == ErasureContractOutcome.ForcePlanReady;
+                && analysis.ClosureIsComplete
+                && analysis.PhysicalDataRecordOccurrences > 0
+                && forcePhysical.Outcome == ErasureContractOutcome.ForcePlanReady;
             Console.WriteLine(
                 $"P6 {(pass ? "PASS" : "FAIL")} blockers={result.BlockingObserverContractCount} " +
                 $"values={result.ReachableValueRepresentationCount} wal={result.WalOccurrences} " +
-                $"checkpoint={result.CheckpointOccurrences} physical-complete={result.PhysicalClosureComplete} " +
+                $"checkpoint={result.CheckpointOccurrences} physical-records={result.PhysicalDataRecordOccurrences} " +
+                $"overflow={result.PhysicalOverflowChunkOccurrences} physical-complete={result.PhysicalClosureComplete} " +
                 $"output={outputDirectory}");
             return pass ? 0 : 1;
         }
@@ -2345,12 +2338,13 @@ internal static partial class ResearchPilotRunner
         int WalOccurrences,
         int CheckpointOccurrences,
         int DerivedStateOccurrences,
+        int PhysicalDataRecordOccurrences,
+        int PhysicalOverflowChunkOccurrences,
         bool MainCurrentStateIsTombstoned,
         string RequestOutcome,
         string AuthorizedForcePhysicalOutcome,
-        string AuthorizedForceLogicalOnlyOutcome,
         int RequiredLogicalRevocations,
-        int ProposedLogicalRewriteCount,
+        int ProposedRewriteCount,
         bool PhysicalClosureComplete,
         IReadOnlyList<string> UnscannedPhysicalRepresentations);
 
