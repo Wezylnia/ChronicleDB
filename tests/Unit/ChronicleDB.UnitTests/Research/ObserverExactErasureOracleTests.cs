@@ -177,6 +177,41 @@ public sealed class ObserverExactErasureOracleTests
     }
 
     [Fact]
+    public void RandomizedForestsMatchIndependentSlowObserverResolver()
+    {
+        const int scenarioCount = 500;
+        for (var seed = 0; seed < scenarioCount; seed++)
+        {
+            var snapshot = RandomSnapshot(seed);
+            var result = new ObserverExactErasureOracle(snapshot).Analyze("K");
+            var expected = EnumerateReferenceObservers(snapshot, "K")
+                .OrderBy(item => item.ObserverId, StringComparer.Ordinal)
+                .ToArray();
+            var actual = result.Observers
+                .OrderBy(item => item.ObserverId, StringComparer.Ordinal)
+                .ToArray();
+
+            Assert.Equal(expected.Length, actual.Length);
+            for (var index = 0; index < expected.Length; index++)
+            {
+                Assert.Equal(expected[index].ObserverId, actual[index].ObserverId);
+                Assert.Equal(expected[index].Kind, actual[index].Kind);
+                Assert.Equal(expected[index].HistoryId, actual[index].HistoryId);
+                Assert.Equal(expected[index].Boundary, actual[index].Boundary);
+                Assert.Equal(expected[index].Content, actual[index].Content);
+                Assert.Equal(expected[index].ResolvedVersionId, actual[index].ResolvedVersionId);
+                Assert.Equal(expected[index].ResolvedHistoryId, actual[index].ResolvedHistoryId);
+                Assert.Equal(expected[index].ResolvedSequence, actual[index].ResolvedSequence);
+                Assert.Equal(expected[index].ParentFallbackHops, actual[index].ParentFallbackHops);
+            }
+
+            Assert.Equal(
+                expected.Where(item => item.Content == ErasureContentState.Value).Select(item => item.ObserverId).Order(StringComparer.Ordinal),
+                result.BlockingObservers.Select(item => item.ObserverId).Order(StringComparer.Ordinal));
+        }
+    }
+
+    [Fact]
     public void CyclicBranchEdgesFailClosed()
     {
         var first = Guid.NewGuid();
@@ -186,6 +221,183 @@ public sealed class ObserverExactErasureOracleTests
             [BranchBase(first, second, 0), BranchBase(second, first, 0)]);
 
         Assert.Throws<ArgumentException>(() => new ObserverExactErasureOracle(input));
+    }
+
+    private static ResearchRetentionSnapshot RandomSnapshot(int seed)
+    {
+        var random = new Random(seed);
+        var historyCount = random.Next(1, 7);
+        var historyIds = Enumerable.Range(0, historyCount)
+            .Select(index => DeterministicGuid(seed, index + 1))
+            .ToArray();
+        const ulong current = 4;
+        var histories = new List<ResearchHistoryRetentionSnapshot>(historyCount);
+        for (var historyIndex = 0; historyIndex < historyCount; historyIndex++)
+        {
+            var versions = new List<ResearchCommittedVersionSnapshot>();
+            foreach (var key in new[] { "K", "X" })
+            {
+                for (ulong sequence = 1; sequence <= current; sequence++)
+                {
+                    if (random.NextDouble() >= 0.45)
+                    {
+                        continue;
+                    }
+                    var tombstone = random.NextDouble() < 0.25;
+                    versions.Add(new ResearchCommittedVersionSnapshot(
+                        $"{historyIds[historyIndex]:N}:{key}:{sequence}",
+                        DeterministicGuid(seed, checked(100 + historyIndex * 10 + (int)sequence)),
+                        sequence,
+                        key,
+                        1,
+                        tombstone ? 0 : random.Next(1, 128),
+                        tombstone));
+                }
+            }
+            histories.Add(new ResearchHistoryRetentionSnapshot(
+                historyIds[historyIndex],
+                (ulong)random.Next(0, (int)current + 1),
+                current,
+                versions));
+        }
+
+        var roots = new List<ResearchPersistentRetentionRootSnapshot>();
+        for (var historyIndex = 1; historyIndex < historyCount; historyIndex++)
+        {
+            var parentIndex = random.Next(0, historyIndex);
+            roots.Add(new ResearchPersistentRetentionRootSnapshot(
+                DeterministicGuid(seed, 1_000 + historyIndex),
+                "BranchBase",
+                historyIds[historyIndex],
+                historyIds[parentIndex],
+                (ulong)random.Next(0, (int)current + 1)));
+        }
+        for (var historyIndex = 0; historyIndex < historyCount; historyIndex++)
+        {
+            if (random.NextDouble() < 0.35)
+            {
+                roots.Add(new ResearchPersistentRetentionRootSnapshot(
+                    DeterministicGuid(seed, 2_000 + historyIndex),
+                    "PersistentSnapshot",
+                    historyIds[historyIndex],
+                    historyIds[historyIndex],
+                    (ulong)random.Next(0, (int)current + 1)));
+            }
+        }
+
+        var active = historyIds
+            .Select((historyId, index) => (historyId, index))
+            .Where(_ => random.NextDouble() < 0.30)
+            .Select(item => new ResearchActiveRetentionBoundarySnapshot(
+                item.historyId,
+                (ulong)random.Next(0, (int)current + 1)))
+            .ToArray();
+        return new ResearchRetentionSnapshot(histories, roots, active);
+    }
+
+    private static ObserverExactErasureWitness[] EnumerateReferenceObservers(
+        ResearchRetentionSnapshot snapshot,
+        string keyId)
+    {
+        var observers = new Dictionary<string, (ErasureObserverContractKind Kind, Guid HistoryId, ulong Boundary)>(StringComparer.Ordinal);
+        foreach (var history in snapshot.Histories)
+        {
+            AddReferenceGeneric(observers, history, history.RetentionFloor, keyId);
+            foreach (var version in history.Versions.Where(item =>
+                         item.KeyId == keyId && item.CommitSequence >= history.RetentionFloor))
+            {
+                AddReferenceGeneric(observers, history, version.CommitSequence, keyId);
+            }
+            AddReferenceGeneric(observers, history, history.CurrentSequence, keyId);
+        }
+        foreach (var active in snapshot.ActiveBoundaries)
+        {
+            observers[$"active:{active.ProtectedHistoryId:N}:{active.Boundary}"] =
+                (ErasureObserverContractKind.ActiveBoundary, active.ProtectedHistoryId, active.Boundary);
+        }
+        foreach (var root in snapshot.PersistentRoots.Where(item => item.Kind != "BranchBase"))
+        {
+            observers[RootObserverId(root.RootId)] =
+                (ErasureObserverContractKind.PersistentSnapshot, root.ProtectedHistoryId, root.Boundary);
+        }
+
+        var edges = snapshot.PersistentRoots
+            .Where(item => item.Kind == "BranchBase")
+            .ToDictionary(item => item.OwnerHistoryId, item => (item.ProtectedHistoryId, item.Boundary));
+        return observers.Select(pair => ResolveReference(pair.Key, pair.Value, keyId, snapshot, edges)).ToArray();
+    }
+
+    private static void AddReferenceGeneric(
+        Dictionary<string, (ErasureObserverContractKind Kind, Guid HistoryId, ulong Boundary)> target,
+        ResearchHistoryRetentionSnapshot history,
+        ulong boundary,
+        string keyId)
+    {
+        var kind = boundary == history.CurrentSequence
+            ? ErasureObserverContractKind.CurrentState
+            : ErasureObserverContractKind.GenericTimeTravel;
+        var id = kind == ErasureObserverContractKind.CurrentState
+            ? $"current:{history.HistoryId:N}:{keyId}"
+            : $"generic:{history.HistoryId:N}:{boundary}:{keyId}";
+        target[id] = (kind, history.HistoryId, boundary);
+    }
+
+    private static ObserverExactErasureWitness ResolveReference(
+        string observerId,
+        (ErasureObserverContractKind Kind, Guid HistoryId, ulong Boundary) observer,
+        string keyId,
+        ResearchRetentionSnapshot snapshot,
+        Dictionary<Guid, (Guid ProtectedHistoryId, ulong Boundary)> edges)
+    {
+        var historyId = observer.HistoryId;
+        var boundary = observer.Boundary;
+        for (var hops = 0; hops <= snapshot.Histories.Count; hops++)
+        {
+            var history = snapshot.GetHistory(historyId);
+            var local = history.Versions
+                .Where(item => item.KeyId == keyId && item.CommitSequence <= boundary)
+                .OrderBy(item => item.CommitSequence)
+                .LastOrDefault();
+            if (local is not null)
+            {
+                return new ObserverExactErasureWitness(
+                    observerId,
+                    observer.Kind,
+                    observer.HistoryId,
+                    observer.Boundary,
+                    local.IsTombstone ? ErasureContentState.Tombstone : ErasureContentState.Value,
+                    local.VersionId,
+                    historyId,
+                    local.CommitSequence,
+                    hops);
+            }
+            if (!edges.TryGetValue(historyId, out var edge))
+            {
+                return new ObserverExactErasureWitness(
+                    observerId,
+                    observer.Kind,
+                    observer.HistoryId,
+                    observer.Boundary,
+                    ErasureContentState.Absent,
+                    null,
+                    null,
+                    null,
+                    hops);
+            }
+            historyId = edge.ProtectedHistoryId;
+            boundary = edge.Boundary;
+        }
+        throw new InvalidOperationException("Reference resolver exceeded history count.");
+    }
+
+    private static Guid DeterministicGuid(int seed, int ordinal)
+    {
+        Span<byte> bytes = stackalloc byte[16];
+        BitConverter.TryWriteBytes(bytes, seed);
+        BitConverter.TryWriteBytes(bytes[4..], ordinal);
+        BitConverter.TryWriteBytes(bytes[8..], unchecked(seed * 1_000_003 + ordinal));
+        BitConverter.TryWriteBytes(bytes[12..], unchecked(seed * 97 + ordinal * 17));
+        return new Guid(bytes);
     }
 
     private static ResearchRetentionSnapshot Snapshot(
