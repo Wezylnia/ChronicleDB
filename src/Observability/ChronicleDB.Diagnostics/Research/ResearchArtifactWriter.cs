@@ -18,6 +18,10 @@ public sealed class ResearchArtifactWriter
     public const string WorkloadHashFileName = "workload.sha256";
     public const string CrashPlanFileName = "crash-plan.json";
     public const string CrashPlanHashFileName = "crash-plan.sha256";
+    public const string CampaignRegistrationFileName = "campaign-registration.json";
+    public const string CampaignRegistrationHashFileName = "campaign-registration.sha256";
+    public const string CandidateGateDecisionFileName = "candidate-gate.json";
+    public const string CandidateGateDecisionHashFileName = "candidate-gate.sha256";
 
     public ResearchArtifactWriter(string directoryPath)
     {
@@ -76,6 +80,36 @@ public sealed class ResearchArtifactWriter
         return new ResearchWorkloadArtifact(
             Path.Combine(DirectoryPath, WorkloadFileName),
             Path.Combine(DirectoryPath, WorkloadHashFileName),
+            hash);
+    }
+
+    public ResearchCampaignRegistrationArtifact WriteCampaignRegistration(ResearchCampaignRegistration registration)
+    {
+        ArgumentNullException.ThrowIfNull(registration);
+
+        var canonicalJson = registration.SerializeCanonical();
+        var hash = registration.ComputeCanonicalSha256();
+        WriteImmutable(CampaignRegistrationFileName, canonicalJson);
+        WriteImmutable(CampaignRegistrationHashFileName, hash);
+
+        return new ResearchCampaignRegistrationArtifact(
+            Path.Combine(DirectoryPath, CampaignRegistrationFileName),
+            Path.Combine(DirectoryPath, CampaignRegistrationHashFileName),
+            hash);
+    }
+
+    public ResearchCandidateGateDecisionArtifact WriteCandidateGateDecision(ResearchCandidateGateDecision decision)
+    {
+        ArgumentNullException.ThrowIfNull(decision);
+
+        var canonicalJson = decision.SerializeCanonical();
+        var hash = decision.ComputeCanonicalSha256();
+        WriteImmutable(CandidateGateDecisionFileName, canonicalJson);
+        WriteImmutable(CandidateGateDecisionHashFileName, hash);
+
+        return new ResearchCandidateGateDecisionArtifact(
+            Path.Combine(DirectoryPath, CandidateGateDecisionFileName),
+            Path.Combine(DirectoryPath, CandidateGateDecisionHashFileName),
             hash);
     }
 
@@ -156,4 +190,14 @@ public sealed record ResearchWorkloadArtifact(
 public sealed record ResearchCrashPlanArtifact(
     string CrashPlanPath,
     string CrashPlanHashPath,
+    string Sha256);
+
+public sealed record ResearchCampaignRegistrationArtifact(
+    string RegistrationPath,
+    string RegistrationHashPath,
+    string Sha256);
+
+public sealed record ResearchCandidateGateDecisionArtifact(
+    string DecisionPath,
+    string DecisionHashPath,
     string Sha256);
