@@ -76,6 +76,19 @@ Representative logical results with 4 KiB values:
 
 The useful regime is therefore **multiple long-lived retained branch bases plus substantial key shadowing**. Low-shadow workloads are explicit negative controls.
 
+### Closed-form effect bound for the controlled workload
+
+For the equal-value-size staggered-branch workload, let `B` be branch count, `s` the shadowed-key fraction, `t` the fraction of shadows that are tombstones, and `M` the current Main payload. The experiment oracle predicts:
+
+```text
+baseline payload  = M * (1 + B + B*s*(1-t))
+released parent   = M * B*s
+candidate payload = baseline - released parent
+SAR               = baseline / candidate
+```
+
+Two useful bounds follow. With full overwrite shadow (`s=1,t=0`), `SAR=(1+2B)/(1+B)` and therefore approaches but never exceeds `2x`. With full tombstone shadow (`s=1,t=1`), `SAR=B+1`. The measured 1.89x overwrite and 9.0x tombstone results at eight branches match these bounds exactly. This model is an experiment oracle under controlled assumptions, not a production sizing formula.
+
 ## Physical realization
 
 Paired physical experiments start from the same database image and apply current exact GC to one copy and descendant-first shadow-aware GC to the other, followed by compaction and restart observer comparison.
