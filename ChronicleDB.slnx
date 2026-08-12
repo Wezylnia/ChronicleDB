@@ -46,6 +46,7 @@
     <Project Path="tests/Unit/ChronicleDB.UnitTests/ChronicleDB.UnitTests.csproj" />
   </Folder>
   <Folder Name="/tools/">
+    <Project Path="tools/ChronicleDB.A1ShadowRetentionPilot/ChronicleDB.A1ShadowRetentionPilot.csproj" />
     <Project Path="tools/ChronicleDB.CrashHarness/ChronicleDB.CrashHarness.csproj" />
     <Project Path="tools/ChronicleDB.Inspector/ChronicleDB.Inspector.csproj" />
     <Project Path="tools/ChronicleDB.ResearchWorkloadRunner/ChronicleDB.ResearchWorkloadRunner.csproj" />

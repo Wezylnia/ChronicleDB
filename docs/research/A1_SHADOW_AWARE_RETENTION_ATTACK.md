@@ -4,7 +4,7 @@ Status date: 2026-08-12
 
 ## Pilot decision
 
-**GO at the falsification gate. Not yet a publication result.**
+**GO at the falsification gate. Current research score: 96/100. Not yet a publication result.**
 
 The original broad A1 framing is retired. Counterfactual snapshot/root deletion, exact MVCC pruning, branch-aware GC, branch-base history protection, and logical-vs-physical reclamation are all prior-art-constrained ideas and must not be claimed as novel by themselves.
 
@@ -130,7 +130,18 @@ At 32,768 keys the process peak RSS was about 450 MiB. The observed curve is app
 
 The traversal optimization (no observer×key queue materialization, binary-search local resolution, no per-read ancestry HashSet) improved the 8,192-key case from ~684 ms to ~499 ms and reduced transient allocation from ~247 MiB to ~170 MiB while preserving all semantic gates.
 
-For a 4,096-key / 8-branch representative run, the verified projection was about 210 ms, decomposed approximately into 25 ms construction/indexing, 164 ms core projection and 19 ms observer verification. These timings are research diagnostics, not publication holdout measurements.
+For a 4,096-key / 8-branch representative run, the optimized verified projection was about 216 ms, with about 165 ms in core projection and about 10 ms in exhaustive observer verification. These timings are research diagnostics, not publication holdout measurements.
+
+At a fixed 4,096 keys and 100% overwrite shadow, the current optimized branch-count curve is:
+
+| Branches | Logical versions | Verified projection median | Core projection median | Transient thread allocation | Logical SAR |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 69,632 | ~216 ms | ~165 ms | ~99 MiB | 1.89x |
+| 16 | 135,168 | ~350 ms | ~287 ms | ~180 MiB | 1.94x |
+| 32 | 266,240 | ~860 ms | ~636 ms | ~378 MiB | 1.97x |
+| 64 | 528,384 | ~1.86 s | ~1.57 s | ~837 MiB | 1.98x |
+
+The curve is deliberately adversarial and confirms that the current prototype belongs in the maintenance/checkpoint path rather than a foreground read path. Runtime growth is manageable over the tested range, but transient allocation remains a real engineering limitation and must be reported rather than hidden.
 
 ## Maintenance-timing caveat
 
@@ -150,7 +161,9 @@ The following are constraints, not novelty claims:
 - MatrixOne and related systems: snapshot/branch-protected GC;
 - NetApp/ZFS/Btrfs-style work: snapshot/set-level reclaimability and physical accounting concepts.
 
-The surviving claim should therefore be stated as the **combination and algorithmic treatment of per-key descendant shadowing across persistent writable history ancestry**, plus a crash-safe descendant-first authority transition and measured physical realization. A final literature pass must still attack the possibility that Tardis-style branch visibility combined with precise MVCC GC already implies the same cross-history projection.
+The surviving claim should therefore be stated as the **combination and algorithmic treatment of per-key descendant shadowing across persistent writable history ancestry**, plus a crash-safe descendant-first authority transition and measured physical realization.
+
+The final targeted novelty-kill pass on 2026-08-12 did not find a direct source that computes the same minimum per-key cross-history projection. TardisDB provides branch bitmap/version-chain visibility and proposes collecting versions that are no longer contained in any branch; HeliosDB propagates descendant branch and snapshot requirements through a scalar per-branch LSN horizon. Those are the strongest composition threats found so far, but neither inspected algorithm expresses the ChronicleDB candidate's key-specific rule that a retained descendant value/tombstone stops the corresponding ancestor requirement while unshadowed keys continue to propagate. This is an evidence-bounded literature conclusion, not a claim that no such work can exist.
 
 ## Current decision and kill conditions
 
