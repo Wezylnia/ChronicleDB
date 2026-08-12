@@ -101,9 +101,28 @@ public sealed record ShadowRetentionHoldoutAnalysisPlan
         ValidateSortedUnique(PrimaryMetrics, nameof(PrimaryMetrics));
         ValidateSortedUnique(RequiredResultGates, nameof(RequiredResultGates));
         ValidateSortedUnique(NegativeControlCaseIds, nameof(NegativeControlCaseIds));
-        if (ReportingRules.Count == 0)
+        if (!PrimaryMetrics.SequenceEqual(FrozenPrimaryMetrics, StringComparer.Ordinal)
+            || !RequiredResultGates.SequenceEqual(FrozenRequiredResultGates, StringComparer.Ordinal)
+            || !ReportingRules.SequenceEqual(FrozenReportingRules, StringComparer.Ordinal))
         {
-            throw new InvalidOperationException("Holdout reporting rules must not be empty.");
+            throw new InvalidOperationException("Holdout metrics, correctness gates and reporting rules are frozen.");
+        }
+    }
+
+    public void ValidateAgainst(
+        ShadowRetentionPublicationPlan publicationPlan,
+        ShadowRetentionHoldoutExecutionPlan executionPlan)
+    {
+        ArgumentNullException.ThrowIfNull(publicationPlan);
+        ArgumentNullException.ThrowIfNull(executionPlan);
+        Validate();
+        publicationPlan.Validate();
+        executionPlan.ValidateAgainst(publicationPlan);
+
+        var expected = Create(publicationPlan, executionPlan);
+        if (!string.Equals(SerializeCanonical(), expected.SerializeCanonical(), StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Holdout analysis plan differs from the frozen publication-derived plan.");
         }
     }
 

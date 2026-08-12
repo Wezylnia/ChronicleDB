@@ -163,8 +163,10 @@ internal static class A1PublicationPilot
             var outputDirectory = Path.GetFullPath(args[1]);
             var (publicationPlan, publicationHash) = ReadAndVerifyPlan(planDirectory);
             var execution = ShadowRetentionHoldoutExecutionPlan.Create(publicationPlan);
+            execution.ValidateAgainst(publicationPlan);
             var executionArtifact = ShadowRetentionHoldoutExecutionPlanWriter.Write(outputDirectory, execution);
             var analysis = ShadowRetentionHoldoutAnalysisPlan.Create(publicationPlan, execution);
+            analysis.ValidateAgainst(publicationPlan, execution);
             var analysisArtifact = ShadowRetentionHoldoutAnalysisPlanWriter.Write(outputDirectory, analysis);
 
             Console.WriteLine(

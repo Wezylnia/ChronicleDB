@@ -86,6 +86,25 @@ public sealed record ShadowRetentionHoldoutExecutionPlan
         }
     }
 
+    public void ValidateAgainst(ShadowRetentionPublicationPlan publicationPlan)
+    {
+        ArgumentNullException.ThrowIfNull(publicationPlan);
+        Validate();
+        publicationPlan.Validate();
+        var expectedHash = publicationPlan.ComputeCanonicalSha256();
+        if (!string.Equals(CandidateId, publicationPlan.CandidateId, StringComparison.Ordinal)
+            || !string.Equals(PublicationPlanSha256, expectedHash, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Holdout execution plan does not belong to the frozen publication plan.");
+        }
+
+        var expected = Create(publicationPlan);
+        if (!string.Equals(SerializeCanonical(), expected.SerializeCanonical(), StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Holdout execution plan differs from the frozen publication-derived run set/order.");
+        }
+    }
+
     public static ShadowRetentionHoldoutExecutionPlan Create(ShadowRetentionPublicationPlan publicationPlan)
     {
         ArgumentNullException.ThrowIfNull(publicationPlan);

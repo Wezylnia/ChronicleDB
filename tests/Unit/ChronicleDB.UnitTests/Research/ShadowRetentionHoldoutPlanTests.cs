@@ -19,6 +19,7 @@ public sealed class ShadowRetentionHoldoutPlanTests
         Assert.Equal(420, first.Runs.Count);
         Assert.Equal(first.SerializeCanonical(), second.SerializeCanonical());
         Assert.Equal(first.ComputeCanonicalSha256(), second.ComputeCanonicalSha256());
+        first.ValidateAgainst(publication);
 
         foreach (var partition in Enum.GetValues<ShadowRetentionHoldoutPartition>())
         {
@@ -54,6 +55,7 @@ public sealed class ShadowRetentionHoldoutPlanTests
         Assert.Equal(ExpectedNegativeControls, analysis.NegativeControlCaseIds);
         Assert.Contains(analysis.ReportingRules, rule => rule.Contains("Exclude no successful", StringComparison.Ordinal));
         Assert.Contains(analysis.ReportingRules, rule => rule.Contains("Do not read or execute Holdout-B", StringComparison.Ordinal));
+        analysis.ValidateAgainst(publication, execution);
     }
 
     [Fact]
@@ -90,6 +92,36 @@ public sealed class ShadowRetentionHoldoutPlanTests
         var second = ShadowRetentionHoldoutExecutionPlan.Create(changed);
 
         Assert.NotEqual(first.ComputeCanonicalSha256(), second.ComputeCanonicalSha256());
+    }
+
+
+    [Fact]
+    public void ExecutionPlanRejectsPostFreezeCaseMutation()
+    {
+        var publication = ShadowRetentionPublicationPlan.CreateDefault();
+        var plan = ShadowRetentionHoldoutExecutionPlan.Create(publication);
+        var runs = plan.Runs.ToArray();
+        runs[0] = runs[0] with { ShadowFraction = Math.Min(1d, runs[0].ShadowFraction + 0.01d) };
+        var mutated = plan with { Runs = runs };
+
+        Assert.Throws<InvalidOperationException>(() => mutated.ValidateAgainst(publication));
+    }
+
+    [Fact]
+    public void AnalysisPlanRejectsPostFreezeMetricOrRuleMutation()
+    {
+        var publication = ShadowRetentionPublicationPlan.CreateDefault();
+        var execution = ShadowRetentionHoldoutExecutionPlan.Create(publication);
+        var analysis = ShadowRetentionHoldoutAnalysisPlan.Create(publication, execution);
+
+        Assert.Throws<InvalidOperationException>(() => (analysis with
+        {
+            PrimaryMetrics = ["measured-reclamation-ratio"],
+        }).Validate());
+        Assert.Throws<InvalidOperationException>(() => (analysis with
+        {
+            ReportingRules = ["Report only favorable cases."],
+        }).Validate());
     }
 
     private sealed class TemporaryDirectory : IDisposable
