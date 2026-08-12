@@ -38,6 +38,8 @@ public enum ResearchRecoveryPhaseKind : byte
     WalReplay = 4,
     PhysicalStateValidation = 5,
     SnapshotMetadataOpen = 6,
+    CatalogAndDependencyValidation = 7,
+    BranchRuntimesOpen = 8,
 }
 
 public sealed record ResearchRecoveryPhaseObservation(ResearchRecoveryPhaseKind Phase);

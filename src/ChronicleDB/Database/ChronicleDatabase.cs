@@ -311,6 +311,15 @@ public sealed partial class ChronicleDatabase : IDisposable
                     "Snapshot lifecycle metadata references history newer than the recovered database.");
             }
 
+            var catalogRecoveryPhase = StartResearchRecoveryPhase(
+                researchEvents,
+                mainHistoryId,
+                parentHistoryId: null,
+                ResearchRecoveryPhaseKind.CatalogAndDependencyValidation,
+                ["catalog", "history-roots", "branch-catalog", "snapshots"],
+                authorityGeneration: currentCommitSequence.Value,
+                recoveryStartedEventId);
+
             RequireInitializedFileIfFlagged(
                 store,
                 DatabaseHeader.HistoryRootStoreInitializedFlag,
@@ -346,10 +355,27 @@ public sealed partial class ChronicleDatabase : IDisposable
 
             var snapshotRecords = snapshotStore.ListActive();
             ReconcileSnapshotRoots(historyRootStore, snapshotRecords, store.DatabaseId, mainHistoryId);
+            var catalogRecoveryCompletedEventId = CompleteResearchRecoveryPhase(
+                researchEvents,
+                mainHistoryId,
+                parentHistoryId: null,
+                ResearchRecoveryPhaseKind.CatalogAndDependencyValidation,
+                ["catalog", "history-roots", "branch-catalog", "snapshots"],
+                authorityGeneration: currentCommitSequence.Value,
+                catalogRecoveryPhase,
+                recoveryStartedEventId);
 
             // v1.0 deliberately favors eager correctness validation over lazy branch open: every
             // active branch and its persistent snapshots are reconstructed before the
             // database is exposed as ready.
+            var branchRuntimesRecoveryPhase = StartResearchRecoveryPhase(
+                researchEvents,
+                mainHistoryId,
+                parentHistoryId: null,
+                ResearchRecoveryPhaseKind.BranchRuntimesOpen,
+                ["branch-catalog", "history-roots", "branches"],
+                authorityGeneration: currentCommitSequence.Value,
+                catalogRecoveryCompletedEventId > 0 ? catalogRecoveryCompletedEventId : recoveryStartedEventId);
             branchRuntimes = OpenBranchRuntimes(
                 fullDirectory,
                 branchDefinitions,
@@ -365,6 +391,15 @@ public sealed partial class ChronicleDatabase : IDisposable
                 .ThenBy(branch => branch.Name, StringComparer.Ordinal)
                 .ToArray();
             ValidateBranchGraph(branchDefinitions, mainHistoryId, currentCommitSequence);
+            var branchRuntimesRecoveryCompletedEventId = CompleteResearchRecoveryPhase(
+                researchEvents,
+                mainHistoryId,
+                parentHistoryId: null,
+                ResearchRecoveryPhaseKind.BranchRuntimesOpen,
+                ["branch-catalog", "history-roots", "branches"],
+                authorityGeneration: currentCommitSequence.Value,
+                branchRuntimesRecoveryPhase,
+                catalogRecoveryCompletedEventId > 0 ? catalogRecoveryCompletedEventId : recoveryStartedEventId);
 
             SnapshotCatalog snapshots;
             HistoryRootRegistry historyRoots;
@@ -428,7 +463,9 @@ public sealed partial class ChronicleDatabase : IDisposable
                 ResearchEventKind.HistoryReady,
                 ResearchDurabilityPhase.AuthorityPublished,
                 ["catalog", "history-roots", "main"],
-                recoveryStartedEventId > 0 ? [recoveryStartedEventId] : []);
+                branchRuntimesRecoveryCompletedEventId > 0
+                    ? [branchRuntimesRecoveryCompletedEventId]
+                    : recoveryStartedEventId > 0 ? [recoveryStartedEventId] : []);
             database.PublishResearchEvent(
                 ResearchEventKind.RecoveryCompleted,
                 ResearchDurabilityPhase.AuthorityPublished,
@@ -487,6 +524,74 @@ public sealed partial class ChronicleDatabase : IDisposable
 
             throw;
         }
+    }
+
+    private static (Guid OperationId, long StartedEventId) StartResearchRecoveryPhase(
+        ResearchEventPublisher researchEvents,
+        HistoryId historyId,
+        HistoryId? parentHistoryId,
+        ResearchRecoveryPhaseKind phase,
+        IReadOnlyList<string> resources,
+        ulong authorityGeneration,
+        long dependencyEventId)
+    {
+        var operationId = Guid.NewGuid();
+        researchEvents.TryPublish(
+            logicalEventId => new ResearchEvent(
+                logicalEventId,
+                logicalEventId,
+                ResearchEventKind.RecoveryPhaseStarted,
+                historyId,
+                parentHistoryId,
+                operationId,
+                transactionId: null,
+                resources,
+                ResearchDurabilityPhase.None,
+                authorityGeneration,
+                dependencyEventId > 0 ? [dependencyEventId] : [],
+                logicalKeyId: null,
+                versionId: null,
+                offset: null,
+                bytes: null,
+                readObservation: null,
+                new ResearchRecoveryPhaseObservation(phase)),
+            out var startedEventId);
+        return (operationId, startedEventId);
+    }
+
+    private static long CompleteResearchRecoveryPhase(
+        ResearchEventPublisher researchEvents,
+        HistoryId historyId,
+        HistoryId? parentHistoryId,
+        ResearchRecoveryPhaseKind phase,
+        IReadOnlyList<string> resources,
+        ulong authorityGeneration,
+        (Guid OperationId, long StartedEventId) started,
+        long fallbackDependencyEventId)
+    {
+        researchEvents.TryPublish(
+            logicalEventId => new ResearchEvent(
+                logicalEventId,
+                logicalEventId,
+                ResearchEventKind.RecoveryPhaseCompleted,
+                historyId,
+                parentHistoryId,
+                started.OperationId,
+                transactionId: null,
+                resources,
+                ResearchDurabilityPhase.AuthorityPublished,
+                authorityGeneration,
+                started.StartedEventId > 0
+                    ? [started.StartedEventId]
+                    : fallbackDependencyEventId > 0 ? [fallbackDependencyEventId] : [],
+                logicalKeyId: null,
+                versionId: null,
+                offset: null,
+                bytes: null,
+                readObservation: null,
+                new ResearchRecoveryPhaseObservation(phase)),
+            out var completedEventId);
+        return completedEventId;
     }
 
     public ChronicleTransaction BeginTransaction()

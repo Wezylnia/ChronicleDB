@@ -21,17 +21,22 @@ public sealed class ResearchTelemetryIntegrationTests
 
         var events = sink.Snapshot();
 
+        var recoveryMilestones = events
+            .Where(researchEvent => researchEvent.EventKind is ResearchEventKind.RecoveryStarted
+                or ResearchEventKind.HistoryReady
+                or ResearchEventKind.RecoveryCompleted)
+            .ToArray();
         Assert.Equal(
             [
                 ResearchEventKind.RecoveryStarted,
                 ResearchEventKind.HistoryReady,
                 ResearchEventKind.RecoveryCompleted,
             ],
-            events.Take(3).Select(researchEvent => researchEvent.EventKind));
-        Assert.Equal([1L, 2L, 3L], events.Take(3).Select(researchEvent => researchEvent.LogicalEventId));
-        Assert.Empty(events[0].DependencyEventIds);
-        Assert.Equal([1L], events[1].DependencyEventIds);
-        Assert.Equal([2L], events[2].DependencyEventIds);
+            recoveryMilestones.Select(researchEvent => researchEvent.EventKind));
+        Assert.Empty(recoveryMilestones[0].DependencyEventIds);
+        Assert.Single(recoveryMilestones[1].DependencyEventIds);
+        Assert.True(recoveryMilestones[1].DependencyEventIds[0] < recoveryMilestones[1].LogicalEventId);
+        Assert.Equal([recoveryMilestones[1].LogicalEventId], recoveryMilestones[2].DependencyEventIds);
         Assert.All(events, researchEvent => Assert.True(researchEvent.HistoryId.IsValid));
     }
 
@@ -82,7 +87,13 @@ public sealed class ResearchTelemetryIntegrationTests
         }
 
         var events = sink.Snapshot();
-        var commitEvents = events.Skip(3).ToArray();
+        var commitEvents = events
+            .Where(researchEvent => researchEvent.EventKind is ResearchEventKind.OperationStarted
+                or ResearchEventKind.DurabilityBarrier
+                or ResearchEventKind.AuthorityPublished
+                or ResearchEventKind.OperationCompleted)
+            .Where(researchEvent => researchEvent.TransactionId is not null)
+            .ToArray();
 
         Assert.Equal(
             [
@@ -92,10 +103,9 @@ public sealed class ResearchTelemetryIntegrationTests
                 ResearchEventKind.OperationCompleted,
             ],
             commitEvents.Select(researchEvent => researchEvent.EventKind));
-        Assert.Equal([4L, 5L, 6L, 7L], commitEvents.Select(researchEvent => researchEvent.LogicalEventId));
-        Assert.Equal([4L], commitEvents[1].DependencyEventIds);
-        Assert.Equal([5L], commitEvents[2].DependencyEventIds);
-        Assert.Equal([6L], commitEvents[3].DependencyEventIds);
+        Assert.Equal([commitEvents[0].LogicalEventId], commitEvents[1].DependencyEventIds);
+        Assert.Equal([commitEvents[1].LogicalEventId], commitEvents[2].DependencyEventIds);
+        Assert.Equal([commitEvents[2].LogicalEventId], commitEvents[3].DependencyEventIds);
         Assert.All(commitEvents, researchEvent => Assert.Equal(1UL, researchEvent.AuthorityGeneration));
     }
 
@@ -189,9 +199,15 @@ public sealed class ResearchTelemetryIntegrationTests
             .Where(item => item.HistoryId.Value == branchHistoryId
                 && item.EventKind is ResearchEventKind.RecoveryPhaseStarted or ResearchEventKind.RecoveryPhaseCompleted)
             .ToArray();
-        var phases = Enum.GetValues<ResearchRecoveryPhaseKind>()
-            .Where(phase => phase != ResearchRecoveryPhaseKind.None)
-            .ToArray();
+        var phases = new[]
+        {
+            ResearchRecoveryPhaseKind.LocalStoreOpen,
+            ResearchRecoveryPhaseKind.WalAuthorityOpen,
+            ResearchRecoveryPhaseKind.CheckpointLoadAndReplay,
+            ResearchRecoveryPhaseKind.WalReplay,
+            ResearchRecoveryPhaseKind.PhysicalStateValidation,
+            ResearchRecoveryPhaseKind.SnapshotMetadataOpen,
+        };
         Assert.Equal(phases.Length * 2, phaseEvents.Length);
         foreach (var phase in phases)
         {
@@ -204,6 +220,26 @@ public sealed class ResearchTelemetryIntegrationTests
                 && item.RecoveryPhaseObservation?.Phase == phase);
             Assert.Equal([startedPhase.LogicalEventId], completedPhase.DependencyEventIds);
             Assert.True(startedPhase.LogicalEventId < completedPhase.LogicalEventId);
+        }
+
+
+        var mainHistoryId = reopened.GetHistoryTopologyDiagnostics().Main.HistoryId;
+        foreach (var globalPhase in new[]
+        {
+            ResearchRecoveryPhaseKind.CatalogAndDependencyValidation,
+            ResearchRecoveryPhaseKind.BranchRuntimesOpen,
+        })
+        {
+            var globalStarted = Assert.Single(events, item =>
+                item.HistoryId.Value == mainHistoryId
+                && item.EventKind == ResearchEventKind.RecoveryPhaseStarted
+                && item.RecoveryPhaseObservation?.Phase == globalPhase);
+            var globalCompleted = Assert.Single(events, item =>
+                item.HistoryId.Value == mainHistoryId
+                && item.EventKind == ResearchEventKind.RecoveryPhaseCompleted
+                && item.OperationId == globalStarted.OperationId
+                && item.RecoveryPhaseObservation?.Phase == globalPhase);
+            Assert.Equal([globalStarted.LogicalEventId], globalCompleted.DependencyEventIds);
         }
 
         Assert.True(validated.LogicalEventId < events.Single(item => item.EventKind == ResearchEventKind.RecoveryCompleted).LogicalEventId);

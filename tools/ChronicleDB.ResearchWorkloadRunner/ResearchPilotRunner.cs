@@ -37,6 +37,7 @@ internal static partial class ResearchPilotRunner
             "P3T" => Task.FromResult(RunAncestryTimingControlPilot(args[1..])),
             "P4" => Task.FromResult(RunRecoverySchedulingPilot(args[1..])),
             "P4R" => Task.FromResult(RunMeasuredRecoveryPilot(args[1..])),
+            "P4M" => Task.FromResult(RunRecoveryMatrixPilot(args[1..])),
             "P5" => Task.FromResult(RunRecoveryCompositionPilot(args[1..])),
             "P6" => Task.FromResult(RunErasureClosurePilot(args[1..])),
             _ => Task.FromResult(UnknownPilot(args[0])),
@@ -534,9 +535,19 @@ internal static partial class ResearchPilotRunner
                 .ToArray();
 
             var historyIndexById = branchMeasurements.ToDictionary(item => item.HistoryId, item => item.Index);
+            var branchPhaseKinds = new[]
+            {
+                ResearchRecoveryPhaseKind.LocalStoreOpen,
+                ResearchRecoveryPhaseKind.WalAuthorityOpen,
+                ResearchRecoveryPhaseKind.CheckpointLoadAndReplay,
+                ResearchRecoveryPhaseKind.WalReplay,
+                ResearchRecoveryPhaseKind.PhysicalStateValidation,
+                ResearchRecoveryPhaseKind.SnapshotMetadataOpen,
+            };
             var phaseMeasurements = timed
-                .Where(item => item.Event.EventKind is ResearchEventKind.RecoveryPhaseStarted
-                    or ResearchEventKind.RecoveryPhaseCompleted)
+                .Where(item => historyIndexById.ContainsKey(item.Event.HistoryId.Value)
+                    && item.Event.EventKind is ResearchEventKind.RecoveryPhaseStarted
+                        or ResearchEventKind.RecoveryPhaseCompleted)
                 .GroupBy(item => (item.Event.HistoryId, item.Event.OperationId))
                 .Select(group => group.OrderBy(item => item.Event.LogicalEventId).ToArray())
                 .Where(group => group.Length == 2
@@ -554,12 +565,33 @@ internal static partial class ResearchPilotRunner
                     group[1].Elapsed.TotalMilliseconds - group[0].Elapsed.TotalMilliseconds))
                 .OrderBy(item => item.StartMilliseconds)
                 .ToArray();
-            var expectedPhaseCount = checked(historyCount * Enum.GetValues<ResearchRecoveryPhaseKind>().Count(phase => phase != ResearchRecoveryPhaseKind.None));
+            var expectedPhaseCount = checked(historyCount * branchPhaseKinds.Length);
             if (phaseMeasurements.Length != expectedPhaseCount)
             {
                 throw new InvalidOperationException(
                     $"P4R expected {expectedPhaseCount} branch recovery phase measurements, found {phaseMeasurements.Length}.");
             }
+
+            var mainHistoryId = recoveryStarted.Event.HistoryId.Value;
+            var globalPhases = timed
+                .Where(item => item.Event.HistoryId.Value == mainHistoryId
+                    && item.Event.EventKind is ResearchEventKind.RecoveryPhaseStarted
+                        or ResearchEventKind.RecoveryPhaseCompleted)
+                .GroupBy(item => item.Event.OperationId)
+                .Select(group => group.OrderBy(item => item.Event.LogicalEventId).ToArray())
+                .Where(group => group.Length == 2
+                    && group[0].Event.EventKind == ResearchEventKind.RecoveryPhaseStarted
+                    && group[1].Event.EventKind == ResearchEventKind.RecoveryPhaseCompleted
+                    && group[0].Event.RecoveryPhaseObservation is not null
+                    && group[0].Event.RecoveryPhaseObservation!.Phase == group[1].Event.RecoveryPhaseObservation?.Phase)
+                .Select(group => new MeasuredRecoveryPhase(
+                    Index: -1,
+                    mainHistoryId,
+                    group[0].Event.RecoveryPhaseObservation!.Phase,
+                    group[0].Elapsed.TotalMilliseconds - recoveryStarted.Elapsed.TotalMilliseconds,
+                    group[1].Elapsed.TotalMilliseconds - recoveryStarted.Elapsed.TotalMilliseconds,
+                    group[1].Elapsed.TotalMilliseconds - group[0].Elapsed.TotalMilliseconds))
+                .ToArray();
 
             var requested = branchMeasurements.Single(item => item.Index == requestedIndex);
             var requestedPhases = phaseMeasurements.Where(item => item.Index == requestedIndex).ToArray();
@@ -590,6 +622,8 @@ internal static partial class ResearchPilotRunner
                 TotalWalReplayMilliseconds: SumPhase(phaseMeasurements, ResearchRecoveryPhaseKind.WalReplay),
                 TotalPhysicalValidationMilliseconds: SumPhase(phaseMeasurements, ResearchRecoveryPhaseKind.PhysicalStateValidation),
                 TotalSnapshotMetadataMilliseconds: SumPhase(phaseMeasurements, ResearchRecoveryPhaseKind.SnapshotMetadataOpen),
+                CatalogAndDependencyValidationMilliseconds: SumPhase(globalPhases, ResearchRecoveryPhaseKind.CatalogAndDependencyValidation),
+                BranchRuntimesOpenMilliseconds: SumPhase(globalPhases, ResearchRecoveryPhaseKind.BranchRuntimesOpen),
                 WallClockOpenMilliseconds: wallClock.Elapsed.TotalMilliseconds,
                 RecoveryCompletedMilliseconds: recoveryCompletedMilliseconds,
                 PreBranchRecoveryMilliseconds: firstBranchStart,
@@ -610,6 +644,7 @@ internal static partial class ResearchPilotRunner
                 $"P4R PASS histories={historyCount} commits={commitsPerHistory} " +
                 $"open-ms={result.RecoveryCompletedMilliseconds:F2} branch-fraction={result.BranchRecoveryFraction:P1} " +
                 $"wal-ms={result.TotalWalReplayMilliseconds:F2} physical-ms={result.TotalPhysicalValidationMilliseconds:F2} " +
+                $"catalog-ms={result.CatalogAndDependencyValidationMilliseconds:F2} branches-ms={result.BranchRuntimesOpenMilliseconds:F2} " +
                 $"optimistic-upper={result.OptimisticUpperBoundSpeedup:F2}x selective-ready={result.CurrentSemanticsAllowsSelectiveHistoryReady} " +
                 $"output={outputDirectory}");
             return result.TelemetryComplete ? 0 : 1;
@@ -2077,6 +2112,8 @@ internal static partial class ResearchPilotRunner
         Console.Error.WriteLine("  pilot P3 <seed> <reads-per-depth>=10+ [output-directory]");
         Console.Error.WriteLine("  pilot P3T <seed> <reads-per-depth>=100+ [output-directory]");
         Console.Error.WriteLine("  pilot P4 <seed> <history-count:4..64> <requested-index:1..count-1> [output-directory]");
+        Console.Error.WriteLine("  pilot P4R <seed> <history-count:4..32> <commits-per-history:1..500> <requested-index> [output-directory]");
+        Console.Error.WriteLine("  pilot P4M <seed> <history-count:4..32> <checkpoint-commits:1..500> <wal-tail-commits:0..500> <value-bytes:16..65536> <requested-index> <repetitions:2..30> [output-directory]");
         Console.Error.WriteLine("  pilot P5 <max-depth:1..12> [output-directory]");
         Console.Error.WriteLine("  pilot P6 <seed> [output-directory]");
     }
@@ -2367,6 +2404,8 @@ internal static partial class ResearchPilotRunner
         double TotalWalReplayMilliseconds,
         double TotalPhysicalValidationMilliseconds,
         double TotalSnapshotMetadataMilliseconds,
+        double CatalogAndDependencyValidationMilliseconds,
+        double BranchRuntimesOpenMilliseconds,
         double WallClockOpenMilliseconds,
         double RecoveryCompletedMilliseconds,
         double PreBranchRecoveryMilliseconds,
