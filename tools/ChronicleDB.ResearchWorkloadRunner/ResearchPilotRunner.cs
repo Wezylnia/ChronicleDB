@@ -39,6 +39,7 @@ internal static partial class ResearchPilotRunner
             "P3" => Task.FromResult(RunAncestryPilot(args[1..])),
             "P3T" => Task.FromResult(RunAncestryTimingControlPilot(args[1..])),
             "P3B" => Task.FromResult(RunStableAncestryRoutingPilot(args[1..])),
+            "P3BR" => Task.FromResult(RunStableAncestryRoutingCampaign(args[1..])),
             "P4" => Task.FromResult(RunRecoverySchedulingPilot(args[1..])),
             "P4R" => Task.FromResult(RunMeasuredRecoveryPilot(args[1..])),
             "P4M" => Task.FromResult(RunRecoveryMatrixPilot(args[1..])),
@@ -2260,6 +2261,7 @@ internal static partial class ResearchPilotRunner
         Console.Error.WriteLine("  pilot P3 <seed> <reads-per-depth>=10+ [output-directory]");
         Console.Error.WriteLine("  pilot P3T <seed> <reads-per-depth>=100+ [output-directory]");
         Console.Error.WriteLine("  pilot P3B <seed> <depth:2..16> <key-count:32..4096> <reads>=1000 <uniform|zipf> [output-directory]");
+        Console.Error.WriteLine("  pilot P3BR <seed-start> <seed-count:1..20> <repetitions:2..10> <depth:2..16> <key-count:32..4096> <reads>=1000 <uniform|zipf> [output-directory]");
         Console.Error.WriteLine("  pilot P4 <seed> <history-count:4..64> <requested-index:1..count-1> [output-directory]");
         Console.Error.WriteLine("  pilot P4R <seed> <history-count:4..32> <commits-per-history:1..500> <requested-index> [output-directory]");
         Console.Error.WriteLine("  pilot P4M <seed> <history-count:4..32> <checkpoint-commits:1..500> <wal-tail-commits:0..500> <value-bytes:16..65536> <requested-index> <repetitions:2..30> [output-directory]");
