@@ -122,6 +122,39 @@ public sealed class ObserverExactErasureIntegrationTests
         Assert.Contains(active.ObserverId, oracle.BlockingObserverIdsUnrepresentedByLegacyP6);
     }
 
+    [Fact]
+    public void ContractPlannerUsesActualNestedWitnessAndRemainsFailClosedOnRepresentationClosure()
+    {
+        using var directory = new StorageTestDirectory();
+        var key = new byte[] { 0x45 };
+        using var database = ChronicleDatabase.Open(directory.Path);
+        database.Put(key, [0x91, 0x92]);
+        using var parent = database.CreateBranch("a8-plan-parent");
+        using var nested = parent.CreateBranch("a8-plan-nested");
+        using var snapshot = nested.CreateSnapshot("a8-plan-snapshot");
+
+        var retention = database.CaptureResearchRetentionSnapshot();
+        var closure = database.CaptureResearchErasureClosureInput(key);
+        var plan = ObserverExactErasureContractPlanner.Plan(
+            retention,
+            closure,
+            ErasureMode.Force,
+            forceAuthorized: true);
+
+        Assert.Contains(plan.SemanticAnalysis.InheritedBlockingObservers, item =>
+            item.ObserverId == RootObserverId(snapshot.Info.SnapshotId)
+            && item.ResolvedHistoryId != nested.HistoryId);
+        Assert.Contains(plan.SemanticActions, action =>
+            action.Kind == ObserverExactErasureActionKind.RevokePersistentSnapshotForKey
+            && action.ObserverIds.Contains(RootObserverId(snapshot.Info.SnapshotId), StringComparer.Ordinal));
+        Assert.False(plan.CanAcknowledgeAfterDurablePlanApplied);
+        Assert.Equal(
+            plan.RepresentationAnalysis.ClosureIsComplete
+                ? ObserverExactErasurePlanOutcome.ForcePlanRequiresKeyScopedSemanticExtension
+                : ObserverExactErasurePlanOutcome.BlockedByIncompleteClosure,
+            plan.Outcome);
+    }
+
     private static string KeyId(byte[] key)
         => Convert.ToHexString(SHA256.HashData(key)).ToLowerInvariant();
 

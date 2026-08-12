@@ -147,6 +147,7 @@ public sealed class ObserverExactErasureOracle
                 AddGenericObserver(observers, history, version.CommitSequence, keyId);
             }
             AddGenericObserver(observers, history, history.CurrentSequence, keyId);
+            AddCurrentObserver(observers, history, keyId);
         }
 
         foreach (var active in _snapshot.ActiveBoundaries)
@@ -178,17 +179,25 @@ public sealed class ObserverExactErasureOracle
         ulong boundary,
         string keyId)
     {
-        var kind = boundary == history.CurrentSequence
-            ? ErasureObserverContractKind.CurrentState
-            : ErasureObserverContractKind.GenericTimeTravel;
-        var id = kind == ErasureObserverContractKind.CurrentState
-            ? $"current:{history.HistoryId:N}:{keyId}"
-            : $"generic:{history.HistoryId:N}:{boundary}:{keyId}";
+        var id = $"generic:{history.HistoryId:N}:{boundary}:{keyId}";
         target[new ObserverBoundaryIdentity(id, history.HistoryId, boundary)] = new BoundaryObserver(
             id,
-            kind,
+            ErasureObserverContractKind.GenericTimeTravel,
             history.HistoryId,
             boundary);
+    }
+
+    private static void AddCurrentObserver(
+        Dictionary<ObserverBoundaryIdentity, BoundaryObserver> target,
+        ResearchHistoryRetentionSnapshot history,
+        string keyId)
+    {
+        var id = $"current:{history.HistoryId:N}:{keyId}";
+        target[new ObserverBoundaryIdentity(id, history.HistoryId, history.CurrentSequence)] = new BoundaryObserver(
+            id,
+            ErasureObserverContractKind.CurrentState,
+            history.HistoryId,
+            history.CurrentSequence);
     }
 
     private ObserverExactErasureWitness Resolve(BoundaryObserver observer, string keyId)

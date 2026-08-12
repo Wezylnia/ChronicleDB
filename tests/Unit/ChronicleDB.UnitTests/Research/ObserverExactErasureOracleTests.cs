@@ -309,6 +309,8 @@ public sealed class ObserverExactErasureOracleTests
                 AddReferenceGeneric(observers, history, version.CommitSequence, keyId);
             }
             AddReferenceGeneric(observers, history, history.CurrentSequence, keyId);
+            observers[$"current:{history.HistoryId:N}:{keyId}"] =
+                (ErasureObserverContractKind.CurrentState, history.HistoryId, history.CurrentSequence);
         }
         foreach (var active in snapshot.ActiveBoundaries)
         {
@@ -333,13 +335,8 @@ public sealed class ObserverExactErasureOracleTests
         ulong boundary,
         string keyId)
     {
-        var kind = boundary == history.CurrentSequence
-            ? ErasureObserverContractKind.CurrentState
-            : ErasureObserverContractKind.GenericTimeTravel;
-        var id = kind == ErasureObserverContractKind.CurrentState
-            ? $"current:{history.HistoryId:N}:{keyId}"
-            : $"generic:{history.HistoryId:N}:{boundary}:{keyId}";
-        target[id] = (kind, history.HistoryId, boundary);
+        var id = $"generic:{history.HistoryId:N}:{boundary}:{keyId}";
+        target[id] = (ErasureObserverContractKind.GenericTimeTravel, history.HistoryId, boundary);
     }
 
     private static ObserverExactErasureWitness ResolveReference(
