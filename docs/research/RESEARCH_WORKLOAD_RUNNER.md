@@ -72,3 +72,9 @@ dotnet run --project tools/ChronicleDB.ResearchWorkloadRunner --configuration Re
 baselines. A zero relation difference is preserved as negative novelty evidence; the
 pilot passes when the bounded observer-equivalence checks are sound, not when topology
 necessarily improves reduction.
+
+## Repeated ancestry and research-gate commands
+
+`P3BR` runs `P3B` in independent child processes across deterministic seed/repetition order and writes `p3br-plan.json` before any child result is observed. This prevents a single warm process from defining the ancestry performance claim.
+
+The top-level `gate` command records candidate dispositions from evidence-file SHA-256 hashes and aggregates them into a canonical research-gate report. These artifacts are research metadata only; they never participate in engine recovery, retention, routing or erasure authority.

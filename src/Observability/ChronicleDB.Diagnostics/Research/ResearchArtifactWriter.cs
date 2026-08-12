@@ -22,6 +22,8 @@ public sealed class ResearchArtifactWriter
     public const string CampaignRegistrationHashFileName = "campaign-registration.sha256";
     public const string CandidateGateDecisionFileName = "candidate-gate.json";
     public const string CandidateGateDecisionHashFileName = "candidate-gate.sha256";
+    public const string ResearchGateReportFileName = "research-gate-report.json";
+    public const string ResearchGateReportHashFileName = "research-gate-report.sha256";
 
     public ResearchArtifactWriter(string directoryPath)
     {
@@ -113,6 +115,21 @@ public sealed class ResearchArtifactWriter
             hash);
     }
 
+    public ResearchGateReportArtifact WriteResearchGateReport(ResearchGateReport report)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+
+        var canonicalJson = report.SerializeCanonical();
+        var hash = report.ComputeCanonicalSha256();
+        WriteImmutable(ResearchGateReportFileName, canonicalJson);
+        WriteImmutable(ResearchGateReportHashFileName, hash);
+
+        return new ResearchGateReportArtifact(
+            Path.Combine(DirectoryPath, ResearchGateReportFileName),
+            Path.Combine(DirectoryPath, ResearchGateReportHashFileName),
+            hash);
+    }
+
     public ResearchCrashPlanArtifact WriteCrashPlan(ResearchCrashPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
@@ -200,4 +217,9 @@ public sealed record ResearchCampaignRegistrationArtifact(
 public sealed record ResearchCandidateGateDecisionArtifact(
     string DecisionPath,
     string DecisionHashPath,
+    string Sha256);
+
+public sealed record ResearchGateReportArtifact(
+    string ReportPath,
+    string ReportHashPath,
     string Sha256);

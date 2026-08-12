@@ -102,6 +102,62 @@ public sealed class ResearchCampaignRegistrationTests
         Assert.Throws<InvalidOperationException>(decision.Validate);
     }
 
+
+    [Fact]
+    public void ResearchGateReportCanonicalizesCandidateOrderingAndRejectsDuplicates()
+    {
+        var first = Decision("A9", ResearchCandidateDisposition.Weakened, 'b');
+        var second = Decision("A1", ResearchCandidateDisposition.Supported, 'a');
+        var report = new ResearchGateReport
+        {
+            FormatVersion = ResearchGateReport.CurrentFormatVersion,
+            Release = "v1.1",
+            UtcGeneratedAt = new DateTimeOffset(2026, 8, 12, 9, 0, 0, TimeSpan.Zero),
+            Decisions = [first, second],
+        };
+        var reordered = report with { Decisions = [second, first] };
+
+        Assert.Equal(report.SerializeCanonical(), reordered.SerializeCanonical());
+        Assert.Equal(report.ComputeCanonicalSha256(), reordered.ComputeCanonicalSha256());
+        Assert.Throws<InvalidOperationException>(() => (report with { Decisions = [second, second] }).Validate());
+    }
+
+    [Fact]
+    public void ResearchGateReportArtifactIsImmutable()
+    {
+        using var directory = new TemporaryDirectory();
+        var writer = new ResearchArtifactWriter(directory.Path);
+        var report = new ResearchGateReport
+        {
+            FormatVersion = ResearchGateReport.CurrentFormatVersion,
+            Release = "v1.1",
+            UtcGeneratedAt = new DateTimeOffset(2026, 8, 12, 9, 0, 0, TimeSpan.Zero),
+            Decisions = [Decision("A1", ResearchCandidateDisposition.Supported, 'a')],
+        };
+
+        var artifact = writer.WriteResearchGateReport(report);
+        Assert.Equal(report.ComputeCanonicalSha256(), artifact.Sha256);
+        Assert.Throws<IOException>(() => writer.WriteResearchGateReport(report with
+        {
+            Release = "v1.1-changed",
+        }));
+    }
+
+    private static ResearchCandidateGateDecision Decision(
+        string candidateId,
+        ResearchCandidateDisposition disposition,
+        char evidence)
+        => new()
+        {
+            FormatVersion = ResearchCandidateGateDecision.CurrentFormatVersion,
+            CandidateId = candidateId,
+            Disposition = disposition,
+            NarrowClaimVersion = candidateId + "-claim-v1",
+            Rationale = "Recorded evidence disposition.",
+            UtcRecordedAt = new DateTimeOffset(2026, 8, 12, 8, 30, 0, TimeSpan.Zero),
+            EvidenceSha256 = [Hash(evidence)],
+        };
+
     private static ResearchCampaignRegistration CreateRegistration(IReadOnlyList<ResearchCampaignRunRegistration> runs)
         => new()
         {

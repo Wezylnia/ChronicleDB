@@ -10,6 +10,11 @@ if (args.Length > 0 && args[0].Equals("pilot", StringComparison.OrdinalIgnoreCas
     return await ResearchPilotRunner.RunAsync(args[1..]);
 }
 
+if (args.Length > 0 && args[0].Equals("gate", StringComparison.OrdinalIgnoreCase))
+{
+    return ResearchGateRunner.Run(args[1..]);
+}
+
 if (args.Length > 0 && args[0].Equals("crash", StringComparison.OrdinalIgnoreCase))
 {
     return await RunCrashParentAsync(args[1..]);

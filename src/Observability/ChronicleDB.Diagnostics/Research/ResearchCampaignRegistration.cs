@@ -264,3 +264,79 @@ public sealed record ResearchCandidateGateDecision
         WriteIndented = false,
     };
 }
+
+/// <summary>
+/// Immutable aggregate of candidate gate decisions used to close a v1.1 research gate.
+/// It records evidence dispositions without assigning an automatic ranking or winner.
+/// </summary>
+public sealed record ResearchGateReport
+{
+    public const int CurrentFormatVersion = 1;
+
+    public required int FormatVersion { get; init; }
+
+    public required string Release { get; init; }
+
+    public required DateTimeOffset UtcGeneratedAt { get; init; }
+
+    public required IReadOnlyList<ResearchCandidateGateDecision> Decisions { get; init; }
+
+    public string SerializeCanonical()
+    {
+        Validate();
+        var canonical = this with
+        {
+            Decisions = Decisions
+                .OrderBy(decision => decision.CandidateId, StringComparer.Ordinal)
+                .ToArray(),
+        };
+        return JsonSerializer.Serialize(canonical, CanonicalJsonOptions);
+    }
+
+    public string ComputeCanonicalSha256()
+    {
+        var bytes = Encoding.UTF8.GetBytes(SerializeCanonical());
+        return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+    }
+
+    public void Validate()
+    {
+        if (FormatVersion != CurrentFormatVersion)
+        {
+            throw new InvalidOperationException(
+                $"Unsupported research-gate format {FormatVersion}; expected {CurrentFormatVersion}.");
+        }
+
+        if (string.IsNullOrWhiteSpace(Release))
+        {
+            throw new InvalidOperationException("Release must not be empty.");
+        }
+
+        if (UtcGeneratedAt.Offset != TimeSpan.Zero)
+        {
+            throw new InvalidOperationException("UtcGeneratedAt must use the UTC offset.");
+        }
+
+        if (Decisions is null || Decisions.Count == 0)
+        {
+            throw new InvalidOperationException("A research gate must contain at least one candidate decision.");
+        }
+
+        var candidates = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var decision in Decisions)
+        {
+            ArgumentNullException.ThrowIfNull(decision);
+            decision.Validate();
+            if (!candidates.Add(decision.CandidateId))
+            {
+                throw new InvalidOperationException($"Duplicate candidate decision '{decision.CandidateId}'.");
+            }
+        }
+    }
+
+    private static JsonSerializerOptions CanonicalJsonOptions { get; } = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = false,
+    };
+}
