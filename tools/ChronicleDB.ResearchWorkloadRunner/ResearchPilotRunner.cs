@@ -5,7 +5,7 @@ using ChronicleDB.Core.Identifiers;
 using ChronicleDB.Diagnostics.Research;
 using ChronicleDB.Maintenance;
 
-internal static class ResearchPilotRunner
+internal static partial class ResearchPilotRunner
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -29,6 +29,7 @@ internal static class ResearchPilotRunner
             "P1S" => Task.FromResult(RunRetentionHotSetSweepPilot(args[1..])),
             "P1P" => Task.FromResult(RunRetentionPairedPhysicalPilot(args[1..])),
             "P1T" => Task.FromResult(RunRetentionTriangulationPilot(args[1..])),
+            "P1M" => Task.FromResult(RunRetentionMatrixPilot(args[1..])),
             "P2" => Task.FromResult(RunCrashPorPilot(args[1..])),
             "P2R" => Task.FromResult(RunRealTraceCrashPorPilot(args[1..])),
             "P2L" => Task.FromResult(RunRecoveryTopologyCrashPorPilot(args[1..])),
@@ -1582,21 +1583,33 @@ internal static class ResearchPilotRunner
             CopyDirectory(sourceDirectory, retainedDirectory);
             CopyDirectory(sourceDirectory, droppedDirectory);
 
-            using (var retained = ChronicleDatabase.Open(retainedDirectory))
+            CompactionResult? retainedCompaction = null;
+            var retainedReclamation = PhysicalStorageProbe.Measure(retainedDirectory, () =>
             {
+                using var retained = ChronicleDatabase.Open(retainedDirectory);
                 _ = retained.RunGarbageCollection(new GarbageCollectionOptions { RetainRecentCommits = 0 });
-                _ = retained.RunCompaction();
-            }
+                retainedCompaction = retained.RunCompaction();
+            });
 
-            using (var dropped = ChronicleDatabase.Open(droppedDirectory))
+            CompactionResult? droppedCompaction = null;
+            var droppedReclamation = PhysicalStorageProbe.Measure(droppedDirectory, () =>
             {
+                using var dropped = ChronicleDatabase.Open(droppedDirectory);
                 dropped.DeleteBranch(branchId);
                 _ = dropped.RunGarbageCollection(new GarbageCollectionOptions { RetainRecentCommits = 0 });
-                _ = dropped.RunCompaction();
-            }
+                droppedCompaction = dropped.RunCompaction();
+            });
 
-            var retainedPhysical = PhysicalStorageProbe.Capture(retainedDirectory);
-            var droppedPhysical = PhysicalStorageProbe.Capture(droppedDirectory);
+            var retainedPhysical = retainedReclamation.After;
+            var droppedPhysical = droppedReclamation.After;
+            if (retainedCompaction is null)
+            {
+                throw new InvalidOperationException("Retained counterfactual compaction did not run.");
+            }
+            if (droppedCompaction is null)
+            {
+                throw new InvalidOperationException("Dropped counterfactual compaction did not run.");
+            }
             var branchToken = branchId.ToString("N");
             var retainedBranchLocalAllocated = retainedPhysical.Files
                 .Where(file => file.RelativePath.Contains(branchToken, StringComparison.OrdinalIgnoreCase))
@@ -1633,9 +1646,19 @@ internal static class ResearchPilotRunner
                 PairedAllocatedByteDifference: pairedAllocatedDifference,
                 RetainedBranchLocalAllocatedBytes: retainedBranchLocalAllocated,
                 PairedSharedAllocatedByteDifference: pairedSharedAllocatedDifference,
+                PairedWalByteDifference: retainedPhysical.WalBytes - droppedPhysical.WalBytes,
+                PairedCheckpointByteDifference: retainedPhysical.CheckpointBytes - droppedPhysical.CheckpointBytes,
                 TotalPhysicalToExactMarginalRatio: totalPhysicalToExact,
                 SharedPhysicalToExactMarginalRatio: sharedPhysicalToExact,
                 SharedPhysicalMinusExactBytes: sharedPhysicalMinusExact,
+                RetainedReclaimElapsedMilliseconds: retainedReclamation.Elapsed.TotalMilliseconds,
+                DroppedReclaimElapsedMilliseconds: droppedReclamation.Elapsed.TotalMilliseconds,
+                RetainedPeakTemporaryBytes: retainedReclamation.PeakTemporaryBytes,
+                DroppedPeakTemporaryBytes: droppedReclamation.PeakTemporaryBytes,
+                RetainedCompactionBytesRewritten: retainedCompaction.BytesRewritten,
+                DroppedCompactionBytesRewritten: droppedCompaction.BytesRewritten,
+                RetainedCompactionBytesReclaimed: retainedCompaction.BytesReclaimed,
+                DroppedCompactionBytesReclaimed: droppedCompaction.BytesReclaimed,
                 AllocationMeasurementExact: retainedPhysical.AllocationIsExact && droppedPhysical.AllocationIsExact);
             File.WriteAllText(
                 Path.Combine(outputDirectory, "p1t-result.json"),
@@ -1650,7 +1673,9 @@ internal static class ResearchPilotRunner
                 $"exact={exactMarginalPayloadBytes} coarse={coarseRootPayloadBytes} amp={coarseAmplification:F2} " +
                 $"paired-total={pairedAllocatedDifference} branch-local={retainedBranchLocalAllocated} " +
                 $"paired-shared={pairedSharedAllocatedDifference} shared/exact={sharedPhysicalToExact:F2} " +
-                $"shared-minus-exact={sharedPhysicalMinusExact} output={outputDirectory}");
+                $"shared-minus-exact={sharedPhysicalMinusExact} retained-rewrite={retainedCompaction.BytesRewritten} " +
+                $"dropped-rewrite={droppedCompaction.BytesRewritten} retained-ms={retainedReclamation.Elapsed.TotalMilliseconds:F2} " +
+                $"dropped-ms={droppedReclamation.Elapsed.TotalMilliseconds:F2} output={outputDirectory}");
             return pass ? 0 : 1;
         }
         catch (Exception exception)
@@ -2001,6 +2026,7 @@ internal static class ResearchPilotRunner
         Console.Error.WriteLine("  pilot P1S <seed> <base-key-count> <value-bytes> <churn-rounds> <hot-key-count> [output-directory]");
         Console.Error.WriteLine("  pilot P1P <seed> <base-key-count> <value-bytes> <private-bytes> [output-directory]");
         Console.Error.WriteLine("  pilot P1T <seed> <base-key-count> <value-bytes> <churn-rounds> <hot-key-count> <private-bytes> [output-directory]");
+        Console.Error.WriteLine("  pilot P1M <seed-start> <seed-count> <base-key-count> <value-bytes-csv> <churn-rounds-csv> <hot-key-count-csv> <fanout-csv> <private-bytes> [output-directory]");
         Console.Error.WriteLine("  pilot P2 <history-count:2..4> [output-directory]");
         Console.Error.WriteLine("  pilot P2R <history-count:2..3> [siblings|chain] [output-directory]");
         Console.Error.WriteLine("  pilot P2L <history-count:2..4> [siblings|chain] [output-directory]");
@@ -2094,9 +2120,19 @@ internal static class ResearchPilotRunner
         long PairedAllocatedByteDifference,
         long RetainedBranchLocalAllocatedBytes,
         long PairedSharedAllocatedByteDifference,
+        long PairedWalByteDifference,
+        long PairedCheckpointByteDifference,
         double TotalPhysicalToExactMarginalRatio,
         double SharedPhysicalToExactMarginalRatio,
         long SharedPhysicalMinusExactBytes,
+        double RetainedReclaimElapsedMilliseconds,
+        double DroppedReclaimElapsedMilliseconds,
+        long RetainedPeakTemporaryBytes,
+        long DroppedPeakTemporaryBytes,
+        long RetainedCompactionBytesRewritten,
+        long DroppedCompactionBytesRewritten,
+        long RetainedCompactionBytesReclaimed,
+        long DroppedCompactionBytesReclaimed,
         bool AllocationMeasurementExact);
 
     private sealed record RetentionBaselinePilotResult(
