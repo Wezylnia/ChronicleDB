@@ -17,7 +17,7 @@ public sealed class ShadowAwareRetentionProjection
     private const string BranchBaseKind = "BranchBase";
 
     private readonly ResearchRetentionSnapshot _snapshot;
-    private readonly IReadOnlyDictionary<Guid, ResearchHistoryRetentionSnapshot> _histories;
+    private readonly Dictionary<Guid, ResearchHistoryRetentionSnapshot> _histories;
     private readonly Dictionary<Guid, BranchEdge> _parentEdges;
     private readonly Dictionary<Guid, IReadOnlyDictionary<string, ResearchCommittedVersionSnapshot[]>> _versionsByHistoryAndKey;
     private readonly double _constructionMilliseconds;
@@ -55,29 +55,27 @@ public sealed class ShadowAwareRetentionProjection
             AddGenericRequirements(required, history);
         }
 
-        var work = new Queue<ObserverRequirement>();
-        var directObserverCount = 0;
+        var directObservers = new List<BoundaryObserver>(
+            _snapshot.Histories.Count + _snapshot.ActiveBoundaries.Count + _snapshot.PersistentRoots.Count);
 
         foreach (var history in _snapshot.Histories)
         {
-            work.Enqueue(new ObserverRequirement(history.HistoryId, history.RetentionFloor, KeyId: null));
-            directObserverCount++;
+            directObservers.Add(new BoundaryObserver(history.HistoryId, history.RetentionFloor));
         }
 
         foreach (var active in _snapshot.ActiveBoundaries)
         {
-            work.Enqueue(new ObserverRequirement(active.ProtectedHistoryId, active.Boundary, KeyId: null));
-            directObserverCount++;
+            directObservers.Add(new BoundaryObserver(active.ProtectedHistoryId, active.Boundary));
         }
 
         // BranchBase roots describe topology. Other roots (notably persistent
         // snapshots) are direct legal observers and therefore stay authoritative.
         foreach (var root in _snapshot.PersistentRoots.Where(root => !IsBranchBase(root)))
         {
-            work.Enqueue(new ObserverRequirement(root.ProtectedHistoryId, root.Boundary, KeyId: null));
-            directObserverCount++;
+            directObservers.Add(new BoundaryObserver(root.ProtectedHistoryId, root.Boundary));
         }
 
+        var directObserverCount = directObservers.Count;
         var allKeyIds = _snapshot.Histories
             .SelectMany(history => history.Versions)
             .Select(version => version.KeyId)
@@ -85,50 +83,51 @@ public sealed class ShadowAwareRetentionProjection
             .Order(StringComparer.Ordinal)
             .ToArray();
 
-        // Expand boundary-wide observers into per-key requirements. This keeps the
-        // recursive resolver simple and makes the key-specific branch shadowing
-        // explicit in both implementation and diagnostics.
-        var keyedWork = new Queue<ObserverRequirement>();
-        while (work.Count > 0)
-        {
-            var observer = work.Dequeue();
-            foreach (var keyId in allKeyIds)
-            {
-                keyedWork.Enqueue(observer with { KeyId = keyId });
-            }
-        }
-
+        // Resolve direct observer/key requirements in-place rather than first
+        // materializing an observer×key queue. This preserves the reference
+        // semantics while keeping transient memory proportional to the set of
+        // unique requirements actually visited.
         var visited = new HashSet<ObserverRequirement>();
         var fallbackHops = 0;
         var localShadowStops = 0;
         var rootMissingStops = 0;
         var resolvedObserverKeyCount = 0;
 
-        while (keyedWork.Count > 0)
+        foreach (var observer in directObservers)
         {
-            var requirement = keyedWork.Dequeue();
-            if (!visited.Add(requirement))
+            foreach (var keyId in allKeyIds)
             {
-                continue;
-            }
+                var currentHistory = observer.HistoryId;
+                var currentBoundary = observer.Boundary;
+                while (true)
+                {
+                    var requirement = new ObserverRequirement(currentHistory, currentBoundary, keyId);
+                    if (!visited.Add(requirement))
+                    {
+                        break;
+                    }
 
-            resolvedObserverKeyCount++;
-            var visible = FindVisibleLocal(requirement.HistoryId, requirement.KeyId!, requirement.Boundary);
-            if (visible is not null)
-            {
-                Add(required, visible);
-                localShadowStops++;
-                continue;
-            }
+                    resolvedObserverKeyCount++;
+                    var visible = FindVisibleLocal(currentHistory, keyId, currentBoundary);
+                    if (visible is not null)
+                    {
+                        Add(required, visible);
+                        localShadowStops++;
+                        break;
+                    }
 
-            if (_parentEdges.TryGetValue(requirement.HistoryId, out var edge))
-            {
-                fallbackHops++;
-                keyedWork.Enqueue(new ObserverRequirement(edge.ParentHistoryId, edge.ParentBoundary, requirement.KeyId));
-                continue;
-            }
+                    if (_parentEdges.TryGetValue(currentHistory, out var edge))
+                    {
+                        fallbackHops++;
+                        currentHistory = edge.ParentHistoryId;
+                        currentBoundary = edge.ParentBoundary;
+                        continue;
+                    }
 
-            rootMissingStops++;
+                    rootMissingStops++;
+                    break;
+                }
+            }
         }
 
         var baseline = CollectBaselineVersions(new RetentionInspector(_snapshot).Context);
@@ -144,7 +143,7 @@ public sealed class ShadowAwareRetentionProjection
         var candidateSerialized = Sum(required.Values, version => version.LogicalSerializedBytes);
         var coreProjectionMilliseconds = Stopwatch.GetElapsedTime(coreStarted).TotalMilliseconds;
         var verificationStarted = Stopwatch.GetTimestamp();
-        var equivalence = VerifyObserverEquivalence(required.Keys.ToHashSet(StringComparer.Ordinal), allKeyIds);
+        var equivalence = VerifyObserverEquivalence(candidateIds, allKeyIds);
         var observerVerificationMilliseconds = Stopwatch.GetElapsedTime(verificationStarted).TotalMilliseconds;
 
         return new ShadowAwareRetentionProjectionResult(
@@ -256,14 +255,8 @@ public sealed class ShadowAwareRetentionProjection
     {
         var currentHistory = historyId;
         var currentBoundary = boundary;
-        var visited = new HashSet<Guid>();
-        while (true)
+        for (var hops = 0; hops <= _histories.Count; hops++)
         {
-            if (!visited.Add(currentHistory))
-            {
-                throw new InvalidOperationException("Branch ancestry became cyclic during observer verification.");
-            }
-
             var local = FindVisibleLocal(currentHistory, keyId, currentBoundary, retainedVersionIds);
             if (local is not null)
             {
@@ -278,6 +271,10 @@ public sealed class ShadowAwareRetentionProjection
             currentHistory = edge.ParentHistoryId;
             currentBoundary = edge.ParentBoundary;
         }
+
+        // Validate() rejects cycles. Keep this guard so a future change cannot turn
+        // malformed ancestry into an unbounded observer-resolution loop.
+        throw new InvalidOperationException("Branch ancestry exceeded the captured history count during observer verification.");
     }
 
     private ResearchCommittedVersionSnapshot? FindVisibleLocal(
@@ -292,12 +289,30 @@ public sealed class ShadowAwareRetentionProjection
             return null;
         }
 
-        // Histories are small in the research oracle. Reverse linear search keeps
-        // the reference implementation obvious and independent from engine indexes.
-        for (var index = versions.Length - 1; index >= 0; index--)
+        // Arrays are sorted by commit sequence when the projection is constructed.
+        // Locate the newest sequence <= boundary with a binary search, then walk
+        // backward only when the verification view has intentionally removed newer
+        // versions from the projected set.
+        var lower = 0;
+        var upper = versions.Length - 1;
+        var candidate = -1;
+        while (lower <= upper)
         {
-            if (versions[index].CommitSequence <= boundary
-                && (retainedVersionIds is null || retainedVersionIds.Contains(versions[index].VersionId)))
+            var middle = lower + ((upper - lower) / 2);
+            if (versions[middle].CommitSequence <= boundary)
+            {
+                candidate = middle;
+                lower = middle + 1;
+            }
+            else
+            {
+                upper = middle - 1;
+            }
+        }
+
+        for (var index = candidate; index >= 0; index--)
+        {
+            if (retainedVersionIds is null || retainedVersionIds.Contains(versions[index].VersionId))
             {
                 return versions[index];
             }
@@ -328,40 +343,42 @@ public sealed class ShadowAwareRetentionProjection
     private static bool IsBranchBase(ResearchPersistentRetentionRootSnapshot root)
         => root.Kind.Equals(BranchBaseKind, StringComparison.Ordinal);
 
-    private static void AddGenericRequirements(
+    private void AddGenericRequirements(
         IDictionary<string, ResearchCommittedVersionSnapshot> target,
         ResearchHistoryRetentionSnapshot history)
     {
-        if (history.Versions.Count == 0)
+        if (!_versionsByHistoryAndKey.TryGetValue(history.HistoryId, out var byKey))
         {
             return;
         }
 
-        foreach (var version in history.Versions.Where(version => version.CommitSequence >= history.RetentionFloor))
+        foreach (var versions in byKey.Values)
         {
-            Add(target, version);
-        }
+            ResearchCommittedVersionSnapshot? predecessor = null;
+            foreach (var version in versions)
+            {
+                if (version.CommitSequence <= history.RetentionFloor)
+                {
+                    predecessor = version;
+                }
 
-        foreach (var visible in VisiblePredecessors(history.Versions, history.RetentionFloor))
-        {
-            Add(target, visible);
-        }
+                if (version.CommitSequence >= history.RetentionFloor)
+                {
+                    Add(target, version);
+                }
+            }
 
-        foreach (var newest in history.Versions
-                     .GroupBy(version => version.KeyId, StringComparer.Ordinal)
-                     .Select(group => group.OrderBy(version => version.CommitSequence).Last()))
-        {
-            Add(target, newest);
+            if (predecessor is not null)
+            {
+                Add(target, predecessor);
+            }
+
+            if (versions.Length > 0)
+            {
+                Add(target, versions[^1]);
+            }
         }
     }
-
-    private static IEnumerable<ResearchCommittedVersionSnapshot> VisiblePredecessors(
-        IReadOnlyList<ResearchCommittedVersionSnapshot> versions,
-        ulong boundary)
-        => versions
-            .Where(version => version.CommitSequence <= boundary)
-            .GroupBy(version => version.KeyId, StringComparer.Ordinal)
-            .Select(group => group.OrderBy(version => version.CommitSequence).Last());
 
     private static Dictionary<string, RetentionVersion> CollectBaselineVersions(RetentionContext context)
     {
