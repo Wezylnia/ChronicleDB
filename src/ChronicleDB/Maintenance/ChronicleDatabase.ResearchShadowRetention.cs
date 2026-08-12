@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using ChronicleDB.Core.Identifiers;
 using ChronicleDB.Core.Sequences;
@@ -110,7 +111,9 @@ public sealed partial class ChronicleDatabase
                         .ToArray();
 
                     var snapshot = new ResearchRetentionSnapshot(researchHistories, roots, active);
+                    var projectionStarted = Stopwatch.GetTimestamp();
                     var analysis = new ShadowAwareRetentionProjection(snapshot).Analyze();
+                    var projectionAnalysisMilliseconds = Stopwatch.GetElapsedTime(projectionStarted).TotalMilliseconds;
                     if (!analysis.CandidateIsSubsetOfBaseline
                         || !analysis.ObserverEquivalenceVerified
                         || !analysis.ObserverMinimalityVerified)
@@ -229,6 +232,7 @@ public sealed partial class ChronicleDatabase
                         ShadowReleasedPayloadBytes: analysis.ShadowReleasedPayloadBytes,
                         ShadowAwareReclamationRatio: analysis.ShadowAwareReclamationRatio,
                         ObserverEquivalenceCheckCount: analysis.ObserverEquivalenceCheckCount,
+                        ProjectionAnalysisMilliseconds: projectionAnalysisMilliseconds,
                         MainRetentionFloor: mainTargetFloor.Value,
                         PublishedHistoryOrder: Array.AsReadOnly(publishedOrder.ToArray()),
                         DeletedBranchDirectories: deletedDirectories.Reclaimed,
@@ -270,6 +274,7 @@ public sealed record ShadowAwareGarbageCollectionResult(
     long ShadowReleasedPayloadBytes,
     double ShadowAwareReclamationRatio,
     int ObserverEquivalenceCheckCount,
+    double ProjectionAnalysisMilliseconds,
     ulong MainRetentionFloor,
     IReadOnlyList<Guid> PublishedHistoryOrder,
     int DeletedBranchDirectories,
