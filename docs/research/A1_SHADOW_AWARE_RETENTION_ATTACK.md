@@ -4,7 +4,7 @@ Status date: 2026-08-12
 
 ## Pilot decision
 
-**GO at the falsification gate. Current research score: 96/100. Not yet a publication result.**
+**GO at the falsification gate. Current research score: 93/100 after the COW-clone prior-art attack. Not yet a publication result.**
 
 The original broad A1 framing is retired. Counterfactual snapshot/root deletion, exact MVCC pruning, branch-aware GC, branch-base history protection, and logical-vs-physical reclamation are all prior-art-constrained ideas and must not be claimed as novel by themselves.
 
@@ -205,7 +205,9 @@ The following are constraints, not novelty claims:
 - MatrixOne and related systems: snapshot/branch-protected GC;
 - NetApp/ZFS/Btrfs-style work: snapshot/set-level reclaimability and physical accounting concepts.
 
-The surviving claim should therefore be stated as the **combination and algorithmic treatment of per-key descendant shadowing across persistent writable history ancestry**, plus a crash-safe descendant-first authority transition and measured physical realization.
+A further novelty attack comes from copy-on-write snapshot/clone storage. ZFS-style writable clones keep an explicit dependency on an origin snapshot, and COW/refcount storage already releases physical pages/extents when references disappear. Storage patents also describe reference-counted sharing and deferred unref for snapshot/clone metadata/data pages. Therefore **"a child overwrite can stop depending on an ancestor object" is generic COW/reachability prior art and is not an A1 novelty claim**.
+
+The surviving claim must be narrower: the **semantic construction of the minimum retained MVCC-version projection from branch-local visibility, fixed ancestry boundaries, persistent snapshots, active historical boundaries and tombstone stopping rules**, together with a crash-safe descendant-first recovery-authority transition and measured logical-to-physical realization. The projection can be understood as domain-specific reachability/marking over `(observer,key)` requirements; generic graph reachability or reference counting is not claimed as novel.
 
 The final targeted novelty-kill pass on 2026-08-12 did not find a direct source that computes the same minimum per-key cross-history projection. TardisDB provides branch bitmap/version-chain visibility and proposes collecting versions that are no longer contained in any branch; HeliosDB propagates descendant branch and snapshot requirements through a scalar per-branch LSN horizon. Those are the strongest composition threats found so far, but neither inspected algorithm expresses the ChronicleDB candidate's key-specific rule that a retained descendant value/tombstone stops the corresponding ancestor requirement while unshadowed keys continue to propagate. This is an evidence-bounded literature conclusion, not a claim that no such work can exist.
 
@@ -219,7 +221,8 @@ It should be demoted or abandoned if any of the following occurs:
 2. realistic workload families show only ~1.0–1.1x retained-set improvement outside contrived high-shadow cases;
 3. a legal retained observer is found whose result changes under the candidate projection;
 4. descendant-first crash publication cannot be made safe under the declared persistence failure model;
-5. publication-scale projection overhead becomes prohibitive after reasonable implementation cleanup.
+5. publication-scale projection overhead becomes prohibitive after reasonable implementation cleanup;
+6. the candidate can be reduced to routine COW/reference-count reachability without a distinct MVCC observer-semantics, durable-authority, or empirical contribution.
 
 ## Next publication work
 
