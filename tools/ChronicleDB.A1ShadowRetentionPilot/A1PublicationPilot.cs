@@ -363,10 +363,21 @@ internal static class A1PublicationPilot
                 != BitConverter.DoubleToInt64Bits(trial.ShadowFraction)
             || BitConverter.DoubleToInt64Bits(result.RequestedTombstoneFraction)
                 != BitConverter.DoubleToInt64Bits(trial.TombstoneFraction)
+            || !string.Equals(result.Pilot, "A1-SHADOW-PUBLICATION-CASE", StringComparison.Ordinal)
             || !result.FlatExactBaselineVerified
             || !result.CandidateSubsetVerified
             || !result.ObserverEquivalenceVerified
-            || !result.ObserverMinimalityVerified)
+            || !result.ObserverMinimalityVerified
+            || result.ExpectedReleasedPayloadBytes != result.MeasuredReleasedPayloadBytes
+            || Math.Abs(result.ExpectedReclamationRatio - result.MeasuredReclamationRatio) > 1e-12
+            || !double.IsFinite(result.MeasuredReclamationRatio)
+            || !double.IsFinite(result.VerifiedProjectionMilliseconds)
+            || result.VerifiedProjectionMilliseconds < 0d
+            || result.ThreadAllocatedBytes < 0
+            || result.RealizedShadowKeyCount < 0
+            || result.RealizedShadowKeyCount > result.KeyCount
+            || result.RealizedTombstoneKeyCount < 0
+            || result.RealizedTombstoneKeyCount > result.RealizedShadowKeyCount)
         {
             throw new InvalidOperationException(
                 $"Publication-case result identity or correctness gates do not match sealed run '{trial.RunId}'.");
