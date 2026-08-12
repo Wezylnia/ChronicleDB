@@ -59,6 +59,43 @@ public sealed class ObserverScopedErasureAuthorityDescriptorTests
             first.PreservedTargetObservations.Any(preserved => preserved.ObserverId == item.ObserverId));
     }
 
+
+    [Fact]
+    public void VisibilityRegionsCoverFutureObserversBetweenSemanticChangePointsWithoutMaskingTombstoneGaps()
+    {
+        var history = Guid.Parse("00000000-0000-0000-0000-000000000066");
+        var retention = Snapshot(
+            [History(
+                history,
+                1,
+                6,
+                Version(history, "K", 1, 32),
+                Version(history, "K", 3, 0, tombstone: true),
+                Version(history, "K", 5, 32))],
+            []);
+        var closure = Closure("K", retention, Representation("wal", ErasureRepresentationKind.WalMutation, history, value: true));
+        var plan = ObserverExactErasureContractPlanner.Plan(retention, closure, ErasureMode.Force, forceAuthorized: true);
+        var descriptor = ObserverScopedErasureAuthorityDescriptorCompiler.Compile(plan);
+
+        Assert.Contains(descriptor.VisibilityRegions, region =>
+            region.HistoryId == history && region.MinimumBoundary == 1 && region.MaximumBoundary == 2);
+        Assert.Contains(descriptor.VisibilityRegions, region =>
+            region.HistoryId == history && region.MinimumBoundary == 5 && region.MaximumBoundary == 6);
+
+        Assert.Equal(
+            ObserverScopedErasureReadDecision.RedactTargetValue,
+            ObserverScopedErasureAuthorityReadFilter.Evaluate(descriptor, "K", history, 2));
+        Assert.Equal(
+            ObserverScopedErasureReadDecision.PassThrough,
+            ObserverScopedErasureAuthorityReadFilter.Evaluate(descriptor, "K", history, 3));
+        Assert.Equal(
+            ObserverScopedErasureReadDecision.RedactTargetValue,
+            ObserverScopedErasureAuthorityReadFilter.Evaluate(descriptor, "K", history, 6));
+        Assert.Equal(
+            ObserverScopedErasureReadDecision.PassThrough,
+            ObserverScopedErasureAuthorityReadFilter.Evaluate(descriptor, "OTHER", history, 2));
+    }
+
     [Fact]
     public void CompilerRejectsPlansThatDoNotRequireObserverScopedExtension()
     {

@@ -25,10 +25,17 @@ public sealed record ObserverScopedErasurePreservedObservation(
     ulong? ResolvedSequence,
     int ParentFallbackHops);
 
+public sealed record ObserverScopedErasureVisibilityRegion(
+    Guid HistoryId,
+    ulong MinimumBoundary,
+    ulong MaximumBoundary,
+    IReadOnlyList<string> EvidenceObserverIds);
+
 public sealed record ObserverScopedErasureAuthorityDescriptor(
     string FormatVersion,
     string KeyId,
     IReadOnlyList<ObserverScopedErasureRevocation> Revocations,
+    IReadOnlyList<ObserverScopedErasureVisibilityRegion> VisibilityRegions,
     IReadOnlyList<string> QuiescenceObserverIds,
     IReadOnlyList<Guid> CurrentDeleteHistoryIds,
     IReadOnlyList<ObserverScopedErasurePreservedObservation> PreservedTargetObservations,
@@ -83,6 +90,7 @@ public static class ObserverScopedErasureAuthorityDescriptorCompiler
             .Select(id => ToRevocation(blockers[id]))
             .OrderBy(item => item.ObserverId, StringComparer.Ordinal)
             .ToArray();
+        var visibilityRegions = BuildVisibilityRegions(plan.SemanticAnalysis);
         var quiescence = plan.SemanticActions
             .Where(action => action.Kind == ObserverExactErasureActionKind.WaitForActiveObserverRelease)
             .SelectMany(action => action.ObserverIds)
@@ -122,6 +130,7 @@ public static class ObserverScopedErasureAuthorityDescriptorCompiler
         var hash = ComputeHash(
             plan.SemanticAnalysis.KeyId,
             revocations,
+            visibilityRegions,
             quiescence,
             currentDeletes,
             preserved,
@@ -131,6 +140,7 @@ public static class ObserverScopedErasureAuthorityDescriptorCompiler
             FormatVersion,
             plan.SemanticAnalysis.KeyId,
             Array.AsReadOnly(revocations),
+            Array.AsReadOnly(visibilityRegions),
             Array.AsReadOnly(quiescence),
             Array.AsReadOnly(currentDeletes),
             Array.AsReadOnly(preserved),
@@ -138,6 +148,87 @@ public static class ObserverScopedErasureAuthorityDescriptorCompiler
             Array.AsReadOnly(reclaim),
             hash);
     }
+
+    private static ObserverScopedErasureVisibilityRegion[] BuildVisibilityRegions(
+        ObserverExactErasureOracleResult semantic)
+    {
+        var raw = new List<(Guid HistoryId, ulong Minimum, ulong Maximum, string EvidenceId)>();
+        foreach (var group in semantic.Observers
+                     .Where(item => item.Kind == ErasureObserverContractKind.GenericTimeTravel)
+                     .GroupBy(item => item.HistoryId)
+                     .OrderBy(group => group.Key))
+        {
+            var ordered = group.OrderBy(item => item.Boundary).ToArray();
+            for (var index = 0; index < ordered.Length; index++)
+            {
+                var current = ordered[index];
+                if (!current.ReconstructsValue)
+                {
+                    continue;
+                }
+
+                var maximum = current.Boundary;
+                if (index + 1 < ordered.Length && ordered[index + 1].Boundary > current.Boundary)
+                {
+                    maximum = checked(ordered[index + 1].Boundary - 1);
+                }
+                raw.Add((current.HistoryId, current.Boundary, maximum, current.ObserverId));
+            }
+        }
+
+        foreach (var blocker in semantic.BlockingObservers
+                     .Where(item => item.Kind != ErasureObserverContractKind.GenericTimeTravel))
+        {
+            raw.Add((blocker.HistoryId, blocker.Boundary, blocker.Boundary, blocker.ObserverId));
+        }
+
+        var result = new List<ObserverScopedErasureVisibilityRegion>();
+        foreach (var historyGroup in raw.GroupBy(item => item.HistoryId).OrderBy(group => group.Key))
+        {
+            var ordered = historyGroup
+                .OrderBy(item => item.Minimum)
+                .ThenBy(item => item.Maximum)
+                .ToArray();
+            if (ordered.Length == 0)
+            {
+                continue;
+            }
+
+            var minimum = ordered[0].Minimum;
+            var maximum = ordered[0].Maximum;
+            var evidence = new HashSet<string>(StringComparer.Ordinal) { ordered[0].EvidenceId };
+            for (var index = 1; index < ordered.Length; index++)
+            {
+                var next = ordered[index];
+                var overlapsOrAdjacent = next.Minimum <= maximum
+                    || (maximum != ulong.MaxValue && next.Minimum == maximum + 1);
+                if (overlapsOrAdjacent)
+                {
+                    maximum = Math.Max(maximum, next.Maximum);
+                    evidence.Add(next.EvidenceId);
+                    continue;
+                }
+
+                result.Add(Region(historyGroup.Key, minimum, maximum, evidence));
+                minimum = next.Minimum;
+                maximum = next.Maximum;
+                evidence = new HashSet<string>(StringComparer.Ordinal) { next.EvidenceId };
+            }
+            result.Add(Region(historyGroup.Key, minimum, maximum, evidence));
+        }
+        return result.ToArray();
+    }
+
+    private static ObserverScopedErasureVisibilityRegion Region(
+        Guid historyId,
+        ulong minimum,
+        ulong maximum,
+        IEnumerable<string> evidence)
+        => new(
+            historyId,
+            minimum,
+            maximum,
+            Array.AsReadOnly(evidence.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray()));
 
     private static ObserverScopedErasureRevocation ToRevocation(ObserverExactErasureWitness witness)
     {
@@ -175,6 +266,7 @@ public static class ObserverScopedErasureAuthorityDescriptorCompiler
     private static string ComputeHash(
         string keyId,
         IReadOnlyList<ObserverScopedErasureRevocation> revocations,
+        IReadOnlyList<ObserverScopedErasureVisibilityRegion> visibilityRegions,
         IReadOnlyList<string> quiescence,
         IReadOnlyList<Guid> currentDeletes,
         IReadOnlyList<ObserverScopedErasurePreservedObservation> preserved,
@@ -190,6 +282,12 @@ public static class ObserverScopedErasureAuthorityDescriptorCompiler
                 .Append(item.HistoryId.ToString("N")).Append('|').Append(item.Boundary).Append('|')
                 .Append(item.ResolvedVersionId).Append('|').Append(item.ResolvedHistoryId.ToString("N")).Append('|')
                 .Append(item.ResolvedSequence).Append('|').Append(item.ParentFallbackHops).AppendLine();
+        }
+        foreach (var region in visibilityRegions)
+        {
+            builder.Append("region|").Append(region.HistoryId.ToString("N")).Append('|')
+                .Append(region.MinimumBoundary).Append('|').Append(region.MaximumBoundary).Append('|')
+                .AppendJoin(',', region.EvidenceObserverIds).AppendLine();
         }
         foreach (var id in quiescence)
         {
