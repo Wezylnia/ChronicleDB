@@ -263,11 +263,11 @@ The current A1 research HEAD was revalidated after the independent flat-exact ba
 
 - solution build: **0 warnings / 0 errors**;
 - Architecture: **8 / 8 PASS**;
-- Unit: **193 / 193 PASS**;
+- Unit: **203 / 203 PASS**;
 - Persistence: **180 / 180 PASS**;
 - Correctness: **25 / 25 PASS**;
 - Recovery: **55 / 55 PASS**;
-- total xUnit: **461 / 461 PASS**;
+- total xUnit: **471 / 471 PASS**;
 - final logical pilot: 50 direct cases + 32 fanout + 10 nested + 12 mixed = **104 workloads PASS**;
 - candidate-subset failures: 0;
 - expected-release mismatches: 0;
@@ -288,6 +288,7 @@ The preregistered family structure keeps three distinct regimes: a depth/refinem
 A deterministic CLI seal of the v3 plan produced SHA-256 `5906da5feaed5ed85c3926ee38232a6aeb708a8aaf8d02f6e942bcb6a3e24302`. The plan now freezes 9 repeated Pilot-A cases, 7 Holdout cases and 5 paired-physical cases in addition to the source-anchored family grids.
 
 `--pilot-a-smoke <sealed-plan-directory>` executes exactly three representative independent child processes (deep, low-shadow negative control, wide+tombstone) and is explicitly marked infrastructure-only. `--run-pilot-a <sealed-plan-directory>` executes the full canonical 293-run Pilot-A: 158 one-shot family-grid sensitivity cases plus 135 repeated-sentinel runs (9 selected cases × 5 Pilot seeds × 3 process repetitions). It writes the deterministic trial order before the first child starts and hashes each child result. Neither command opens Holdout-A or Holdout-B.
+The canonical v3 Pilot-A execution plan is independently sealed before execution. Its current SHA-256 is `c410d6f20e93ad288e7f3f8cc87b58c6c4cc803826d97a81c426a5c2f3f425f2`. The parent validates each child result identity (topology, seed, key count, branch/depth, shadow/tombstone fractions) against that sealed run specification and fails closed on any mismatch.
 
 ### Executable v3 Pilot-A gate
 
