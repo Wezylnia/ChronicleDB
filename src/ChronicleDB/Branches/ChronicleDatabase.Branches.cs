@@ -636,20 +636,64 @@ public sealed partial class ChronicleDatabase
         var id = definition.BranchId;
         var runtime = GetBranchRuntime(id);
         EnsureBranchDeletionAllowed(definition, runtime);
+        var researchOperationId = Guid.NewGuid();
+        var researchResources = new[]
+        {
+            $"branch-{id.Value:N}-data",
+            $"branch-{id.Value:N}-wal",
+            "branch-catalog",
+            "history-roots",
+        };
+        var operationStartedEventId = PublishResearchPersistenceEvent(
+            definition.HistoryId,
+            definition.ParentHistoryId,
+            researchOperationId,
+            researchResources,
+            ResearchEventKind.OperationStarted,
+            ResearchDurabilityPhase.Prepared,
+            definition.LocalCurrentSequence.Value,
+            []);
         var intentPublished = false;
         try
         {
             _branchStore.AppendDeleteIntent(id);
             intentPublished = true;
+            var barrierEventId = PublishResearchPersistenceEvent(
+                definition.HistoryId,
+                definition.ParentHistoryId,
+                researchOperationId,
+                researchResources,
+                ResearchEventKind.DurabilityBarrier,
+                ResearchDurabilityPhase.StableStorageBarrier,
+                definition.LocalCurrentSequence.Value,
+                operationStartedEventId > 0 ? [operationStartedEventId] : []);
             _historyRootStore.AppendDelete(definition.BaseRootId);
             _historyRoots.BeginDelete(definition.BaseRootId);
             _historyRoots.CompleteDelete(definition.BaseRootId);
             _branchStore.AppendDeleteComplete(id);
+            var authorityEventId = PublishResearchPersistenceEvent(
+                definition.HistoryId,
+                definition.ParentHistoryId,
+                researchOperationId,
+                researchResources,
+                ResearchEventKind.AuthorityPublished,
+                ResearchDurabilityPhase.AuthorityPublished,
+                definition.LocalCurrentSequence.Value,
+                barrierEventId > 0 ? [barrierEventId] : []);
 
             _branches.RemoveRequired(id);
             _branchRuntimes.TryRemove(id, out _);
             _historyRoots.UnregisterHistory(definition.HistoryId);
             runtime.Dispose();
+            PublishResearchPersistenceEvent(
+                definition.HistoryId,
+                definition.ParentHistoryId,
+                researchOperationId,
+                researchResources,
+                ResearchEventKind.OperationCompleted,
+                ResearchDurabilityPhase.Cleanup,
+                definition.LocalCurrentSequence.Value,
+                authorityEventId > 0 ? [authorityEventId] : []);
         }
         catch
         {
@@ -917,6 +961,22 @@ public sealed partial class ChronicleDatabase
             var branchId = BranchId.New();
             var historyId = HistoryId.New();
             var rootId = HistoryRootId.New();
+            var researchOperationId = Guid.NewGuid();
+            var researchResources = new[]
+            {
+                $"branch-{branchId.Value:N}-data",
+                "branch-catalog",
+                "history-roots",
+            };
+            var operationStartedEventId = PublishResearchPersistenceEvent(
+                historyId,
+                parentHistoryId,
+                researchOperationId,
+                researchResources,
+                ResearchEventKind.OperationStarted,
+                ResearchDurabilityPhase.Prepared,
+                (ulong)parentBaseSequence.Value,
+                []);
             var created = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var depth = checked(parentDepth + 1);
             // Complete deterministic branch-local format validation before the first
@@ -945,6 +1005,15 @@ public sealed partial class ChronicleDatabase
                     depth,
                     name);
                 intentPersisted = true;
+                var barrierEventId = PublishResearchPersistenceEvent(
+                    historyId,
+                    parentHistoryId,
+                    researchOperationId,
+                    researchResources,
+                    ResearchEventKind.DurabilityBarrier,
+                    ResearchDurabilityPhase.StableStorageBarrier,
+                    (ulong)parentBaseSequence.Value,
+                    operationStartedEventId > 0 ? [operationStartedEventId] : []);
 
                 Directory.CreateDirectory(Path.GetDirectoryName(localDirectory)!);
                 Guid localStorageId;
@@ -969,6 +1038,15 @@ public sealed partial class ChronicleDatabase
 
                 var activeRecord = _branchStore.AppendActivate(branchId, localStorageId);
                 activated = true;
+                var authorityEventId = PublishResearchPersistenceEvent(
+                    historyId,
+                    parentHistoryId,
+                    researchOperationId,
+                    researchResources,
+                    ResearchEventKind.AuthorityPublished,
+                    ResearchDurabilityPhase.AuthorityPublished,
+                    (ulong)parentBaseSequence.Value,
+                    barrierEventId > 0 ? [barrierEventId] : []);
                 var definition = ToBranchDefinition(activeRecord, _databaseId);
                 var runtime = BranchRuntime.Open(
                     _databaseDirectory,
@@ -988,6 +1066,15 @@ public sealed partial class ChronicleDatabase
                 }
 
                 runtime.AcquireBranchHandle();
+                PublishResearchPersistenceEvent(
+                    historyId,
+                    parentHistoryId,
+                    researchOperationId,
+                    researchResources,
+                    ResearchEventKind.OperationCompleted,
+                    ResearchDurabilityPhase.AuthorityPublished,
+                    (ulong)parentBaseSequence.Value,
+                    authorityEventId > 0 ? [authorityEventId] : []);
                 return new ChronicleBranch(this, ToBranchInfo(runtime.Definition));
             }
             catch

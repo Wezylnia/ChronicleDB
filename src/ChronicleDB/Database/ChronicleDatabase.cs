@@ -1151,6 +1151,48 @@ public sealed partial class ChronicleDatabase : IDisposable
             : 0;
     }
 
+    private long PublishResearchPersistenceEvent(
+        HistoryId historyId,
+        HistoryId? parentHistoryId,
+        Guid operationId,
+        IReadOnlyList<string> resources,
+        ResearchEventKind eventKind,
+        ResearchDurabilityPhase durabilityPhase,
+        ulong authorityGeneration,
+        IReadOnlyList<long> dependencies)
+    {
+        if (_researchEvents.Mode == ResearchTelemetryMode.Disabled)
+        {
+            return 0;
+        }
+
+        if (operationId == Guid.Empty)
+        {
+            throw new ArgumentException("Research persistence operations require a non-empty operation ID.", nameof(operationId));
+        }
+
+        return _researchEvents.TryPublish(
+                logicalEventId => new ResearchEvent(
+                    logicalEventId,
+                    logicalEventId,
+                    eventKind,
+                    historyId,
+                    parentHistoryId,
+                    operationId,
+                    transactionId: null,
+                    resources,
+                    durabilityPhase,
+                    authorityGeneration,
+                    dependencies,
+                    logicalKeyId: null,
+                    versionId: null,
+                    offset: null,
+                    bytes: null),
+                out var logicalEventId)
+            ? logicalEventId
+            : 0;
+    }
+
     public void Dispose()
     {
         _lifecycle.EnterWriteLock();

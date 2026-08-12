@@ -34,6 +34,7 @@ internal static partial class ResearchPilotRunner
             "P2" => Task.FromResult(RunCrashPorPilot(args[1..])),
             "P2R" => Task.FromResult(RunRealTraceCrashPorPilot(args[1..])),
             "P2L" => Task.FromResult(RunRecoveryTopologyCrashPorPilot(args[1..])),
+            "P2A" => Task.FromResult(RunLifecycleTopologyContributionAudit(args[1..])),
             "P3" => Task.FromResult(RunAncestryPilot(args[1..])),
             "P3T" => Task.FromResult(RunAncestryTimingControlPilot(args[1..])),
             "P3B" => Task.FromResult(RunStableAncestryRoutingPilot(args[1..])),
@@ -44,6 +45,133 @@ internal static partial class ResearchPilotRunner
             "P6" => Task.FromResult(RunErasureClosurePilot(args[1..])),
             _ => Task.FromResult(UnknownPilot(args[0])),
         };
+    }
+
+    private static int RunLifecycleTopologyContributionAudit(string[] args)
+    {
+        if (args.Length < 1
+            || !int.TryParse(args[0], out var historyCount)
+            || historyCount is < 2 or > 3)
+        {
+            Console.Error.WriteLine("Usage: pilot P2A <history-count:2..3> [siblings|chain] [output-directory]");
+            return 2;
+        }
+
+        var topology = args.Length >= 2
+            && (args[1].Equals("siblings", StringComparison.OrdinalIgnoreCase)
+                || args[1].Equals("chain", StringComparison.OrdinalIgnoreCase))
+            ? args[1].ToLowerInvariant()
+            : "siblings";
+        var outputArgumentIndex = topology == "siblings" && args.Length >= 2
+            && !args[1].Equals("siblings", StringComparison.OrdinalIgnoreCase)
+            && !args[1].Equals("chain", StringComparison.OrdinalIgnoreCase)
+                ? 1
+                : 2;
+        var outputDirectory = args.Length > outputArgumentIndex
+            ? Path.GetFullPath(args[outputArgumentIndex])
+            : Path.Combine(
+                Environment.CurrentDirectory,
+                "artifacts",
+                "research-pilots",
+                $"p2a-{topology}-{historyCount}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outputDirectory);
+        var databaseDirectory = Path.Combine(outputDirectory, "database");
+
+        try
+        {
+            var sink = new TraceResearchEventSink();
+            using var database = ChronicleDatabase.Open(databaseDirectory, researchEventSink: sink);
+            var watermark = sink.LastLogicalEventId;
+            var branches = new List<ChronicleBranch>(historyCount);
+            try
+            {
+                for (var index = 0; index < historyCount; index++)
+                {
+                    var branch = topology == "chain" && index > 0
+                        ? branches[index - 1].CreateBranch($"p2a-chain-{index}")
+                        : database.CreateBranch($"p2a-{topology}-{index}");
+                    branches.Add(branch);
+                }
+
+                var telemetry = database.GetResearchTelemetryStatus();
+                if (!telemetry.IsComplete)
+                {
+                    throw new InvalidOperationException(
+                        $"P2A requires a complete trace; publicationFailures={telemetry.PublicationFailures}.");
+                }
+
+                var productionEvents = sink.Snapshot()
+                    .Where(researchEvent => researchEvent.LogicalEventId > watermark)
+                    .ToArray();
+                ResearchTraceValidator.Validate(productionEvents);
+                File.WriteAllText(
+                    Path.Combine(outputDirectory, "p2a-production-trace.json"),
+                    ResearchTraceSerializer.SerializeCanonical(productionEvents));
+
+                var actions = PersistenceTraceSlice.SelectCompleteOperations(productionEvents, historyCount);
+                var oracle = new PersistenceTraceProjectionOracle(actions);
+                var proposedIndependence = new ConservativeHistoryIndependence(actions);
+                var resourceOnlyIndependence = new ResourceOnlyIndependence();
+                var genericIndependence = new ResourceDependencyIndependence();
+                var maximumActions = historyCount * 4;
+                var stopwatch = Stopwatch.StartNew();
+                var proposed = new BoundedCrashPorExplorer(actions, maximumActions, proposedIndependence)
+                    .VerifyCrashPrefixEquivalence(oracle.Evaluate);
+                var resourceOnly = new BoundedCrashPorExplorer(actions, maximumActions, resourceOnlyIndependence)
+                    .VerifyCrashPrefixEquivalence(oracle.Evaluate);
+                var generic = new BoundedCrashPorExplorer(actions, maximumActions, genericIndependence)
+                    .VerifyCrashPrefixEquivalence(oracle.Evaluate);
+                stopwatch.Stop();
+
+                var topologyVsGenericDifferences = CountIndependenceDifferences(
+                    actions,
+                    proposedIndependence,
+                    genericIndependence);
+                var result = new LifecycleTopologyContributionAuditResult(
+                    Pilot: "P2A",
+                    Topology: topology,
+                    HistoryCount: historyCount,
+                    ActionCount: actions.Count,
+                    SharedResources: oracle.SharedResources.Order(StringComparer.Ordinal).ToArray(),
+                    ProposedCrashPlanReductionFactor: proposed.CrashPlanReductionFactor,
+                    ResourceOnlyCrashPlanReductionFactor: resourceOnly.CrashPlanReductionFactor,
+                    ResourceDependencyCrashPlanReductionFactor: generic.CrashPlanReductionFactor,
+                    ProposedObservationSetsEquivalent: proposed.ObservationSetsEquivalent,
+                    ResourceOnlyObservationSetsEquivalent: resourceOnly.ObservationSetsEquivalent,
+                    ResourceDependencyObservationSetsEquivalent: generic.ObservationSetsEquivalent,
+                    ProposedVsResourceDependencyRelationDifferences: topologyVsGenericDifferences,
+                    TopologyContributionObserved: topologyVsGenericDifferences > 0
+                        || proposed.ReducedCrashPlanCount < generic.ReducedCrashPlanCount,
+                    ElapsedMilliseconds: stopwatch.Elapsed.TotalMilliseconds);
+                File.WriteAllText(
+                    Path.Combine(outputDirectory, "p2a-result.json"),
+                    JsonSerializer.Serialize(result, JsonOptions));
+
+                var pass = result.ProposedObservationSetsEquivalent
+                    && result.ResourceOnlyObservationSetsEquivalent
+                    && result.ResourceDependencyObservationSetsEquivalent;
+                Console.WriteLine(
+                    $"P2A {(pass ? "PASS" : "FAIL")} topology={topology} histories={historyCount} " +
+                    $"actions={actions.Count} shared={string.Join(',', result.SharedResources)} " +
+                    $"proposed-crf={result.ProposedCrashPlanReductionFactor:F2} " +
+                    $"generic-crf={result.ResourceDependencyCrashPlanReductionFactor:F2} " +
+                    $"relation-diff={result.ProposedVsResourceDependencyRelationDifferences} " +
+                    $"topology-contribution={result.TopologyContributionObserved} output={outputDirectory}");
+                return pass ? 0 : 1;
+            }
+            finally
+            {
+                foreach (var branch in branches.AsEnumerable().Reverse())
+                {
+                    branch.Dispose();
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"P2A FAIL: {exception}");
+            return 1;
+        }
     }
 
     private static int RunAncestryTimingControlPilot(string[] args)
@@ -1145,6 +1273,27 @@ internal static partial class ResearchPilotRunner
         return differences;
     }
 
+    private static int CountIndependenceDifferences(
+        IReadOnlyList<PersistenceAction> actions,
+        ConservativeHistoryIndependence left,
+        ResourceDependencyIndependence right)
+    {
+        var differences = 0;
+        for (var first = 0; first < actions.Count; first++)
+        {
+            for (var second = first + 1; second < actions.Count; second++)
+            {
+                if (left.AreIndependent(actions[first], actions[second])
+                    != right.AreIndependent(actions[first], actions[second]))
+                {
+                    differences++;
+                }
+            }
+        }
+
+        return differences;
+    }
+
     private static bool HaveSameIndependenceRelation(
         IReadOnlyList<PersistenceAction> actions,
         ConservativeHistoryIndependence left,
@@ -2105,6 +2254,7 @@ internal static partial class ResearchPilotRunner
         Console.Error.WriteLine("  pilot P2 <history-count:2..4> [output-directory]");
         Console.Error.WriteLine("  pilot P2R <history-count:2..3> [siblings|chain] [output-directory]");
         Console.Error.WriteLine("  pilot P2L <history-count:2..4> [siblings|chain] [output-directory]");
+        Console.Error.WriteLine("  pilot P2A <history-count:2..3> [siblings|chain] [output-directory]");
         Console.Error.WriteLine("  pilot P3 <seed> <reads-per-depth>=10+ [output-directory]");
         Console.Error.WriteLine("  pilot P3T <seed> <reads-per-depth>=100+ [output-directory]");
         Console.Error.WriteLine("  pilot P3B <seed> <depth:2..16> <key-count:32..4096> <reads>=1000 <uniform|zipf> [output-directory]");
@@ -2271,6 +2421,22 @@ internal static partial class ResearchPilotRunner
         int ResourceOnlyVsDependencyRelationDifferences,
         bool MetadataBlindProposedObservationSetsEquivalent,
         bool MetadataBlindResourceObservationSetsEquivalent,
+        double ElapsedMilliseconds);
+
+    private sealed record LifecycleTopologyContributionAuditResult(
+        string Pilot,
+        string Topology,
+        int HistoryCount,
+        int ActionCount,
+        IReadOnlyList<string> SharedResources,
+        double ProposedCrashPlanReductionFactor,
+        double ResourceOnlyCrashPlanReductionFactor,
+        double ResourceDependencyCrashPlanReductionFactor,
+        bool ProposedObservationSetsEquivalent,
+        bool ResourceOnlyObservationSetsEquivalent,
+        bool ResourceDependencyObservationSetsEquivalent,
+        int ProposedVsResourceDependencyRelationDifferences,
+        bool TopologyContributionObserved,
         double ElapsedMilliseconds);
 
     private sealed record RealTraceCrashPorPilotResult(

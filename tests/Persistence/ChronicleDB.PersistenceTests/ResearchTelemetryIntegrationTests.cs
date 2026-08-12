@@ -149,6 +149,7 @@ public sealed class ResearchTelemetryIntegrationTests
         var branchEvents = sink
             .Snapshot()
             .Where(researchEvent => researchEvent.EventKind == ResearchEventKind.OperationStarted
+                && researchEvent.TransactionId is not null
                 && researchEvent.ResourceSet.Any(resource => resource.StartsWith("branch-", StringComparison.Ordinal)))
             .ToArray();
 
@@ -162,6 +163,53 @@ public sealed class ResearchTelemetryIntegrationTests
             branchEvents[0].ResourceSet,
             resource => resource.EndsWith("-wal", StringComparison.Ordinal));
         Assert.NotNull(branchEvents[0].ParentHistoryId);
+    }
+
+    [Fact]
+    public void BranchLifecyclePublishesCreateAndDeleteAuthorityChains()
+    {
+        using var directory = new StorageTestDirectory();
+        var sink = new TraceResearchEventSink();
+
+        using var database = ChronicleDatabase.Open(directory.Path, researchEventSink: sink);
+        Guid historyId;
+        using (var branch = database.CreateBranch("lifecycle-trace"))
+        {
+            historyId = branch.HistoryId;
+        }
+        database.DeleteBranch("lifecycle-trace");
+
+        var lifecycleOperations = sink.Snapshot()
+            .Where(item => item.HistoryId.Value == historyId && item.TransactionId is null)
+            .Where(item => item.EventKind is ResearchEventKind.OperationStarted
+                or ResearchEventKind.DurabilityBarrier
+                or ResearchEventKind.AuthorityPublished
+                or ResearchEventKind.OperationCompleted)
+            .GroupBy(item => item.OperationId)
+            .Select(group => group.OrderBy(item => item.LogicalEventId).ToArray())
+            .Where(group => group.Length == 4)
+            .ToArray();
+
+        Assert.Equal(2, lifecycleOperations.Length);
+        foreach (var operation in lifecycleOperations)
+        {
+            Assert.Equal(
+                [
+                    ResearchEventKind.OperationStarted,
+                    ResearchEventKind.DurabilityBarrier,
+                    ResearchEventKind.AuthorityPublished,
+                    ResearchEventKind.OperationCompleted,
+                ],
+                operation.Select(item => item.EventKind));
+            Assert.Equal([operation[0].LogicalEventId], operation[1].DependencyEventIds);
+            Assert.Equal([operation[1].LogicalEventId], operation[2].DependencyEventIds);
+            Assert.Equal([operation[2].LogicalEventId], operation[3].DependencyEventIds);
+            Assert.Contains("branch-catalog", operation[0].ResourceSet);
+            Assert.Contains("history-roots", operation[0].ResourceSet);
+        }
+
+        Assert.Equal(ResearchDurabilityPhase.AuthorityPublished, lifecycleOperations[0][3].DurabilityPhase);
+        Assert.Equal(ResearchDurabilityPhase.Cleanup, lifecycleOperations[1][3].DurabilityPhase);
     }
 
     [Fact]
