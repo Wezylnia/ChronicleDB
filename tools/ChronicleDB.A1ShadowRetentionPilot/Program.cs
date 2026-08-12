@@ -6,6 +6,11 @@ using ChronicleDB.Diagnostics.Research;
 using ChronicleDB.Maintenance;
 using ChronicleDB.Storage.History;
 
+if (args.Length > 0 && args[0].Equals("--heterogeneous-scale", StringComparison.OrdinalIgnoreCase))
+{
+    return RunHeterogeneousScale(args[1..]);
+}
+
 if (args.Length > 0 && args[0].Equals("--projection-scale", StringComparison.OrdinalIgnoreCase))
 {
     return RunProjectionScale(args[1..]);
@@ -217,6 +222,226 @@ static ShadowAwareRetentionProjectionResult AnalyzeShadowProjection(ResearchRete
     }
 
     return result;
+}
+
+static int RunHeterogeneousScale(string[] args)
+{
+    if (args.Length < 3
+        || !int.TryParse(args[0], out var keyCount)
+        || keyCount is < 100 or > 65536
+        || !TryParseBranchProfiles(args[1], out var profileSpecs)
+        || !int.TryParse(args[2], out var repetitions)
+        || repetitions is < 1 or > 20)
+    {
+        Console.Error.WriteLine(
+            "Usage: --heterogeneous-scale <keys:100..65536> " +
+            "<shadow-percent:tombstone-percent,...> <repetitions:1..20> [output-directory]");
+        return 2;
+    }
+
+    var outputDirectory = args.Length >= 4
+        ? Path.GetFullPath(args[3])
+        : Path.Combine(
+            Environment.CurrentDirectory,
+            "artifacts",
+            "a1-shadow-heterogeneous",
+            $"k{keyCount}-b{profileSpecs.Count}-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(outputDirectory);
+
+    try
+    {
+        var (snapshot, realizedProfiles) = BuildHeterogeneousProjectionSnapshot(keyCount, profileSpecs);
+        var expected = ShadowRetentionEffectModel.PredictHeterogeneous(keyCount, realizedProfiles, 4096);
+        var runs = new List<ProjectionScaleRun>(repetitions);
+
+        var warmup = new ShadowAwareRetentionProjection(snapshot).Analyze();
+        ValidateHeterogeneousResult(warmup, expected);
+
+        for (var repetition = 0; repetition < repetitions; repetition++)
+        {
+            var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+            var started = Stopwatch.GetTimestamp();
+            var result = new ShadowAwareRetentionProjection(snapshot).Analyze();
+            var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+            ValidateHeterogeneousResult(result, expected);
+            runs.Add(new ProjectionScaleRun(
+                repetition,
+                elapsed,
+                result.ConstructionMilliseconds,
+                result.CoreProjectionMilliseconds,
+                result.ObserverVerificationMilliseconds,
+                allocated,
+                result.BaselineVersionCount,
+                result.ShadowAwareVersionCount,
+                result.ShadowReleasedPayloadBytes,
+                result.ShadowAwareReclamationRatio,
+                result.ObserverEquivalenceCheckCount,
+                result.ObserverKeyResolutionCount,
+                result.ParentFallbackHops));
+        }
+
+        var first = runs[0];
+        var orderedMs = runs.Select(run => run.VerifiedProjectionMilliseconds).Order().ToArray();
+        var summary = new HeterogeneousScaleResult(
+            Pilot: "A1-SHADOW-HETEROGENEOUS-SCALE",
+            KeyCount: keyCount,
+            Repetitions: repetitions,
+            Profiles: profileSpecs,
+            RealizedProfiles: realizedProfiles,
+            VersionCount: snapshot.Histories.Sum(history => history.Versions.Count),
+            ExpectedReleasedPayloadBytes: (long)expected.ReleasedParentPayloadBytes,
+            MeasuredReleasedPayloadBytes: first.ShadowReleasedPayloadBytes,
+            ExpectedReclamationRatio: expected.ShadowAwareReclamationRatio,
+            MeasuredReclamationRatio: first.ShadowAwareReclamationRatio,
+            MedianVerifiedProjectionMilliseconds: Percentile(orderedMs, 0.50),
+            P95VerifiedProjectionMilliseconds: Percentile(orderedMs, 0.95),
+            MedianThreadAllocatedBytes: (long)Percentile(runs.Select(run => (double)run.ThreadAllocatedBytes).Order().ToArray(), 0.50),
+            Runs: runs);
+        File.WriteAllText(
+            Path.Combine(outputDirectory, "heterogeneous-scale-result.json"),
+            JsonSerializer.Serialize(summary, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                WriteIndented = true,
+            }));
+        Console.WriteLine(
+            $"A1-SHADOW-HETEROGENEOUS-SCALE PASS keys={keyCount} branches={profileSpecs.Count} " +
+            $"SAR={summary.MeasuredReclamationRatio:F3}x expected={summary.ExpectedReclamationRatio:F3}x " +
+            $"release={summary.MeasuredReleasedPayloadBytes}B median={summary.MedianVerifiedProjectionMilliseconds:F2}ms " +
+            $"output={outputDirectory}");
+        return 0;
+    }
+    catch (Exception exception)
+    {
+        Console.Error.WriteLine($"A1-SHADOW-HETEROGENEOUS-SCALE FAIL: {exception}");
+        return 1;
+    }
+}
+
+static bool TryParseBranchProfiles(string text, out IReadOnlyList<HeterogeneousBranchProfileSpec> profiles)
+{
+    var parsed = new List<HeterogeneousBranchProfileSpec>();
+    foreach (var token in text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        var pieces = token.Split(':', StringSplitOptions.TrimEntries);
+        if (pieces.Length != 2
+            || !int.TryParse(pieces[0], out var shadowPercent)
+            || !int.TryParse(pieces[1], out var tombstonePercent)
+            || shadowPercent is < 0 or > 100
+            || tombstonePercent is < 0 or > 100)
+        {
+            profiles = [];
+            return false;
+        }
+
+        parsed.Add(new HeterogeneousBranchProfileSpec(shadowPercent, tombstonePercent));
+    }
+
+    if (parsed.Count is < 1 or > 64)
+    {
+        profiles = [];
+        return false;
+    }
+
+    profiles = Array.AsReadOnly(parsed.ToArray());
+    return true;
+}
+
+static (ResearchRetentionSnapshot Snapshot, IReadOnlyList<ShadowRetentionBranchProfile> RealizedProfiles)
+    BuildHeterogeneousProjectionSnapshot(
+        int keyCount,
+        IReadOnlyList<HeterogeneousBranchProfileSpec> profileSpecs)
+{
+    const int valueBytes = 4096;
+    var mainHistoryId = DeterministicGuid(300_001);
+    var histories = new List<ResearchHistoryRetentionSnapshot>(profileSpecs.Count + 1);
+    var roots = new List<ResearchPersistentRetentionRootSnapshot>(profileSpecs.Count);
+    var mainVersions = new List<ResearchCommittedVersionSnapshot>((profileSpecs.Count + 1) * keyCount);
+
+    for (var generation = 1; generation <= profileSpecs.Count + 1; generation++)
+    {
+        for (var keyId = 0; keyId < keyCount; keyId++)
+        {
+            mainVersions.Add(new ResearchCommittedVersionSnapshot(
+                VersionId: $"hetero-main:g{generation}:k{keyId}",
+                TransactionId: DeterministicGuid(checked(310_000 + generation)),
+                CommitSequence: (ulong)generation,
+                KeyId: $"k{keyId:D8}",
+                KeyBytes: 8,
+                ValueBytes: valueBytes,
+                IsTombstone: false));
+        }
+    }
+
+    histories.Add(new ResearchHistoryRetentionSnapshot(
+        mainHistoryId,
+        RetentionFloor: (ulong)(profileSpecs.Count + 1),
+        CurrentSequence: (ulong)(profileSpecs.Count + 1),
+        Versions: Array.AsReadOnly(mainVersions.ToArray())));
+
+    var realized = new List<ShadowRetentionBranchProfile>(profileSpecs.Count);
+    for (var branchIndex = 0; branchIndex < profileSpecs.Count; branchIndex++)
+    {
+        var spec = profileSpecs[branchIndex];
+        var historyId = DeterministicGuid(checked(320_000 + branchIndex));
+        var shadowKeyCount = keyCount * spec.ShadowPercent / 100;
+        var tombstoneKeyCount = shadowKeyCount * spec.TombstonePercent / 100;
+        var branchVersions = new List<ResearchCommittedVersionSnapshot>(shadowKeyCount);
+        for (var keyId = 0; keyId < shadowKeyCount; keyId++)
+        {
+            var tombstone = keyId < tombstoneKeyCount;
+            branchVersions.Add(new ResearchCommittedVersionSnapshot(
+                VersionId: $"hetero-b{branchIndex}:k{keyId}",
+                TransactionId: DeterministicGuid(checked(330_000 + branchIndex)),
+                CommitSequence: 1,
+                KeyId: $"k{keyId:D8}",
+                KeyBytes: 8,
+                ValueBytes: tombstone ? 0 : valueBytes,
+                IsTombstone: tombstone));
+        }
+
+        histories.Add(new ResearchHistoryRetentionSnapshot(
+            historyId,
+            RetentionFloor: 1,
+            CurrentSequence: 1,
+            Versions: Array.AsReadOnly(branchVersions.ToArray())));
+        roots.Add(new ResearchPersistentRetentionRootSnapshot(
+            RootId: DeterministicGuid(checked(340_000 + branchIndex)),
+            Kind: "BranchBase",
+            OwnerHistoryId: historyId,
+            ProtectedHistoryId: mainHistoryId,
+            Boundary: (ulong)(branchIndex + 1)));
+        realized.Add(new ShadowRetentionBranchProfile(
+            ShadowFraction: (double)shadowKeyCount / keyCount,
+            TombstoneFraction: shadowKeyCount == 0 ? 0d : (double)tombstoneKeyCount / shadowKeyCount));
+    }
+
+    return (
+        new ResearchRetentionSnapshot(
+            Array.AsReadOnly(histories.ToArray()),
+            Array.AsReadOnly(roots.ToArray()),
+            Array.Empty<ResearchActiveRetentionBoundarySnapshot>()),
+        Array.AsReadOnly(realized.ToArray()));
+}
+
+static void ValidateHeterogeneousResult(
+    ShadowAwareRetentionProjectionResult result,
+    ShadowRetentionEffectPrediction expected)
+{
+    if (!result.CandidateIsSubsetOfBaseline
+        || !result.FlatExactBaselineVerified
+        || !result.ObserverEquivalenceVerified
+        || !result.ObserverMinimalityVerified
+        || result.ShadowReleasedPayloadBytes != (long)expected.ReleasedParentPayloadBytes
+        || Math.Abs(result.ShadowAwareReclamationRatio - expected.ShadowAwareReclamationRatio) > 1e-12)
+    {
+        throw new InvalidOperationException(
+            $"Heterogeneous projection invariant failed: release={result.ShadowReleasedPayloadBytes}, " +
+            $"expectedRelease={expected.ReleasedParentPayloadBytes}, ratio={result.ShadowAwareReclamationRatio:F6}, " +
+            $"expectedRatio={expected.ShadowAwareReclamationRatio:F6}, flatExact={result.FlatExactBaselineVerified}, " +
+            $"equivalence={result.ObserverEquivalenceVerified}, minimal={result.ObserverMinimalityVerified}.");
+    }
 }
 
 static int RunProjectionScale(string[] args)
@@ -1251,6 +1476,24 @@ static double Median(IEnumerable<double> values)
         ? (sorted[middle - 1] + sorted[middle]) / 2d
         : sorted[middle];
 }
+
+internal sealed record HeterogeneousBranchProfileSpec(int ShadowPercent, int TombstonePercent);
+
+internal sealed record HeterogeneousScaleResult(
+    string Pilot,
+    int KeyCount,
+    int Repetitions,
+    IReadOnlyList<HeterogeneousBranchProfileSpec> Profiles,
+    IReadOnlyList<ShadowRetentionBranchProfile> RealizedProfiles,
+    int VersionCount,
+    long ExpectedReleasedPayloadBytes,
+    long MeasuredReleasedPayloadBytes,
+    double ExpectedReclamationRatio,
+    double MeasuredReclamationRatio,
+    double MedianVerifiedProjectionMilliseconds,
+    double P95VerifiedProjectionMilliseconds,
+    long MedianThreadAllocatedBytes,
+    IReadOnlyList<ProjectionScaleRun> Runs);
 
 internal sealed record ProjectionScaleRun(
     int Repetition,

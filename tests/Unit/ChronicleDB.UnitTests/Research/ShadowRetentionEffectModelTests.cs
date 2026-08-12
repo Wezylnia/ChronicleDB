@@ -27,6 +27,30 @@ public sealed class ShadowRetentionEffectModelTests
         Assert.Equal(branches + 1d, result.ShadowAwareReclamationRatio, precision: 12);
     }
 
+    [Fact]
+    public void HeterogeneousProfilesMatchEquivalentManualPayloadAccounting()
+    {
+        var profiles = new[]
+        {
+            new ShadowRetentionBranchProfile(0.10, 0.00),
+            new ShadowRetentionBranchProfile(0.25, 0.20),
+            new ShadowRetentionBranchProfile(0.50, 1.00),
+        };
+
+        var result = ShadowRetentionEffectModel.PredictHeterogeneous(100, profiles, 10);
+        var main = 1000d;
+        var expectedBaseline = main
+            + (main + 100d)
+            + (main + 200d)
+            + main;
+        var expectedRelease = 100d + 250d + 500d;
+
+        Assert.Equal(expectedBaseline, result.BaselinePayloadBytes, precision: 12);
+        Assert.Equal(expectedRelease, result.ReleasedParentPayloadBytes, precision: 12);
+        Assert.Equal(expectedBaseline - expectedRelease, result.ShadowAwarePayloadBytes, precision: 12);
+        Assert.Equal(expectedBaseline / (expectedBaseline - expectedRelease), result.ShadowAwareReclamationRatio, precision: 12);
+    }
+
     [Theory]
     [InlineData(8, 0.0, 1.10, 0.1125)]
     [InlineData(8, 0.0, 1.25, 0.28125)]

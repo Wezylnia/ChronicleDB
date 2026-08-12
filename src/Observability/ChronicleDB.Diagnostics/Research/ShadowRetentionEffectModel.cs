@@ -8,6 +8,48 @@ namespace ChronicleDB.Diagnostics.Research;
 /// </summary>
 public static class ShadowRetentionEffectModel
 {
+    public static ShadowRetentionEffectPrediction PredictHeterogeneous(
+        int keyCount,
+        IReadOnlyList<ShadowRetentionBranchProfile> branches,
+        int valueBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(keyCount);
+        ArgumentNullException.ThrowIfNull(branches);
+        if (branches.Count == 0)
+        {
+            throw new ArgumentException("At least one branch profile is required.", nameof(branches));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(valueBytes);
+        foreach (var branch in branches)
+        {
+            branch.Validate();
+        }
+
+        var mainPayload = (double)keyCount * valueBytes;
+        var baselinePayload = mainPayload;
+        var candidatePayload = mainPayload;
+        var releasedParentPayload = 0d;
+        foreach (var branch in branches)
+        {
+            var parentPayload = mainPayload;
+            var localShadowPayload = mainPayload
+                * branch.ShadowFraction
+                * (1d - branch.TombstoneFraction);
+            var released = mainPayload * branch.ShadowFraction;
+
+            baselinePayload += parentPayload + localShadowPayload;
+            candidatePayload += parentPayload + localShadowPayload - released;
+            releasedParentPayload += released;
+        }
+
+        return new ShadowRetentionEffectPrediction(
+            BaselinePayloadBytes: baselinePayload,
+            ShadowAwarePayloadBytes: candidatePayload,
+            ReleasedParentPayloadBytes: releasedParentPayload,
+            ShadowAwareReclamationRatio: baselinePayload / candidatePayload);
+    }
+
     public static double? MinimumShadowFractionForRatio(
         int branchCount,
         double tombstoneFraction,
@@ -80,3 +122,19 @@ public sealed record ShadowRetentionEffectPrediction(
     double ShadowAwarePayloadBytes,
     double ReleasedParentPayloadBytes,
     double ShadowAwareReclamationRatio);
+
+public sealed record ShadowRetentionBranchProfile(double ShadowFraction, double TombstoneFraction)
+{
+    internal void Validate()
+    {
+        if (ShadowFraction is < 0d or > 1d)
+        {
+            throw new ArgumentOutOfRangeException(nameof(ShadowFraction));
+        }
+
+        if (TombstoneFraction is < 0d or > 1d)
+        {
+            throw new ArgumentOutOfRangeException(nameof(TombstoneFraction));
+        }
+    }
+}
