@@ -156,6 +156,9 @@ var result = new PilotResult(
     PhysicalCaseCount: physicalCases.Count,
     PhysicalObserverMismatchCount: physicalCases.Count(item => !item.ObserverStateEqualAfterRestart),
     PhysicalAllocationIncompleteCount: physicalCases.Count(item => !item.AllocationMeasurementExact),
+    EffectModelMismatchCount: fanoutCases.Count(item => !item.EffectModelMatches)
+        + mixedCases.Count(item => !item.EffectModelMatches)
+        + physicalCases.Count(item => !item.EffectModelMatches),
     MixedCaseCount: mixedCases.Count,
     CandidateSubsetFailures: cases.Count(item => !item.CandidateIsSubsetOfBaseline)
         + fanoutCases.Count(item => !item.CandidateIsSubsetOfBaseline)
@@ -195,13 +198,26 @@ var pass = result.CandidateSubsetFailures == 0
     && result.ObserverEquivalenceFailures == 0
     && result.ObserverMinimalityFailures == 0
     && result.PhysicalObserverMismatchCount == 0
-    && result.PhysicalAllocationIncompleteCount == 0;
+    && result.PhysicalAllocationIncompleteCount == 0
+    && result.EffectModelMismatchCount == 0;
 Console.WriteLine(
     $"A1-SHADOW {(pass ? "PASS" : "FAIL")} cases={result.CaseCount} " +
     $"median-SAR={result.MedianReclamationRatio:F3}x max-SAR={result.MaximumReclamationRatio:F3}x " +
     $"max-release={result.MaximumReleasedPayloadBytes}B output={options.OutputDirectory}");
 return pass ? 0 : 1;
 
+
+static ShadowAwareRetentionProjectionResult AnalyzeShadowProjection(ResearchRetentionSnapshot snapshot)
+{
+    var result = new ShadowAwareRetentionProjection(snapshot).Analyze();
+    if (!result.FlatExactBaselineVerified)
+    {
+        throw new InvalidOperationException(
+            $"Independent flat-exact baseline mismatch: {string.Join(",", result.FlatExactBaselineMismatchVersionIds)}");
+    }
+
+    return result;
+}
 
 static int RunProjectionScale(string[] args)
 {
@@ -236,7 +252,7 @@ static int RunProjectionScale(string[] args)
         var snapshot = BuildProjectionScaleSnapshot(keyCount, branchCount, shadowPercent, mode);
         // One untimed warmup ensures JIT and first-use static initialization do not
         // define the measured projection curve.
-        var warmup = new ShadowAwareRetentionProjection(snapshot).Analyze();
+        var warmup = AnalyzeShadowProjection(snapshot);
         ValidateProjectionScaleResult(warmup, keyCount, branchCount, shadowPercent, mode);
 
         var runs = new List<ProjectionScaleRun>(repetitions);
@@ -244,7 +260,7 @@ static int RunProjectionScale(string[] args)
         {
             var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
             var started = Stopwatch.GetTimestamp();
-            var result = new ShadowAwareRetentionProjection(snapshot).Analyze();
+            var result = AnalyzeShadowProjection(snapshot);
             var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             var allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
             ValidateProjectionScaleResult(result, keyCount, branchCount, shadowPercent, mode);
@@ -534,7 +550,7 @@ static CaseResult RunCase(
                 throw new InvalidOperationException("Captured BranchBase boundary differs from the creation boundary.");
             }
 
-            var analysis = new ShadowAwareRetentionProjection(evaluation).Analyze();
+            var analysis = AnalyzeShadowProjection(evaluation);
             var expectedRelease = snapshotMode is SnapshotMode.PreShadow or SnapshotMode.ActivePreShadow
                 ? 0L
                 : checked((long)shadowCount * options.ValueBytes);
@@ -647,8 +663,15 @@ static FanoutCaseResult RunStaggeredFanoutCase(
                 $"Expected {branchCount} BranchBase roots but captured {capturedBranchRoots}.");
         }
 
-        var analysis = new ShadowAwareRetentionProjection(evaluation).Analyze();
+        var analysis = AnalyzeShadowProjection(evaluation);
         var expectedRelease = checked((long)branchCount * shadowCount * options.ValueBytes);
+        var effect = ShadowRetentionEffectModel.Predict(
+            options.BaseKeyCount,
+            branchCount,
+            (double)shadowCount / options.BaseKeyCount,
+            tombstoneFraction: mode == ShadowMode.Tombstone ? 1d : 0d,
+            options.ValueBytes);
+        var effectError = Math.Abs(analysis.ShadowAwareReclamationRatio - effect.ShadowAwareReclamationRatio);
         var result = new FanoutCaseResult(
             BranchCount: branchCount,
             ShadowPercent: shadowPercent,
@@ -661,6 +684,8 @@ static FanoutCaseResult RunStaggeredFanoutCase(
             ShadowReleasedPayloadBytes: analysis.ShadowReleasedPayloadBytes,
             ExpectedReleasedPayloadBytes: expectedRelease,
             ShadowAwareReclamationRatio: analysis.ShadowAwareReclamationRatio,
+            PredictedReclamationRatio: effect.ShadowAwareReclamationRatio,
+            EffectModelMatches: effectError <= 1e-12,
             CandidateIsSubsetOfBaseline: analysis.CandidateIsSubsetOfBaseline,
             ObserverEquivalenceVerified: analysis.ObserverEquivalenceVerified,
             ObserverEquivalenceCheckCount: analysis.ObserverEquivalenceCheckCount,
@@ -750,7 +775,7 @@ static NestedCaseResult RunNestedCase(
                 .Select(history => history with { RetentionFloor = history.CurrentSequence })
                 .ToArray(),
         };
-        var analysis = new ShadowAwareRetentionProjection(evaluation).Analyze();
+        var analysis = AnalyzeShadowProjection(evaluation);
         var expectedRelease = checked((long)depth * shadowCount * options.ValueBytes);
         var result = new NestedCaseResult(
             Depth: depth,
@@ -852,13 +877,21 @@ static MixedCaseResult RunMixedFanoutCase(
                 .Select(history => history with { RetentionFloor = history.CurrentSequence })
                 .ToArray(),
         };
-        var analysis = new ShadowAwareRetentionProjection(evaluation).Analyze();
+        var analysis = AnalyzeShadowProjection(evaluation);
         var expectedRelease = checked((long)branchCount * shadowCount * options.ValueBytes);
+        var shadowOperations = branchCount * shadowCount;
+        var effect = ShadowRetentionEffectModel.Predict(
+            options.BaseKeyCount,
+            branchCount,
+            (double)shadowCount / options.BaseKeyCount,
+            tombstoneFraction: shadowOperations == 0 ? 0d : (double)tombstoneCount / shadowOperations,
+            options.ValueBytes);
+        var effectError = Math.Abs(analysis.ShadowAwareReclamationRatio - effect.ShadowAwareReclamationRatio);
         var result = new MixedCaseResult(
             Seed: seed,
             BranchCount: branchCount,
             ShadowPercent: shadowPercent,
-            ShadowOperations: branchCount * shadowCount,
+            ShadowOperations: shadowOperations,
             OverwriteCount: overwriteCount,
             TombstoneCount: tombstoneCount,
             BaselinePayloadBytes: analysis.BaselinePayloadBytes,
@@ -866,6 +899,8 @@ static MixedCaseResult RunMixedFanoutCase(
             ShadowReleasedPayloadBytes: analysis.ShadowReleasedPayloadBytes,
             ExpectedReleasedPayloadBytes: expectedRelease,
             ShadowAwareReclamationRatio: analysis.ShadowAwareReclamationRatio,
+            PredictedReclamationRatio: effect.ShadowAwareReclamationRatio,
+            EffectModelMatches: effectError <= 1e-12,
             CandidateIsSubsetOfBaseline: analysis.CandidateIsSubsetOfBaseline,
             ObserverEquivalenceVerified: analysis.ObserverEquivalenceVerified,
             ObserverEquivalenceCheckCount: analysis.ObserverEquivalenceCheckCount,
@@ -1018,6 +1053,13 @@ static PhysicalCaseResult RunPhysicalFanoutCase(
     var candidateCheckpointLogical = HistoryCheckpointBytes(candidatePhysical, allocated: false);
     var baselineCheckpointAllocated = HistoryCheckpointBytes(baselinePhysical, allocated: true);
     var candidateCheckpointAllocated = HistoryCheckpointBytes(candidatePhysical, allocated: true);
+    var effect = ShadowRetentionEffectModel.Predict(
+        options.BaseKeyCount,
+        branchCount,
+        (double)shadowCount / options.BaseKeyCount,
+        tombstoneFraction: mode == ShadowMode.Tombstone ? 1d : 0d,
+        options.ValueBytes);
+    var effectError = Math.Abs(candidateGc.ShadowAwareReclamationRatio - effect.ShadowAwareReclamationRatio);
 
     var result = new PhysicalCaseResult(
         BranchCount: branchCount,
@@ -1029,6 +1071,8 @@ static PhysicalCaseResult RunPhysicalFanoutCase(
         CandidateShadowReleasedPayloadBytes: candidateGc.ShadowReleasedPayloadBytes,
         CandidateLogicalReclamationRatio: candidateGc.ShadowAwareReclamationRatio,
         CandidateSerializedReclamationRatio: candidateGc.ShadowAwareSerializedReclamationRatio,
+        PredictedLogicalReclamationRatio: effect.ShadowAwareReclamationRatio,
+        EffectModelMatches: effectError <= 1e-12,
         BaselineGcMilliseconds: baselineGcMilliseconds,
         CandidateGcMilliseconds: candidateGcMilliseconds,
         CandidateProjectionAnalysisMilliseconds: candidateGc.ProjectionAnalysisMilliseconds,
@@ -1309,6 +1353,8 @@ internal sealed record FanoutCaseResult(
     long ShadowReleasedPayloadBytes,
     long ExpectedReleasedPayloadBytes,
     double ShadowAwareReclamationRatio,
+    double PredictedReclamationRatio,
+    bool EffectModelMatches,
     bool CandidateIsSubsetOfBaseline,
     bool ObserverEquivalenceVerified,
     int ObserverEquivalenceCheckCount,
@@ -1348,6 +1394,8 @@ internal sealed record MixedCaseResult(
     long ShadowReleasedPayloadBytes,
     long ExpectedReleasedPayloadBytes,
     double ShadowAwareReclamationRatio,
+    double PredictedReclamationRatio,
+    bool EffectModelMatches,
     bool CandidateIsSubsetOfBaseline,
     bool ObserverEquivalenceVerified,
     int ObserverEquivalenceCheckCount,
@@ -1364,6 +1412,8 @@ internal sealed record PhysicalCaseResult(
     long CandidateShadowReleasedPayloadBytes,
     double CandidateLogicalReclamationRatio,
     double CandidateSerializedReclamationRatio,
+    double PredictedLogicalReclamationRatio,
+    bool EffectModelMatches,
     double BaselineGcMilliseconds,
     double CandidateGcMilliseconds,
     double CandidateProjectionAnalysisMilliseconds,
@@ -1397,6 +1447,7 @@ internal sealed record PilotResult(
     int PhysicalCaseCount,
     int PhysicalObserverMismatchCount,
     int PhysicalAllocationIncompleteCount,
+    int EffectModelMismatchCount,
     int MixedCaseCount,
     int CandidateSubsetFailures,
     int ExpectedReleaseMismatches,
