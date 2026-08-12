@@ -124,6 +124,109 @@ public sealed class ShadowRetentionHoldoutPlanTests
         }).Validate());
     }
 
+
+    [Fact]
+    public void HoldoutRegistrationBindsPlansSourceEnvironmentAndBinaries()
+    {
+        var publication = ShadowRetentionPublicationPlan.CreateDefault();
+        var execution = ShadowRetentionHoldoutExecutionPlan.Create(publication);
+        var analysis = ShadowRetentionHoldoutAnalysisPlan.Create(publication, execution);
+        var registration = CreateRegistration(publication, execution, analysis);
+
+        registration.ValidateAgainst(publication, execution, analysis);
+        Assert.Equal(210, registration.HoldoutARunCount);
+        Assert.Equal(210, registration.HoldoutBRunCount);
+        Assert.Equal(ShadowRetentionHoldoutPartition.HoldoutA, registration.InitialPartition);
+        Assert.True(registration.HoldoutBSealedBeforeA);
+        Assert.Equal(["ChronicleDB.A1ShadowRetentionPilot.dll", "ChronicleDB.Diagnostics.dll"],
+            registration.BinaryArtifacts.Select(artifact => artifact.Name));
+    }
+
+    [Fact]
+    public void HoldoutRegistrationRejectsSourceOrBinaryTampering()
+    {
+        var publication = ShadowRetentionPublicationPlan.CreateDefault();
+        var execution = ShadowRetentionHoldoutExecutionPlan.Create(publication);
+        var analysis = ShadowRetentionHoldoutAnalysisPlan.Create(publication, execution);
+        var registration = CreateRegistration(publication, execution, analysis);
+
+        Assert.Throws<InvalidOperationException>(() => (registration with
+        {
+            SourceTreeClean = false,
+        }).Validate());
+        Assert.Throws<InvalidOperationException>(() => (registration with
+        {
+            ExpectedMainBaseIsAncestor = false,
+        }).Validate());
+        Assert.Throws<InvalidOperationException>(() => (registration with
+        {
+            BinaryArtifacts = registration.BinaryArtifacts.Reverse().ToArray(),
+        }).Validate());
+        Assert.Throws<InvalidOperationException>(() => (registration with
+        {
+            HoldoutAnalysisPlanSha256 = new string('f', 64),
+        }).ValidateAgainst(publication, execution, analysis));
+    }
+
+    [Fact]
+    public void HoldoutRegistrationArtifactIsImmutable()
+    {
+        using var directory = new TemporaryDirectory();
+        var publication = ShadowRetentionPublicationPlan.CreateDefault();
+        var execution = ShadowRetentionHoldoutExecutionPlan.Create(publication);
+        var analysis = ShadowRetentionHoldoutAnalysisPlan.Create(publication, execution);
+        var registration = CreateRegistration(publication, execution, analysis);
+
+        var first = ShadowRetentionHoldoutRegistrationWriter.Write(directory.Path, registration);
+        var repeated = ShadowRetentionHoldoutRegistrationWriter.Write(directory.Path, registration);
+        Assert.Equal(first.Sha256, repeated.Sha256);
+        Assert.Throws<IOException>(() => ShadowRetentionHoldoutRegistrationWriter.Write(
+            directory.Path,
+            registration with { MachineBlockId = "different-machine-block" }));
+    }
+
+    private static ShadowRetentionHoldoutRegistration CreateRegistration(
+        ShadowRetentionPublicationPlan publication,
+        ShadowRetentionHoldoutExecutionPlan execution,
+        ShadowRetentionHoldoutAnalysisPlan analysis)
+        => new()
+        {
+            FormatVersion = ShadowRetentionHoldoutRegistration.CurrentFormatVersion,
+            CandidateId = publication.CandidateId,
+            PublicationPlanSha256 = publication.ComputeCanonicalSha256(),
+            HoldoutExecutionPlanSha256 = execution.ComputeCanonicalSha256(),
+            HoldoutAnalysisPlanSha256 = analysis.ComputeCanonicalSha256(),
+            ExpectedMainBaseCommit = new string('a', 40),
+            SourceCommit = new string('b', 40),
+            SourceTree = new string('c', 40),
+            SourceTreeClean = true,
+            ExpectedMainBaseIsAncestor = true,
+            MachineBlockId = "machine-block-test",
+            FrameworkDescription = ".NET test",
+            OsDescription = "test-os",
+            ProcessArchitecture = "X64",
+            OsArchitecture = "X64",
+            HoldoutARunCount = execution.HoldoutARunCount,
+            HoldoutBRunCount = execution.HoldoutBRunCount,
+            InitialPartition = ShadowRetentionHoldoutPartition.HoldoutA,
+            HoldoutBSealedBeforeA = true,
+            BinaryArtifacts =
+            [
+                new ShadowRetentionBinaryArtifactIdentity
+                {
+                    Name = "ChronicleDB.A1ShadowRetentionPilot.dll",
+                    LengthBytes = 123,
+                    Sha256 = new string('d', 64),
+                },
+                new ShadowRetentionBinaryArtifactIdentity
+                {
+                    Name = "ChronicleDB.Diagnostics.dll",
+                    LengthBytes = 456,
+                    Sha256 = new string('e', 64),
+                },
+            ],
+        };
+
     private sealed class TemporaryDirectory : IDisposable
     {
         public TemporaryDirectory()

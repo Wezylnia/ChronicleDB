@@ -36,6 +36,11 @@ if (args.Length > 0 && args[0].Equals("--write-holdout-plans", StringComparison.
     return A1PublicationPilot.WriteHoldoutPlans(args[1..]);
 }
 
+if (args.Length > 0 && args[0].Equals("--prepare-holdout", StringComparison.OrdinalIgnoreCase))
+{
+    return A1PublicationPilot.PrepareHoldout(args[1..]);
+}
+
 if (args.Length > 0 && args[0].Equals("--pilot-a-smoke", StringComparison.OrdinalIgnoreCase))
 {
     return A1PublicationPilot.RunPilotA(args[1..], smoke: true);

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -179,6 +180,81 @@ internal static class A1PublicationPilot
         catch (Exception exception)
         {
             Console.Error.WriteLine($"A1-HOLDOUT-PLANS FAIL: {exception}");
+            return 1;
+        }
+    }
+
+    public static int PrepareHoldout(string[] args)
+    {
+        if (args.Length != 4)
+        {
+            Console.Error.WriteLine(
+                "Usage: --prepare-holdout <sealed-plan-directory> <output-directory> <machine-block-id> <expected-main-base-commit>");
+            return 2;
+        }
+
+        try
+        {
+            var planDirectory = Path.GetFullPath(args[0]);
+            var outputDirectory = Path.GetFullPath(args[1]);
+            var machineBlockId = args[2];
+            var expectedMainBaseCommit = args[3].ToLowerInvariant();
+            var repository = ResolveGitRepositoryIdentity(expectedMainBaseCommit);
+            if (IsPathWithin(outputDirectory, repository.RepositoryRoot))
+            {
+                throw new InvalidOperationException(
+                    "Holdout registration/output must live outside the Git working tree so evidence artifacts cannot dirty the sealed source identity.");
+            }
+
+            var (publicationPlan, publicationHash) = ReadAndVerifyPlan(planDirectory);
+            var execution = ShadowRetentionHoldoutExecutionPlan.Create(publicationPlan);
+            execution.ValidateAgainst(publicationPlan);
+            var analysis = ShadowRetentionHoldoutAnalysisPlan.Create(publicationPlan, execution);
+            analysis.ValidateAgainst(publicationPlan, execution);
+            var binaryArtifacts = CaptureBinaryArtifacts();
+            var registration = new ShadowRetentionHoldoutRegistration
+            {
+                FormatVersion = ShadowRetentionHoldoutRegistration.CurrentFormatVersion,
+                CandidateId = publicationPlan.CandidateId,
+                PublicationPlanSha256 = publicationHash,
+                HoldoutExecutionPlanSha256 = execution.ComputeCanonicalSha256(),
+                HoldoutAnalysisPlanSha256 = analysis.ComputeCanonicalSha256(),
+                ExpectedMainBaseCommit = expectedMainBaseCommit,
+                SourceCommit = repository.SourceCommit,
+                SourceTree = repository.SourceTree,
+                SourceTreeClean = repository.SourceTreeClean,
+                ExpectedMainBaseIsAncestor = repository.ExpectedMainBaseIsAncestor,
+                MachineBlockId = machineBlockId,
+                FrameworkDescription = RuntimeInformation.FrameworkDescription,
+                OsDescription = RuntimeInformation.OSDescription,
+                ProcessArchitecture = RuntimeInformation.ProcessArchitecture.ToString(),
+                OsArchitecture = RuntimeInformation.OSArchitecture.ToString(),
+                HoldoutARunCount = execution.HoldoutARunCount,
+                HoldoutBRunCount = execution.HoldoutBRunCount,
+                InitialPartition = ShadowRetentionHoldoutPartition.HoldoutA,
+                HoldoutBSealedBeforeA = true,
+                BinaryArtifacts = binaryArtifacts,
+            };
+            registration.ValidateAgainst(publicationPlan, execution, analysis);
+
+            var registrationDirectory = Path.Combine(outputDirectory, "registration");
+            Directory.CreateDirectory(registrationDirectory);
+            var publicationArtifact = ShadowRetentionPublicationPlanWriter.Write(registrationDirectory, publicationPlan);
+            var executionArtifact = ShadowRetentionHoldoutExecutionPlanWriter.Write(registrationDirectory, execution);
+            var analysisArtifact = ShadowRetentionHoldoutAnalysisPlanWriter.Write(registrationDirectory, analysis);
+            var registrationArtifact = ShadowRetentionHoldoutRegistrationWriter.Write(registrationDirectory, registration);
+
+            Console.WriteLine(
+                $"A1-HOLDOUT PREPARED A={execution.HoldoutARunCount} B={execution.HoldoutBRunCount} " +
+                $"publication={publicationArtifact.Sha256} execution={executionArtifact.Sha256} " +
+                $"analysis={analysisArtifact.Sha256} registration={registrationArtifact.Sha256} " +
+                $"source={repository.SourceCommit} tree={repository.SourceTree} machine={machineBlockId} output={outputDirectory}");
+            Console.WriteLine("Holdout-B was sealed before A. No Holdout-A or Holdout-B trial was executed.");
+            return 0;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"A1-HOLDOUT PREPARE FAIL: {exception}");
             return 1;
         }
     }
@@ -416,6 +492,103 @@ internal static class A1PublicationPilot
             throw new InvalidOperationException(
                 $"Publication-case result identity or correctness gates do not match sealed run '{trial.RunId}'.");
         }
+    }
+
+    private static GitRepositoryIdentity ResolveGitRepositoryIdentity(string expectedMainBaseCommit)
+    {
+        if ((expectedMainBaseCommit.Length is not (40 or 64))
+            || expectedMainBaseCommit.Any(character => !char.IsAsciiHexDigit(character)))
+        {
+            throw new InvalidOperationException("Expected main-base commit must be a Git object id.");
+        }
+
+        var repositoryRoot = RunGit(["rev-parse", "--show-toplevel"], requireSuccess: true).StandardOutput.Trim();
+        var sourceCommit = RunGit(["rev-parse", "HEAD"], requireSuccess: true).StandardOutput.Trim().ToLowerInvariant();
+        var sourceTree = RunGit(["rev-parse", "HEAD^{tree}"], requireSuccess: true).StandardOutput.Trim().ToLowerInvariant();
+        var status = RunGit(["status", "--porcelain=v1", "--untracked-files=all"], requireSuccess: true).StandardOutput;
+        var ancestor = RunGit(["merge-base", "--is-ancestor", expectedMainBaseCommit, "HEAD"], requireSuccess: false);
+        var clean = string.IsNullOrWhiteSpace(status);
+        if (!clean)
+        {
+            throw new InvalidOperationException("Holdout source tree is not clean; commit or remove every tracked/untracked source change before sealing.");
+        }
+        if (ancestor.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"Declared main base {expectedMainBaseCommit} is not an ancestor of source commit {sourceCommit}; do not open Holdout-A on an uncomposed source tree.");
+        }
+
+        return new GitRepositoryIdentity(
+            Path.GetFullPath(repositoryRoot),
+            sourceCommit,
+            sourceTree,
+            SourceTreeClean: true,
+            ExpectedMainBaseIsAncestor: true);
+    }
+
+    private static System.Collections.ObjectModel.ReadOnlyCollection<ShadowRetentionBinaryArtifactIdentity> CaptureBinaryArtifacts()
+    {
+        var baseDirectory = AppContext.BaseDirectory;
+        var files = Directory.EnumerateFiles(baseDirectory, "ChronicleDB*", SearchOption.TopDirectoryOnly)
+            .Where(path => path.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith(".deps.json", StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith(".runtimeconfig.json", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(Path.GetFileName, StringComparer.Ordinal)
+            .ToArray();
+        if (files.Length == 0)
+        {
+            throw new InvalidOperationException("Could not resolve ChronicleDB holdout binary artifacts.");
+        }
+
+        return Array.AsReadOnly(files.Select(path =>
+        {
+            var info = new FileInfo(path);
+            return new ShadowRetentionBinaryArtifactIdentity
+            {
+                Name = info.Name,
+                LengthBytes = info.Length,
+                Sha256 = Sha256(File.ReadAllBytes(path)),
+            };
+        }).ToArray());
+    }
+
+    private static bool IsPathWithin(string candidatePath, string parentPath)
+    {
+        var relative = Path.GetRelativePath(Path.GetFullPath(parentPath), Path.GetFullPath(candidatePath));
+        return string.Equals(relative, ".", StringComparison.Ordinal)
+            || (!relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                && !string.Equals(relative, "..", StringComparison.Ordinal)
+                && !Path.IsPathRooted(relative));
+    }
+
+    private static GitCommandResult RunGit(IReadOnlyList<string> arguments, bool requireSuccess)
+    {
+        var start = new ProcessStartInfo
+        {
+            FileName = "git",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Environment.CurrentDirectory,
+        };
+        foreach (var argument in arguments)
+        {
+            start.ArgumentList.Add(argument);
+        }
+
+        using var process = Process.Start(start)
+            ?? throw new InvalidOperationException("Could not start git while sealing holdout source identity.");
+        var stdout = process.StandardOutput.ReadToEnd();
+        var stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        var result = new GitCommandResult(process.ExitCode, stdout, stderr);
+        if (requireSuccess && result.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"Git source-identity command failed ({string.Join(' ', arguments)}): {result.StandardError.Trim()}");
+        }
+        return result;
     }
 
     private static (ShadowRetentionPublicationPlan Plan, string Hash) ReadAndVerifyPlan(string directory)
@@ -749,6 +922,15 @@ internal static class A1PublicationPilot
     }
 
     private sealed record ChildResult(int ExitCode, string StandardOutput, string StandardError);
+
+    private sealed record GitCommandResult(int ExitCode, string StandardOutput, string StandardError);
+
+    private sealed record GitRepositoryIdentity(
+        string RepositoryRoot,
+        string SourceCommit,
+        string SourceTree,
+        bool SourceTreeClean,
+        bool ExpectedMainBaseIsAncestor);
 }
 
 internal sealed record PublicationCaseResult(
