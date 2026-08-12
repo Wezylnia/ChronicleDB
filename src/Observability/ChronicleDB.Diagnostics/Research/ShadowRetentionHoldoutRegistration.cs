@@ -32,6 +32,10 @@ public sealed record ShadowRetentionHoldoutRegistration
 
     public required string FrameworkDescription { get; init; }
 
+    public required string DotNetSdkVersion { get; init; }
+
+    public required string MachineIdentitySha256 { get; init; }
+
     public required string OsDescription { get; init; }
 
     public required string ProcessArchitecture { get; init; }
@@ -84,10 +88,16 @@ public sealed record ShadowRetentionHoldoutRegistration
                 "Holdout registration requires a clean source tree descended from the declared main base.");
         }
 
+        if (!IsSha256(MachineIdentitySha256))
+        {
+            throw new InvalidOperationException("Holdout machine identity SHA-256 is invalid.");
+        }
+
         foreach (var value in new[]
         {
             MachineBlockId,
             FrameworkDescription,
+            DotNetSdkVersion,
             OsDescription,
             ProcessArchitecture,
             OsArchitecture,

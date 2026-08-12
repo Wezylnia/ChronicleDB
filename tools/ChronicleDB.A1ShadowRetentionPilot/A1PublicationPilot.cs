@@ -226,6 +226,8 @@ internal static class A1PublicationPilot
                 ExpectedMainBaseIsAncestor = repository.ExpectedMainBaseIsAncestor,
                 MachineBlockId = machineBlockId,
                 FrameworkDescription = RuntimeInformation.FrameworkDescription,
+                DotNetSdkVersion = ResolveDotNetSdkVersion(),
+                MachineIdentitySha256 = ResolveMachineIdentitySha256(),
                 OsDescription = RuntimeInformation.OSDescription,
                 ProcessArchitecture = RuntimeInformation.ProcessArchitecture.ToString(),
                 OsArchitecture = RuntimeInformation.OSArchitecture.ToString(),
@@ -864,6 +866,44 @@ internal static class A1PublicationPilot
         }).ToArray());
     }
 
+    private static string ResolveDotNetSdkVersion()
+    {
+        var start = new ProcessStartInfo
+        {
+            FileName = "dotnet",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Environment.CurrentDirectory,
+        };
+        start.ArgumentList.Add("--version");
+        using var process = Process.Start(start)
+            ?? throw new InvalidOperationException("Could not start dotnet while sealing holdout SDK identity.");
+        var stdout = process.StandardOutput.ReadToEnd();
+        var stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        var version = stdout.Trim();
+        if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(version))
+        {
+            throw new InvalidOperationException($"Could not resolve dotnet SDK version: {stderr.Trim()}");
+        }
+        return version;
+    }
+
+    private static string ResolveMachineIdentitySha256()
+    {
+        const string LinuxMachineIdPath = "/etc/machine-id";
+        var identity = File.Exists(LinuxMachineIdPath)
+            ? File.ReadAllText(LinuxMachineIdPath, Encoding.UTF8).Trim()
+            : Environment.MachineName.Trim();
+        if (string.IsNullOrWhiteSpace(identity))
+        {
+            throw new InvalidOperationException("Could not resolve a stable machine identity for the holdout registration.");
+        }
+        return Sha256(Encoding.UTF8.GetBytes(identity));
+    }
+
     private static bool IsPathWithin(string candidatePath, string parentPath)
     {
         var relative = Path.GetRelativePath(Path.GetFullPath(parentPath), Path.GetFullPath(candidatePath));
@@ -998,6 +1038,8 @@ internal static class A1PublicationPilot
             || !string.Equals(currentSource.SourceCommit, registration.SourceCommit, StringComparison.Ordinal)
             || !string.Equals(currentSource.SourceTree, registration.SourceTree, StringComparison.Ordinal)
             || !string.Equals(RuntimeInformation.FrameworkDescription, registration.FrameworkDescription, StringComparison.Ordinal)
+            || !string.Equals(ResolveDotNetSdkVersion(), registration.DotNetSdkVersion, StringComparison.Ordinal)
+            || !string.Equals(ResolveMachineIdentitySha256(), registration.MachineIdentitySha256, StringComparison.Ordinal)
             || !string.Equals(RuntimeInformation.OSDescription, registration.OsDescription, StringComparison.Ordinal)
             || !string.Equals(RuntimeInformation.ProcessArchitecture.ToString(), registration.ProcessArchitecture, StringComparison.Ordinal)
             || !string.Equals(RuntimeInformation.OSArchitecture.ToString(), registration.OsArchitecture, StringComparison.Ordinal)

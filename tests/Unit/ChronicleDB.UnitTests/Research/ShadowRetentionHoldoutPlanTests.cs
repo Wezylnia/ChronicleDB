@@ -138,6 +138,8 @@ public sealed class ShadowRetentionHoldoutPlanTests
         Assert.Equal(210, registration.HoldoutBRunCount);
         Assert.Equal(ShadowRetentionHoldoutPartition.HoldoutA, registration.InitialPartition);
         Assert.True(registration.HoldoutBSealedBeforeA);
+        Assert.Equal("10.0.301", registration.DotNetSdkVersion);
+        Assert.Equal(new string('9', 64), registration.MachineIdentitySha256);
         Assert.Equal(["ChronicleDB.A1ShadowRetentionPilot.dll", "ChronicleDB.Diagnostics.dll"],
             registration.BinaryArtifacts.Select(artifact => artifact.Name));
     }
@@ -161,6 +163,14 @@ public sealed class ShadowRetentionHoldoutPlanTests
         Assert.Throws<InvalidOperationException>(() => (registration with
         {
             BinaryArtifacts = registration.BinaryArtifacts.Reverse().ToArray(),
+        }).Validate());
+        Assert.Throws<InvalidOperationException>(() => (registration with
+        {
+            DotNetSdkVersion = "",
+        }).Validate());
+        Assert.Throws<InvalidOperationException>(() => (registration with
+        {
+            MachineIdentitySha256 = "not-a-sha",
         }).Validate());
         Assert.Throws<InvalidOperationException>(() => (registration with
         {
@@ -264,6 +274,8 @@ public sealed class ShadowRetentionHoldoutPlanTests
             ExpectedMainBaseIsAncestor = true,
             MachineBlockId = "machine-block-test",
             FrameworkDescription = ".NET test",
+            DotNetSdkVersion = "10.0.301",
+            MachineIdentitySha256 = new string('9', 64),
             OsDescription = "test-os",
             ProcessArchitecture = "X64",
             OsArchitecture = "X64",
