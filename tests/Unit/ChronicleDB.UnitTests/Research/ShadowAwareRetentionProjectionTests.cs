@@ -229,6 +229,89 @@ public sealed class ShadowAwareRetentionProjectionTests
         Assert.Equal(100, result.ShadowReleasedPayloadBytes);
     }
 
+    [Fact]
+    public void RandomizedSmallHistoryForestsPreserveAndMinimizeObserverState()
+    {
+        const int scenarioCount = 400;
+        for (var seed = 0; seed < scenarioCount; seed++)
+        {
+            var snapshot = RandomSnapshot(seed);
+            var result = new ShadowAwareRetentionProjection(snapshot).Analyze();
+
+            Assert.True(result.CandidateIsSubsetOfBaseline);
+            Assert.True(result.ObserverEquivalenceVerified);
+            Assert.Empty(result.ObserverMismatches);
+            Assert.True(result.ObserverMinimalityVerified);
+            Assert.Empty(result.UnwitnessedRequiredVersionIds);
+            Assert.True(result.ShadowReleasedPayloadBytes >= 0);
+        }
+    }
+
+    private static ResearchRetentionSnapshot RandomSnapshot(int seed)
+    {
+        var random = new Random(seed);
+        var historyCount = random.Next(2, 7);
+        var historyIds = Enumerable.Range(0, historyCount).Select(_ => Guid.NewGuid()).ToArray();
+        const ulong current = 4;
+        var histories = new List<ResearchHistoryRetentionSnapshot>(historyCount);
+        var keys = new[] { "K0", "K1", "K2", "K3" };
+
+        for (var historyIndex = 0; historyIndex < historyCount; historyIndex++)
+        {
+            var versions = new List<ResearchCommittedVersionSnapshot>();
+            foreach (var key in keys)
+            {
+                var sequences = Enumerable.Range(1, (int)current)
+                    .Where(_ => random.NextDouble() < 0.45)
+                    .Select(value => (ulong)value)
+                    .ToArray();
+                foreach (var sequence in sequences)
+                {
+                    var tombstone = random.NextDouble() < 0.20;
+                    versions.Add(Version(
+                        historyIds[historyIndex],
+                        key,
+                        sequence,
+                        tombstone ? 0 : random.Next(1, 257),
+                        tombstone));
+                }
+            }
+
+            histories.Add(History(
+                historyIds[historyIndex],
+                floor: (ulong)random.Next(0, (int)current + 1),
+                current: current,
+                versions.ToArray()));
+        }
+
+        var roots = new List<ResearchPersistentRetentionRootSnapshot>();
+        for (var historyIndex = 1; historyIndex < historyCount; historyIndex++)
+        {
+            var parentIndex = random.Next(0, historyIndex);
+            roots.Add(BranchBase(
+                historyIds[historyIndex],
+                historyIds[parentIndex],
+                boundary: (ulong)random.Next(0, (int)current + 1)));
+        }
+
+        foreach (var historyId in historyIds)
+        {
+            if (random.NextDouble() < 0.35)
+            {
+                roots.Add(PersistentSnapshot(historyId, (ulong)random.Next(0, (int)current + 1)));
+            }
+        }
+
+        var active = historyIds
+            .Where(_ => random.NextDouble() < 0.30)
+            .Select(historyId => new ResearchActiveRetentionBoundarySnapshot(
+                historyId,
+                (ulong)random.Next(0, (int)current + 1)))
+            .ToArray();
+
+        return Snapshot(histories, roots, active);
+    }
+
     private static ResearchRetentionSnapshot Snapshot(
         IReadOnlyList<ResearchHistoryRetentionSnapshot> histories,
         IReadOnlyList<ResearchPersistentRetentionRootSnapshot> roots,

@@ -11,6 +11,7 @@ var modes = new[] { ShadowMode.Overwrite, ShadowMode.Tombstone };
 var snapshots = new[] { SnapshotMode.None, SnapshotMode.PreShadow, SnapshotMode.PostShadow };
 var cases = new List<CaseResult>();
 var fanoutCases = new List<FanoutCaseResult>();
+var nestedCases = new List<NestedCaseResult>();
 var ordinal = 0;
 
 foreach (var fraction in fractions)
@@ -40,9 +41,19 @@ foreach (var branchCount in new[] { 1, 2, 4, 8 })
     }
 }
 
+foreach (var depth in new[] { 1, 2, 4, 8, 16 })
+{
+    foreach (var fraction in new[] { 50, 100 })
+    {
+        var caseDirectory = Path.Combine(options.OutputDirectory, $"nested-d{depth:D2}-s{fraction:D3}");
+        nestedCases.Add(RunNestedCase(options, depth, fraction, caseDirectory));
+    }
+}
+
 var eligible = cases.Where(item => item.SnapshotMode != SnapshotMode.PreShadow.ToString() && item.ShadowPercent > 0).ToArray();
 var allRatios = eligible.Select(item => item.ShadowAwareReclamationRatio)
     .Concat(fanoutCases.Select(item => item.ShadowAwareReclamationRatio))
+    .Concat(nestedCases.Select(item => item.ShadowAwareReclamationRatio))
     .ToArray();
 var result = new PilotResult(
     Pilot: "A1-SHADOW",
@@ -51,22 +62,30 @@ var result = new PilotResult(
     ValueBytes: options.ValueBytes,
     CaseCount: cases.Count,
     FanoutCaseCount: fanoutCases.Count,
+    NestedCaseCount: nestedCases.Count,
     CandidateSubsetFailures: cases.Count(item => !item.CandidateIsSubsetOfBaseline)
-        + fanoutCases.Count(item => !item.CandidateIsSubsetOfBaseline),
+        + fanoutCases.Count(item => !item.CandidateIsSubsetOfBaseline)
+        + nestedCases.Count(item => !item.CandidateIsSubsetOfBaseline),
     ExpectedReleaseMismatches: cases.Count(item => item.ShadowReleasedPayloadBytes != item.ExpectedReleasedPayloadBytes)
-        + fanoutCases.Count(item => item.ShadowReleasedPayloadBytes != item.ExpectedReleasedPayloadBytes),
+        + fanoutCases.Count(item => item.ShadowReleasedPayloadBytes != item.ExpectedReleasedPayloadBytes)
+        + nestedCases.Count(item => item.ShadowReleasedPayloadBytes != item.ExpectedReleasedPayloadBytes),
     PreShadowSafetyFailures: cases.Count(item => item.SnapshotMode == SnapshotMode.PreShadow.ToString() && item.ShadowReleasedPayloadBytes != 0),
     ObserverEquivalenceFailures: cases.Count(item => !item.ObserverEquivalenceVerified)
-        + fanoutCases.Count(item => !item.ObserverEquivalenceVerified),
+        + fanoutCases.Count(item => !item.ObserverEquivalenceVerified)
+        + nestedCases.Count(item => !item.ObserverEquivalenceVerified),
     ObserverMinimalityFailures: cases.Count(item => !item.ObserverMinimalityVerified)
-        + fanoutCases.Count(item => !item.ObserverMinimalityVerified),
+        + fanoutCases.Count(item => !item.ObserverMinimalityVerified)
+        + nestedCases.Count(item => !item.ObserverMinimalityVerified),
     MaximumReclamationRatio: allRatios.Length == 0 ? 1d : allRatios.Max(),
     MedianReclamationRatio: Median(allRatios),
     MaximumReleasedPayloadBytes: Math.Max(
         cases.Max(item => item.ShadowReleasedPayloadBytes),
-        fanoutCases.Max(item => item.ShadowReleasedPayloadBytes)),
+        Math.Max(
+            fanoutCases.Max(item => item.ShadowReleasedPayloadBytes),
+            nestedCases.Max(item => item.ShadowReleasedPayloadBytes))),
     Cases: cases,
-    FanoutCases: fanoutCases);
+    FanoutCases: fanoutCases,
+    NestedCases: nestedCases);
 
 var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
 File.WriteAllText(Path.Combine(options.OutputDirectory, "a1-shadow-result.json"), JsonSerializer.Serialize(result, jsonOptions));
@@ -311,6 +330,108 @@ static FanoutCaseResult RunStaggeredFanoutCase(
     }
 }
 
+
+static NestedCaseResult RunNestedCase(
+    Options options,
+    int depth,
+    int shadowPercent,
+    string directory)
+{
+    if (Directory.Exists(directory))
+    {
+        Directory.Delete(directory, recursive: true);
+    }
+
+    Directory.CreateDirectory(directory);
+    var databaseDirectory = Path.Combine(directory, "db");
+    var shadowCount = options.BaseKeyCount * shadowPercent / 100;
+
+    using var database = ChronicleDatabase.Open(databaseDirectory);
+    for (var keyId = 0; keyId < options.BaseKeyCount; keyId++)
+    {
+        database.Put(Key(keyId), Payload(options.ValueBytes, keyId, generation: 1));
+    }
+
+    var branches = new List<ChronicleBranch>(depth);
+    ChronicleBranch? parent = null;
+    try
+    {
+        for (var level = 1; level <= depth; level++)
+        {
+            var child = parent is null
+                ? database.CreateBranch($"nested-{depth}-{shadowPercent}-{level:D2}")
+                : parent.CreateBranch($"nested-{depth}-{shadowPercent}-{level:D2}");
+            branches.Add(child);
+
+            for (var keyId = 0; keyId < shadowCount; keyId++)
+            {
+                child.Put(Key(keyId), Payload(options.ValueBytes, keyId, generation: checked(1000 + level)));
+            }
+
+            // Make this edge's base predecessor distinct from the parent's current
+            // generic requirement, but only for the keys under attack.
+            for (var keyId = 0; keyId < shadowCount; keyId++)
+            {
+                var payload = Payload(options.ValueBytes, keyId, generation: checked(2000 + level));
+                if (parent is null)
+                {
+                    database.Put(Key(keyId), payload);
+                }
+                else
+                {
+                    parent.Put(Key(keyId), payload);
+                }
+            }
+
+            parent = child;
+        }
+
+        var raw = database.CaptureResearchRetentionSnapshot();
+        var evaluation = raw with
+        {
+            Histories = raw.Histories
+                .Select(history => history with { RetentionFloor = history.CurrentSequence })
+                .ToArray(),
+        };
+        var analysis = new ShadowAwareRetentionProjection(evaluation).Analyze();
+        var expectedRelease = checked((long)depth * shadowCount * options.ValueBytes);
+        var result = new NestedCaseResult(
+            Depth: depth,
+            ShadowPercent: shadowPercent,
+            ShadowKeyCount: shadowCount,
+            BaselineVersionCount: analysis.BaselineVersionCount,
+            ShadowAwareVersionCount: analysis.ShadowAwareVersionCount,
+            BaselinePayloadBytes: analysis.BaselinePayloadBytes,
+            ShadowAwarePayloadBytes: analysis.ShadowAwarePayloadBytes,
+            ShadowReleasedPayloadBytes: analysis.ShadowReleasedPayloadBytes,
+            ExpectedReleasedPayloadBytes: expectedRelease,
+            ShadowAwareReclamationRatio: analysis.ShadowAwareReclamationRatio,
+            CandidateIsSubsetOfBaseline: analysis.CandidateIsSubsetOfBaseline,
+            ObserverEquivalenceVerified: analysis.ObserverEquivalenceVerified,
+            ObserverEquivalenceCheckCount: analysis.ObserverEquivalenceCheckCount,
+            ObserverMinimalityVerified: analysis.ObserverMinimalityVerified,
+            UnwitnessedRequiredVersionCount: analysis.UnwitnessedRequiredVersionIds.Count,
+            ReleasedVersionCount: analysis.ReleasedVersionIds.Count,
+            ParentFallbackHops: analysis.ParentFallbackHops);
+
+        File.WriteAllText(
+            Path.Combine(directory, "case-result.json"),
+            JsonSerializer.Serialize(result, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                WriteIndented = true,
+            }));
+        return result;
+    }
+    finally
+    {
+        foreach (var branch in branches.AsEnumerable().Reverse())
+        {
+            branch.Dispose();
+        }
+    }
+}
+
 static Options Parse(string[] args)
 {
     var baseKeyCount = 0;
@@ -428,6 +549,25 @@ internal sealed record FanoutCaseResult(
     int ReleasedVersionCount,
     int ParentFallbackHops);
 
+internal sealed record NestedCaseResult(
+    int Depth,
+    int ShadowPercent,
+    int ShadowKeyCount,
+    int BaselineVersionCount,
+    int ShadowAwareVersionCount,
+    long BaselinePayloadBytes,
+    long ShadowAwarePayloadBytes,
+    long ShadowReleasedPayloadBytes,
+    long ExpectedReleasedPayloadBytes,
+    double ShadowAwareReclamationRatio,
+    bool CandidateIsSubsetOfBaseline,
+    bool ObserverEquivalenceVerified,
+    int ObserverEquivalenceCheckCount,
+    bool ObserverMinimalityVerified,
+    int UnwitnessedRequiredVersionCount,
+    int ReleasedVersionCount,
+    int ParentFallbackHops);
+
 internal sealed record PilotResult(
     string Pilot,
     string MainCommitUnderTest,
@@ -435,6 +575,7 @@ internal sealed record PilotResult(
     int ValueBytes,
     int CaseCount,
     int FanoutCaseCount,
+    int NestedCaseCount,
     int CandidateSubsetFailures,
     int ExpectedReleaseMismatches,
     int PreShadowSafetyFailures,
@@ -444,4 +585,5 @@ internal sealed record PilotResult(
     double MedianReclamationRatio,
     long MaximumReleasedPayloadBytes,
     IReadOnlyList<CaseResult> Cases,
-    IReadOnlyList<FanoutCaseResult> FanoutCases);
+    IReadOnlyList<FanoutCaseResult> FanoutCases,
+    IReadOnlyList<NestedCaseResult> NestedCases);
