@@ -229,3 +229,25 @@ It should be demoted or abandoned if any of the following occurs:
 4. Freeze the strong baseline, benefit-frontier thresholds and candidate configuration.
 5. Preregister and run independent-process Pilot-A, then sealed Holdout-A. Do not tune after opening holdout data.
 
+
+## Final falsification-gate validation
+
+The current A1 research HEAD was revalidated after the independent flat-exact baseline, closed-form effect model, heterogeneous profiles and fail-closed experiment gates were integrated:
+
+- solution build: **0 warnings / 0 errors**;
+- Architecture: **8 / 8 PASS**;
+- Unit: **187 / 187 PASS**;
+- Persistence: **180 / 180 PASS**;
+- Correctness: **25 / 25 PASS**;
+- Recovery: **55 / 55 PASS**;
+- total xUnit: **455 / 455 PASS**;
+- final logical pilot: 50 direct cases + 32 fanout + 10 nested + 12 mixed = **104 workloads PASS**;
+- candidate-subset failures: 0;
+- expected-release mismatches: 0;
+- pre-shadow safety failures: 0;
+- observer-equivalence failures: 0;
+- observer-minimality failures: 0;
+- effect-model mismatches: 0;
+- independent FlatExact divergence is fail-closed rather than report-only.
+
+A heterogeneous 1,024-key / four-branch smoke with branch profiles `10:0,25:20,50:100,75:50` produced measured SAR **1.392523x**, exactly matching the heterogeneous closed-form prediction, while all semantic gates remained satisfied. This is a model/implementation consistency check, not a publication workload result.
