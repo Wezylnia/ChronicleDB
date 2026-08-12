@@ -28,6 +28,34 @@ public sealed class ShadowRetentionEffectModelTests
     }
 
     [Theory]
+    [InlineData(8, 0.0, 1.10, 0.1125)]
+    [InlineData(8, 0.0, 1.25, 0.28125)]
+    [InlineData(8, 0.0, 1.50, 0.5625)]
+    [InlineData(8, 1.0, 2.00, 0.5625)]
+    [InlineData(8, 1.0, 9.00, 1.0)]
+    public void BenefitFrontierReturnsMinimumShadowFraction(
+        int branches,
+        double tombstoneFraction,
+        double targetRatio,
+        double expected)
+    {
+        var result = ShadowRetentionEffectModel.MinimumShadowFractionForRatio(
+            branches,
+            tombstoneFraction,
+            targetRatio);
+
+        Assert.NotNull(result);
+        Assert.Equal(expected, result.Value, precision: 12);
+    }
+
+    [Fact]
+    public void BenefitFrontierReturnsNullWhenTargetIsUnreachable()
+    {
+        Assert.Null(ShadowRetentionEffectModel.MinimumShadowFractionForRatio(8, 0d, 2d));
+        Assert.Null(ShadowRetentionEffectModel.MinimumShadowFractionForRatio(8, 1d, 10d));
+    }
+
+    [Theory]
     [InlineData(8, 0.01, 1.008888888888889)]
     [InlineData(8, 0.10, 1.088888888888889)]
     [InlineData(8, 0.25, 1.2222222222222223)]

@@ -20,6 +20,8 @@ The candidate is compared against the existing per-history exact projection, not
 
 The candidate changes only BranchBase treatment: branch bases become ancestry edges. A descendant requirement reaches the parent only when the key has no visible local value or tombstone at the retained descendant boundary.
 
+A second independent `FlatExactRetentionProjectionBaseline` reconstructs that strong baseline directly from the raw research snapshot without calling `RetentionInspector` or production retention projection code. Across 1,000 additional randomized history forests, both baseline implementations produced identical retained-version sets; projection-scale runs now fail closed if the two exact baselines diverge.
+
 ## Correctness model
 
 For every retained observer `o` and key `k`, resolution follows normal branch read semantics:
@@ -75,6 +77,20 @@ Representative logical results with 4 KiB values:
 | 8 branches, 1% overwrite shadow | ~1.009x |
 
 The useful regime is therefore **multiple long-lived retained branch bases plus substantial key shadowing**. Low-shadow workloads are explicit negative controls.
+
+For the controlled staggered-branch model with equal-sized values, branch count `B`, shadow fraction `f`, and tombstone fraction `d`, the logical payload ratio is:
+
+```text
+SAR = [1 + B + B f (1-d)] / [1 + B(1-f) + B f (1-d)]
+```
+
+The corresponding minimum shadow fraction needed to reach a target ratio `R` is:
+
+```text
+f_min = (R-1)(B+1) / [B(1-d+R d)]
+```
+
+when that value is at most one. This makes the effect-size limits explicit rather than post-hoc: with 8 branches and overwrite-only shadows, 1.10x requires ~11.25% shadow, 1.25x requires ~28.13%, 1.50x requires 56.25%, and 2.0x is unreachable. With 100% tombstone shadows the same 8-branch model reaches 9.0x only at full shadow. The closed-form model is differential-checked against the controlled projection-scale workload.
 
 ### Closed-form effect bound for the controlled workload
 

@@ -8,6 +8,33 @@ namespace ChronicleDB.Diagnostics.Research;
 /// </summary>
 public static class ShadowRetentionEffectModel
 {
+    public static double? MinimumShadowFractionForRatio(
+        int branchCount,
+        double tombstoneFraction,
+        double targetRatio)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(branchCount);
+        if (tombstoneFraction is < 0d or > 1d)
+        {
+            throw new ArgumentOutOfRangeException(nameof(tombstoneFraction));
+        }
+
+        if (!double.IsFinite(targetRatio) || targetRatio < 1d)
+        {
+            throw new ArgumentOutOfRangeException(nameof(targetRatio));
+        }
+
+        if (targetRatio == 1d)
+        {
+            return 0d;
+        }
+
+        var numerator = (targetRatio - 1d) * (branchCount + 1d);
+        var denominator = branchCount * (1d - tombstoneFraction + (targetRatio * tombstoneFraction));
+        var fraction = numerator / denominator;
+        return fraction <= 1d ? fraction : null;
+    }
+
     public static ShadowRetentionEffectPrediction Predict(
         int keyCount,
         int branchCount,
