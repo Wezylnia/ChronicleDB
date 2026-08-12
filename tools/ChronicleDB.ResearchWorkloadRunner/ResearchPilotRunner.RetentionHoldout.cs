@@ -222,6 +222,164 @@ internal static partial class ResearchPilotRunner
         }
     }
 
+
+    private static int RunRetentionSealedHoldoutB(string[] args)
+    {
+        if (args.Length != 1)
+        {
+            Console.Error.WriteLine("Usage: pilot P1HB <existing-p1h-output-directory>");
+            return 2;
+        }
+
+        var outputDirectory = Path.GetFullPath(args[0]);
+        try
+        {
+            var configPath = Path.Combine(outputDirectory, "candidate-config.json");
+            var registrationPath = Path.Combine(outputDirectory, "registration", ResearchArtifactWriter.CampaignRegistrationFileName);
+            if (!File.Exists(configPath) || !File.Exists(registrationPath))
+            {
+                throw new InvalidOperationException("P1HB requires an existing P1H candidate config and sealed registration.");
+            }
+
+            var readOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            var config = JsonSerializer.Deserialize<RetentionHoldoutConfig>(File.ReadAllText(configPath), readOptions)
+                ?? throw new InvalidOperationException("Could not deserialize the sealed A1 holdout config.");
+            var registration = JsonSerializer.Deserialize<ResearchCampaignRegistration>(File.ReadAllText(registrationPath), readOptions)
+                ?? throw new InvalidOperationException("Could not deserialize the sealed A1 campaign registration.");
+            registration.Validate();
+            var configHash = Sha256(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(config, JsonOptions)));
+            if (!string.Equals(registration.CandidateId, config.CandidateId, StringComparison.Ordinal)
+                || !string.Equals(registration.CandidateConfigHash, configHash, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Sealed registration does not match the candidate configuration.");
+            }
+
+            var resultPathFinal = Path.Combine(outputDirectory, "p1h-holdout-b-result.json");
+            if (File.Exists(resultPathFinal))
+            {
+                throw new InvalidOperationException("Holdout-B has already been executed for this sealed campaign.");
+            }
+
+            var bRuns = registration.Runs
+                .Where(run => run.Partition == ResearchCampaignPartition.HoldoutB)
+                .OrderBy(run => run.TrialOrder)
+                .ToArray();
+            if (bRuns.Length == 0)
+            {
+                throw new InvalidOperationException("The sealed registration contains no Holdout-B runs.");
+            }
+
+            var executions = new List<RetentionHoldoutExecution>(bRuns.Length);
+            foreach (var registered in bRuns)
+            {
+                var manifestPath = Path.Combine(
+                    outputDirectory,
+                    "registration",
+                    ResearchCampaignPartition.HoldoutB.ToString(),
+                    $"trial-{registered.TrialOrder:D3}-seed-{registered.WorkloadSeed}-rep-{registered.ProcessRepetition:D2}",
+                    ResearchArtifactWriter.ManifestFileName);
+                if (!File.Exists(manifestPath))
+                {
+                    throw new InvalidOperationException($"Missing presealed Holdout-B manifest '{manifestPath}'.");
+                }
+
+                var manifestText = File.ReadAllText(manifestPath);
+                var manifest = JsonSerializer.Deserialize<ExperimentManifest>(manifestText, readOptions)
+                    ?? throw new InvalidOperationException("Could not deserialize a presealed Holdout-B manifest.");
+                manifest.Validate();
+                var manifestHash = manifest.ComputeCanonicalSha256();
+                if (!string.Equals(manifestHash, registered.ManifestSha256, StringComparison.Ordinal)
+                    || manifest.ExperimentId != registered.ExperimentId
+                    || manifest.WorkloadSeed != registered.WorkloadSeed
+                    || manifest.ProcessRepetition != registered.ProcessRepetition
+                    || manifest.TrialOrder != registered.TrialOrder
+                    || !string.Equals(manifest.CandidateConfigHash, configHash, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("A presealed Holdout-B manifest does not match its registration entry.");
+                }
+
+                var runDirectory = Path.Combine(
+                    outputDirectory,
+                    "holdout-b-results",
+                    $"trial-{registered.TrialOrder:D3}-seed-{registered.WorkloadSeed}-rep-{registered.ProcessRepetition:D2}");
+                Directory.CreateDirectory(runDirectory);
+                var child = RunP1IChild(
+                    registered.WorkloadSeed,
+                    config.BaseKeyCount,
+                    config.ValueBytes,
+                    config.ChurnRounds,
+                    config.HotKeyCount,
+                    config.PrivateBytes,
+                    config.ReadBudget,
+                    runDirectory);
+                if (child.ExitCode != 0)
+                {
+                    throw new InvalidOperationException(
+                        $"P1HB child failed seed={registered.WorkloadSeed} repetition={registered.ProcessRepetition}: {child.StandardError}");
+                }
+
+                var resultPath = Path.Combine(runDirectory, "p1i-result.json");
+                using var resultDocument = JsonDocument.Parse(File.ReadAllText(resultPath));
+                var root = resultDocument.RootElement;
+                if (root.GetProperty("seed").GetInt32() != registered.WorkloadSeed
+                    || root.GetProperty("baseKeyCount").GetInt32() != config.BaseKeyCount
+                    || root.GetProperty("valueBytes").GetInt32() != config.ValueBytes
+                    || root.GetProperty("churnRounds").GetInt32() != config.ChurnRounds
+                    || root.GetProperty("hotKeyCount").GetInt32() != config.HotKeyCount
+                    || root.GetProperty("privateBytes").GetInt32() != config.PrivateBytes
+                    || root.GetProperty("readBudget").GetInt32() != config.ReadBudget)
+                {
+                    throw new InvalidOperationException("Holdout-B result identity does not match the presealed configuration.");
+                }
+
+                executions.Add(new RetentionHoldoutExecution(
+                    ExperimentId: registered.ExperimentId,
+                    ManifestSha256: registered.ManifestSha256,
+                    ResultSha256: Sha256(File.ReadAllBytes(resultPath)),
+                    Seed: registered.WorkloadSeed,
+                    Repetition: registered.ProcessRepetition,
+                    TrialOrder: registered.TrialOrder,
+                    P99InterferenceRatio: root.GetProperty("p99InterferenceRatio").GetDouble(),
+                    P95InterferenceRatio: root.GetProperty("p95InterferenceRatio").GetDouble(),
+                    ExactMarginalPayloadBytes: root.GetProperty("exactMarginalPayloadBytes").GetInt64(),
+                    CoarseRootInducedPayloadBytes: root.GetProperty("coarseRootInducedPayloadBytes").GetInt64(),
+                    CompactionBytesRewritten: root.GetProperty("compactionBytesRewritten").GetInt64(),
+                    CompactionBytesReclaimed: root.GetProperty("compactionBytesReclaimed").GetInt64(),
+                    AllocationMeasurementExact: root.GetProperty("allocationMeasurementExact").GetBoolean()));
+            }
+
+            var orderedP99 = executions.Select(run => run.P99InterferenceRatio).Order().ToArray();
+            var execution = new RetentionHoldoutResult(
+                Pilot: "P1HB",
+                CandidateId: config.CandidateId,
+                CandidateConfigHash: configHash,
+                CampaignRegistrationSha256: registration.ComputeCanonicalSha256(),
+                HoldoutARunCount: registration.Runs.Count(run => run.Partition == ResearchCampaignPartition.HoldoutA),
+                HoldoutBSealedRunCount: bRuns.Length,
+                HoldoutBExecuted: true,
+                MedianP99InterferenceRatio: Median(orderedP99),
+                P95P99InterferenceRatio: Percentile(orderedP99, 0.95),
+                EveryRunValid: executions.All(run => run.AllocationMeasurementExact
+                    && run.ExactMarginalPayloadBytes > 0
+                    && run.CompactionBytesReclaimed >= 0
+                    && double.IsFinite(run.P99InterferenceRatio)),
+                Runs: executions);
+            WriteCreateNew(resultPathFinal, JsonSerializer.Serialize(execution, JsonOptions) + Environment.NewLine);
+
+            var pass = execution.EveryRunValid && execution.HoldoutBExecuted && executions.Count == bRuns.Length;
+            Console.WriteLine(
+                $"P1HB {(pass ? "PASS" : "FAIL")} B-runs={executions.Count} " +
+                $"p99-median={execution.MedianP99InterferenceRatio:F2}x " +
+                $"registration={execution.CampaignRegistrationSha256} output={outputDirectory}");
+            return pass ? 0 : 1;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"P1HB FAIL: {exception}");
+            return 1;
+        }
+    }
+
     private static void BuildHoldoutPartitionPlans(
         ResearchCampaignPartition partition,
         int seedStart,

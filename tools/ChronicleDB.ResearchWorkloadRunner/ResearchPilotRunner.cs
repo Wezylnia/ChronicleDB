@@ -33,6 +33,7 @@ internal static partial class ResearchPilotRunner
             "P1I" => Task.FromResult(RunRetentionInterferencePilot(args[1..])),
             "P1IR" => Task.FromResult(RunRetentionInterferenceCampaign(args[1..])),
             "P1H" => Task.FromResult(RunRetentionSealedHoldout(args[1..])),
+            "P1HB" => Task.FromResult(RunRetentionSealedHoldoutB(args[1..])),
             "P2" => Task.FromResult(RunCrashPorPilot(args[1..])),
             "P2R" => Task.FromResult(RunRealTraceCrashPorPilot(args[1..])),
             "P2L" => Task.FromResult(RunRecoveryTopologyCrashPorPilot(args[1..])),
@@ -2256,6 +2257,7 @@ internal static partial class ResearchPilotRunner
         Console.Error.WriteLine("  pilot P1I <seed> <base-key-count>=16 <value-bytes> <churn-rounds> <hot-key-count> <private-bytes> <read-budget>=1000 [output-directory]");
         Console.Error.WriteLine("  pilot P1IR <seed-start> <seed-count:1..20> <repetitions:2..10> <base-key-count>=16 <value-bytes> <churn-rounds> <hot-key-count> <private-bytes> <read-budget>=1000 [output-directory]");
         Console.Error.WriteLine("  pilot P1H <holdout-a-seed-start> <holdout-b-seed-start> <seed-count:1..20> <repetitions:2..10> <base-key-count>=16 <value-bytes> <churn-rounds> <hot-key-count> <private-bytes> <read-budget>=1000 <machine-block> [output-directory]");
+        Console.Error.WriteLine("  pilot P1HB <existing-p1h-output-directory>");
         Console.Error.WriteLine("  pilot P2 <history-count:2..4> [output-directory]");
         Console.Error.WriteLine("  pilot P2R <history-count:2..3> [siblings|chain] [output-directory]");
         Console.Error.WriteLine("  pilot P2L <history-count:2..4> [siblings|chain] [output-directory]");

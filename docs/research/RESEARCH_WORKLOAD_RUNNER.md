@@ -80,3 +80,5 @@ necessarily improves reduction.
 The top-level `gate` command records candidate dispositions from evidence-file SHA-256 hashes and aggregates them into a canonical research-gate report. These artifacts are research metadata only; they never participate in engine recovery, retention, routing or erasure authority.
 
 `P1H` seals both A/B retention holdout partitions before opening A. It is intentionally candidate-specific rather than a generic benchmark wrapper so the A1 configuration fields and returned `P1I` identity can be checked against the preregistered manifests. Holdout-B is not run by this command.
+
+`P1HB <existing-p1h-output-directory>` executes only the already sealed Holdout-B partition. It is a correctness-invalid-A fallback, not a way to rerun weak performance results.

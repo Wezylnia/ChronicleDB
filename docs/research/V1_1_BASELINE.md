@@ -96,3 +96,5 @@ dotnet run -c Release --project tools/ChronicleDB.ResearchWorkloadRunner -- \
 ```
 
 The parent runner constructs child arguments from the sealed plan and verifies identity fields in each `P1I` result against the sealed configuration. Each execution records the manifest SHA-256 and result SHA-256. A `P1H` smoke proves the protocol implementation, not the paper result: publication use still requires the final frozen A1 parameter matrix and declared machine blocks.
+
+If Holdout-A is correctness-invalid, `P1HB <existing-p1h-output-directory>` is the only automated fallback path. It does not generate a new campaign: it reloads the existing candidate config and registration, verifies every presealed Holdout-B manifest hash/identity against the registration, then executes those runs. It refuses a second B execution for the same output directory.
