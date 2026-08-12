@@ -108,6 +108,28 @@ public sealed class CrashPorExplorerTests
     }
 
     [Fact]
+    public void ResourceOnlyBaselineIgnoresExplicitDependencyInIndependenceRelation()
+    {
+        var first = Action(1, HistoryA, "a.wal");
+        var second = new PersistenceAction(
+            2,
+            ResearchEventKind.OperationStarted,
+            HistoryB,
+            null,
+            Guid.Parse("00000000-0000-0000-0000-000000000002"),
+            ["b.wal"],
+            ResearchDurabilityPhase.WalAppended,
+            1,
+            [1]);
+
+        var resourceOnly = new ResourceOnlyIndependence();
+        var resourceDependency = new ResourceDependencyIndependence();
+
+        Assert.True(resourceOnly.AreIndependent(first, second));
+        Assert.False(resourceDependency.AreIndependent(first, second));
+    }
+
+    [Fact]
     public void GenericResourceBaselineDoesNotModelAncestry()
     {
         var parent = Action(1, HistoryA, "a.wal");

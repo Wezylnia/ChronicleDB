@@ -181,7 +181,28 @@ public sealed class ConservativeHistoryIndependence : IPersistenceActionIndepend
 }
 
 /// <summary>
-/// Generic resource/dependency POR baseline. It intentionally has no branch ancestry
+/// Weak generic resource-only baseline. It models durable resource conflicts and
+/// global recovery transitions, but deliberately ignores explicit cross-action
+/// dependencies and branch ancestry. Program order and explicit dependencies still
+/// constrain which exhaustive orders are legal; this baseline only attacks how much
+/// extra pruning can be justified from resource touch sets alone.
+/// </summary>
+public sealed class ResourceOnlyIndependence : IPersistenceActionIndependence
+{
+    public bool AreIndependent(PersistenceAction left, PersistenceAction right)
+    {
+        ArgumentNullException.ThrowIfNull(left);
+        ArgumentNullException.ThrowIfNull(right);
+        return left.ActionId != right.ActionId
+            && left.OperationId != right.OperationId
+            && !left.ResourceSet.Intersect(right.ResourceSet, StringComparer.Ordinal).Any()
+            && !PersistenceActionIndependenceRules.IsGlobalTransition(left.EventKind)
+            && !PersistenceActionIndependenceRules.IsGlobalTransition(right.EventKind);
+    }
+}
+
+/// <summary>
+/// Strong generic resource/dependency POR baseline. It intentionally has no branch ancestry
 /// model and therefore answers whether history topology adds anything beyond durable
 /// resource touch sets and explicit dependency edges.
 /// </summary>

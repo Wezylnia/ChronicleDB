@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using ChronicleDB;
+using ChronicleDB.Core.Identifiers;
 using ChronicleDB.Diagnostics.Research;
 using ChronicleDB.Maintenance;
 
@@ -25,8 +26,11 @@ internal static class ResearchPilotRunner
             "P1" => Task.FromResult(RunRetentionPilot(args[1..])),
             "P1C" => Task.FromResult(RunRetentionControlPilot(args[1..])),
             "P1B" => Task.FromResult(RunRetentionBaselinePilot(args[1..])),
+            "P1S" => Task.FromResult(RunRetentionHotSetSweepPilot(args[1..])),
+            "P1P" => Task.FromResult(RunRetentionPairedPhysicalPilot(args[1..])),
             "P2" => Task.FromResult(RunCrashPorPilot(args[1..])),
             "P2R" => Task.FromResult(RunRealTraceCrashPorPilot(args[1..])),
+            "P2L" => Task.FromResult(RunRecoveryTopologyCrashPorPilot(args[1..])),
             "P3" => Task.FromResult(RunAncestryPilot(args[1..])),
             "P3T" => Task.FromResult(RunAncestryTimingControlPilot(args[1..])),
             "P4" => Task.FromResult(RunRecoverySchedulingPilot(args[1..])),
@@ -669,6 +673,159 @@ internal static class ResearchPilotRunner
         }
     }
 
+    private static int RunRecoveryTopologyCrashPorPilot(string[] args)
+    {
+        if (args.Length < 1
+            || !int.TryParse(args[0], out var historyCount)
+            || historyCount is < 2 or > 4)
+        {
+            Console.Error.WriteLine("Usage: pilot P2L <history-count:2..4> [siblings|chain] [output-directory]");
+            return 2;
+        }
+
+        var topology = args.Length >= 2
+            && (args[1].Equals("siblings", StringComparison.OrdinalIgnoreCase)
+                || args[1].Equals("chain", StringComparison.OrdinalIgnoreCase))
+            ? args[1].ToLowerInvariant()
+            : "siblings";
+        var outputArgumentIndex = topology == "siblings" && args.Length >= 2
+            && !args[1].Equals("siblings", StringComparison.OrdinalIgnoreCase)
+            && !args[1].Equals("chain", StringComparison.OrdinalIgnoreCase)
+                ? 1
+                : 2;
+        var outputDirectory = args.Length > outputArgumentIndex
+            ? Path.GetFullPath(args[outputArgumentIndex])
+            : Path.Combine(
+                Environment.CurrentDirectory,
+                "artifacts",
+                "research-pilots",
+                $"p2l-{topology}-{historyCount}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outputDirectory);
+        var databaseDirectory = Path.Combine(outputDirectory, "database");
+
+        try
+        {
+            var historyIds = new List<HistoryId>(historyCount);
+            using (var database = ChronicleDatabase.Open(databaseDirectory))
+            {
+                var branches = new List<ChronicleBranch>(historyCount);
+                try
+                {
+                    for (var index = 0; index < historyCount; index++)
+                    {
+                        var branch = topology == "chain" && index > 0
+                            ? branches[index - 1].CreateBranch($"p2l-chain-{index}")
+                            : database.CreateBranch($"p2l-{topology}-{index}");
+                        branches.Add(branch);
+                        historyIds.Add(new HistoryId(branch.HistoryId));
+                        branch.Put(Key(70_000 + index), BitConverter.GetBytes(index + 1));
+                    }
+                }
+                finally
+                {
+                    foreach (var branch in branches.AsEnumerable().Reverse())
+                    {
+                        branch.Dispose();
+                    }
+                }
+            }
+
+            var sink = new TraceResearchEventSink();
+            using var reopened = ChronicleDatabase.Open(databaseDirectory, researchEventSink: sink);
+            var telemetry = reopened.GetResearchTelemetryStatus();
+            if (!telemetry.IsComplete)
+            {
+                throw new InvalidOperationException(
+                    $"P2L requires a complete trace; publicationFailures={telemetry.PublicationFailures}.");
+            }
+
+            var productionEvents = sink.Snapshot().ToArray();
+            ResearchTraceValidator.Validate(productionEvents);
+            File.WriteAllText(
+                Path.Combine(outputDirectory, "p2l-production-trace.json"),
+                ResearchTraceSerializer.SerializeCanonical(productionEvents));
+
+            var actions = PersistenceTraceSlice.SelectRecoveryValidationOperations(productionEvents, historyIds);
+            var oracle = new PersistenceTraceProjectionOracle(actions);
+            var maximumActions = historyCount * 2;
+            var proposedIndependence = new ConservativeHistoryIndependence(actions);
+            var resourceOnlyIndependence = new ResourceOnlyIndependence();
+            var resourceDependencyIndependence = new ResourceDependencyIndependence();
+            var stopwatch = Stopwatch.StartNew();
+            var proposed = new BoundedCrashPorExplorer(actions, maximumActions, proposedIndependence)
+                .VerifyCrashPrefixEquivalence(oracle.Evaluate);
+            var resourceOnly = new BoundedCrashPorExplorer(actions, maximumActions, resourceOnlyIndependence)
+                .VerifyCrashPrefixEquivalence(oracle.Evaluate);
+            var resourceDependency = new BoundedCrashPorExplorer(actions, maximumActions, resourceDependencyIndependence)
+                .VerifyCrashPrefixEquivalence(oracle.Evaluate);
+
+            var metadataBlindActions = actions.Select(action => new PersistenceAction(
+                action.ActionId,
+                action.EventKind,
+                action.HistoryId,
+                action.ParentHistoryId,
+                action.OperationId,
+                action.ResourceSet.Where(resource => resource is not ("branch-catalog" or "history-roots")),
+                action.DurabilityPhase,
+                action.AuthorityGeneration,
+                action.DependencyActionIds)).ToArray();
+            var realById = actions.ToDictionary(action => action.ActionId);
+            CanonicalObservationTrace EvaluateReal(IReadOnlyList<PersistenceAction> prefix)
+                => oracle.Evaluate(prefix.Select(action => realById[action.ActionId]).ToArray());
+            var metadataBlindProposed = new BoundedCrashPorExplorer(
+                    metadataBlindActions,
+                    maximumActions,
+                    new ConservativeHistoryIndependence(metadataBlindActions))
+                .VerifyCrashPrefixEquivalence(EvaluateReal);
+            var metadataBlindResource = new BoundedCrashPorExplorer(
+                    metadataBlindActions,
+                    maximumActions,
+                    new ResourceOnlyIndependence())
+                .VerifyCrashPrefixEquivalence(EvaluateReal);
+            stopwatch.Stop();
+
+            var result = new RecoveryTopologyCrashPorPilotResult(
+                Pilot: "P2L",
+                Topology: topology,
+                HistoryCount: historyCount,
+                ActionCount: actions.Count,
+                SharedResources: oracle.SharedResources.Order(StringComparer.Ordinal).ToArray(),
+                ProposedCrashPlanReductionFactor: proposed.CrashPlanReductionFactor,
+                ResourceOnlyCrashPlanReductionFactor: resourceOnly.CrashPlanReductionFactor,
+                ResourceDependencyCrashPlanReductionFactor: resourceDependency.CrashPlanReductionFactor,
+                ProposedObservationSetsEquivalent: proposed.ObservationSetsEquivalent,
+                ResourceOnlyObservationSetsEquivalent: resourceOnly.ObservationSetsEquivalent,
+                ResourceDependencyObservationSetsEquivalent: resourceDependency.ObservationSetsEquivalent,
+                ProposedVsResourceOnlyRelationDifferences: CountIndependenceDifferences(actions, proposedIndependence, resourceOnlyIndependence),
+                ResourceOnlyVsDependencyRelationDifferences: CountIndependenceDifferences(actions, resourceOnlyIndependence, resourceDependencyIndependence),
+                MetadataBlindProposedObservationSetsEquivalent: metadataBlindProposed.ObservationSetsEquivalent,
+                MetadataBlindResourceObservationSetsEquivalent: metadataBlindResource.ObservationSetsEquivalent,
+                ElapsedMilliseconds: stopwatch.Elapsed.TotalMilliseconds);
+            File.WriteAllText(
+                Path.Combine(outputDirectory, "p2l-result.json"),
+                JsonSerializer.Serialize(result, JsonOptions));
+            var pass = result.ProposedObservationSetsEquivalent
+                && result.ResourceOnlyObservationSetsEquivalent
+                && result.ResourceDependencyObservationSetsEquivalent
+                && !result.MetadataBlindProposedObservationSetsEquivalent
+                && !result.MetadataBlindResourceObservationSetsEquivalent;
+            Console.WriteLine(
+                $"P2L {(pass ? "PASS" : "FAIL")} topology={topology} histories={historyCount} actions={actions.Count} " +
+                $"shared={string.Join(',', result.SharedResources)} crf={result.ProposedCrashPlanReductionFactor:F2} " +
+                $"resource-only-crf={result.ResourceOnlyCrashPlanReductionFactor:F2} " +
+                $"generic-crf={result.ResourceDependencyCrashPlanReductionFactor:F2} " +
+                $"relation-diff-resource={result.ProposedVsResourceOnlyRelationDifferences} " +
+                $"metadata-blind-proposed-eq={result.MetadataBlindProposedObservationSetsEquivalent} " +
+                $"metadata-blind-resource-eq={result.MetadataBlindResourceObservationSetsEquivalent} output={outputDirectory}");
+            return pass ? 0 : 1;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"P2L FAIL: {exception}");
+            return 1;
+        }
+    }
+
     private static int RunRealTraceCrashPorPilot(string[] args)
     {
         if (args.Length < 1
@@ -745,6 +902,18 @@ internal static class ResearchPilotRunner
                 // ChronicleDB branch ancestry model. If this matches the proposed
                 // reducer everywhere, the history-domain contribution is weaker.
                 var proposedIndependence = new ConservativeHistoryIndependence(actions);
+                var resourceOnlyIndependence = new ResourceOnlyIndependence();
+                var resourceOnlyUsesSameRelation = HaveSameIndependenceRelation(
+                    actions,
+                    proposedIndependence,
+                    resourceOnlyIndependence);
+                var resourceOnlyVerification = resourceOnlyUsesSameRelation
+                    ? verification
+                    : new BoundedCrashPorExplorer(
+                        actions,
+                        maximumActions: historyCount * 4,
+                        independence: resourceOnlyIndependence)
+                        .VerifyCrashPrefixEquivalence(oracle.Evaluate);
                 var resourceBaselineIndependence = new ResourceDependencyIndependence();
                 var resourceBaselineUsesSameRelation = HaveSameIndependenceRelation(
                     actions,
@@ -808,6 +977,10 @@ internal static class ResearchPilotRunner
                     ObservationSetsEquivalent: verification.ObservationSetsEquivalent,
                     OrderReductionFactor: verification.OrderReductionFactor,
                     CrashPlanReductionFactor: verification.CrashPlanReductionFactor,
+                    ResourceOnlyUsesSameIndependenceRelation: resourceOnlyUsesSameRelation,
+                    ResourceOnlyObservationSetsEquivalent: resourceOnlyVerification.ObservationSetsEquivalent,
+                    ResourceOnlyReducedCrashPlanCount: resourceOnlyVerification.ReducedCrashPlanCount,
+                    ResourceOnlyCrashPlanReductionFactor: resourceOnlyVerification.CrashPlanReductionFactor,
                     ResourceBaselineUsesSameIndependenceRelation: resourceBaselineUsesSameRelation,
                     ResourceBaselineObservationSetsEquivalent: resourceBaselineVerification.ObservationSetsEquivalent,
                     ResourceBaselineReducedCrashPlanCount: resourceBaselineVerification.ReducedCrashPlanCount,
@@ -827,7 +1000,8 @@ internal static class ResearchPilotRunner
                     $"P2R {(result.ObservationSetsEquivalent ? "PASS" : "FAIL")} topology={topology} histories={historyCount} " +
                     $"actions={result.ActionCount} shared={string.Join(',', result.SharedResources)} " +
                     $"exhaustive-plans={result.ExhaustiveCrashPlanCount} reduced-plans={result.ReducedCrashPlanCount} " +
-                    $"crf={result.CrashPlanReductionFactor:F2} generic-crf={result.ResourceBaselineCrashPlanReductionFactor:F2} " +
+                    $"crf={result.CrashPlanReductionFactor:F2} resource-only-crf={result.ResourceOnlyCrashPlanReductionFactor:F2} " +
+                    $"generic-crf={result.ResourceBaselineCrashPlanReductionFactor:F2} " +
                     $"random-coverage={result.RandomBaselineObservationCoverage:P1} " +
                     $"catalog-blind-eq={result.CatalogBlindObservationSetsEquivalent} output={outputDirectory}");
                 return result.ObservationSetsEquivalent && !result.CatalogBlindObservationSetsEquivalent ? 0 : 1;
@@ -845,6 +1019,54 @@ internal static class ResearchPilotRunner
             Console.Error.WriteLine($"P2R FAIL: {exception}");
             return 1;
         }
+    }
+
+    private static bool HaveSameIndependenceRelation(
+        IReadOnlyList<PersistenceAction> actions,
+        ConservativeHistoryIndependence left,
+        ResourceOnlyIndependence right)
+        => CountIndependenceDifferences(actions, left, right) == 0;
+
+    private static int CountIndependenceDifferences(
+        IReadOnlyList<PersistenceAction> actions,
+        ConservativeHistoryIndependence left,
+        ResourceOnlyIndependence right)
+    {
+        var differences = 0;
+        for (var first = 0; first < actions.Count; first++)
+        {
+            for (var second = first + 1; second < actions.Count; second++)
+            {
+                if (left.AreIndependent(actions[first], actions[second])
+                    != right.AreIndependent(actions[first], actions[second]))
+                {
+                    differences++;
+                }
+            }
+        }
+
+        return differences;
+    }
+
+    private static int CountIndependenceDifferences(
+        IReadOnlyList<PersistenceAction> actions,
+        ResourceOnlyIndependence left,
+        ResourceDependencyIndependence right)
+    {
+        var differences = 0;
+        for (var first = 0; first < actions.Count; first++)
+        {
+            for (var second = first + 1; second < actions.Count; second++)
+            {
+                if (left.AreIndependent(actions[first], actions[second])
+                    != right.AreIndependent(actions[first], actions[second]))
+                {
+                    differences++;
+                }
+            }
+        }
+
+        return differences;
     }
 
     private static bool HaveSameIndependenceRelation(
@@ -1045,6 +1267,225 @@ internal static class ResearchPilotRunner
         catch (Exception exception)
         {
             Console.Error.WriteLine($"P1C FAIL: {exception}");
+            return 1;
+        }
+    }
+
+    private static int RunRetentionHotSetSweepPilot(string[] args)
+    {
+        if (args.Length < 5
+            || !int.TryParse(args[0], out var seed)
+            || !int.TryParse(args[1], out var baseKeyCount)
+            || !int.TryParse(args[2], out var valueBytes)
+            || !int.TryParse(args[3], out var churnRounds)
+            || !int.TryParse(args[4], out var hotKeyCount)
+            || baseKeyCount <= 0
+            || valueBytes <= 0
+            || churnRounds <= 0
+            || hotKeyCount <= 0
+            || hotKeyCount > baseKeyCount)
+        {
+            Console.Error.WriteLine(
+                "Usage: pilot P1S <seed> <base-key-count> <value-bytes> <churn-rounds> <hot-key-count> [output-directory]");
+            return 2;
+        }
+
+        var outputDirectory = args.Length >= 6
+            ? Path.GetFullPath(args[5])
+            : Path.Combine(
+                Environment.CurrentDirectory,
+                "artifacts",
+                "research-pilots",
+                $"p1s-{seed}-{churnRounds}-{hotKeyCount}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outputDirectory);
+        var databaseDirectory = Path.Combine(outputDirectory, "database");
+
+        try
+        {
+            var random = new Random(seed);
+            using var database = ChronicleDatabase.Open(databaseDirectory);
+            for (var keyId = 0; keyId < baseKeyCount; keyId++)
+            {
+                database.Put(Key(keyId), Payload(valueBytes, random, salt: keyId));
+            }
+
+            using var branch = database.CreateBranch("p1-hotset-old-branch");
+            branch.Put(Key(baseKeyCount + 1), Payload(Math.Min(valueBytes, 4096), random, salt: 0x51A));
+
+            var hotKeys = Enumerable.Range(0, baseKeyCount)
+                .OrderBy(_ => random.Next())
+                .Take(hotKeyCount)
+                .Order()
+                .ToArray();
+            for (var round = 1; round <= churnRounds; round++)
+            {
+                foreach (var keyId in hotKeys)
+                {
+                    database.Put(
+                        Key(keyId),
+                        Payload(valueBytes, random, salt: checked(keyId + (round * 100_000))));
+                }
+            }
+
+            var rawSnapshot = database.CaptureResearchRetentionSnapshot();
+            var evaluationSnapshot = rawSnapshot with
+            {
+                Histories = rawSnapshot.Histories
+                    .Select(history => history with { RetentionFloor = history.CurrentSequence })
+                    .ToArray(),
+            };
+            var branchRoot = database.GetHistoryTopologyDiagnostics().RetentionRoots.Single(root =>
+                root.Kind.Equals("BranchBase", StringComparison.Ordinal)
+                && root.OwnerHistoryId == branch.HistoryId);
+            var exact = new RetentionInspector(evaluationSnapshot).WhatIfDrop(branchRoot.RootId);
+            var coarse = CoarseOldestRootRetentionAnalyzer.Analyze(evaluationSnapshot);
+            var expectedExactPayload = checked((long)hotKeyCount * valueBytes);
+            var expectedCoarsePayload = checked(expectedExactPayload * churnRounds);
+            var amplification = exact.MarginalPayloadBytes <= 0
+                ? 0d
+                : (double)coarse.RootInducedPayloadBytes / exact.MarginalPayloadBytes;
+            var result = new RetentionHotSetSweepPilotResult(
+                Pilot: "P1S",
+                Seed: seed,
+                BaseKeyCount: baseKeyCount,
+                ValueBytes: valueBytes,
+                ChurnRounds: churnRounds,
+                HotKeyCount: hotKeyCount,
+                HotKeyFraction: (double)hotKeyCount / baseKeyCount,
+                TotalOverwriteCount: checked(hotKeyCount * churnRounds),
+                ExactRootMarginalPayloadBytes: exact.MarginalPayloadBytes,
+                CoarseRootInducedPayloadBytes: coarse.RootInducedPayloadBytes,
+                CoarseToExactRetentionAmplification: amplification,
+                ExpectedExactPayloadBytes: expectedExactPayload,
+                ExpectedCoarsePayloadBytes: expectedCoarsePayload,
+                ExactMatchesExpectedHotSet: exact.MarginalPayloadBytes == expectedExactPayload,
+                CoarseMatchesExpectedOverwriteHistory: coarse.RootInducedPayloadBytes == expectedCoarsePayload);
+            File.WriteAllText(
+                Path.Combine(outputDirectory, "p1s-result.json"),
+                JsonSerializer.Serialize(result, JsonOptions));
+            var pass = result.ExactMatchesExpectedHotSet
+                && result.CoarseMatchesExpectedOverwriteHistory
+                && coarse.RootInducedPayloadBytes >= exact.MarginalPayloadBytes;
+            Console.WriteLine(
+                $"P1S {(pass ? "PASS" : "FAIL")} hot={hotKeyCount}/{baseKeyCount} rounds={churnRounds} " +
+                $"exact={result.ExactRootMarginalPayloadBytes} coarse={result.CoarseRootInducedPayloadBytes} " +
+                $"amp={result.CoarseToExactRetentionAmplification:F2} output={outputDirectory}");
+            return pass ? 0 : 1;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"P1S FAIL: {exception}");
+            return 1;
+        }
+    }
+
+    private static int RunRetentionPairedPhysicalPilot(string[] args)
+    {
+        if (args.Length < 4
+            || !int.TryParse(args[0], out var seed)
+            || !int.TryParse(args[1], out var baseKeyCount)
+            || !int.TryParse(args[2], out var valueBytes)
+            || !int.TryParse(args[3], out var privateBytes)
+            || baseKeyCount <= 0
+            || valueBytes <= 0
+            || privateBytes <= 0)
+        {
+            Console.Error.WriteLine(
+                "Usage: pilot P1P <seed> <base-key-count> <value-bytes> <private-bytes> [output-directory]");
+            return 2;
+        }
+
+        var outputDirectory = args.Length >= 5
+            ? Path.GetFullPath(args[4])
+            : Path.Combine(
+                Environment.CurrentDirectory,
+                "artifacts",
+                "research-pilots",
+                $"p1p-{seed}-{baseKeyCount}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outputDirectory);
+        var sourceDirectory = Path.Combine(outputDirectory, "source");
+        var retainedDirectory = Path.Combine(outputDirectory, "retained");
+        var droppedDirectory = Path.Combine(outputDirectory, "dropped");
+
+        try
+        {
+            long marginalPayloadBytes;
+            Guid branchId;
+            var random = new Random(seed);
+            using (var database = ChronicleDatabase.Open(sourceDirectory))
+            {
+                for (var keyId = 0; keyId < baseKeyCount; keyId++)
+                {
+                    database.Put(Key(keyId), Payload(valueBytes, random, salt: keyId));
+                }
+
+                using (var branch = database.CreateBranch("p1-paired-old-branch"))
+                {
+                    branchId = branch.BranchId;
+                    branch.Put(Key(baseKeyCount + 1), Payload(privateBytes, random, salt: 0x71));
+                    for (var keyId = 0; keyId < baseKeyCount; keyId++)
+                    {
+                        database.Put(Key(keyId), Payload(valueBytes, random, salt: keyId + 100_000));
+                    }
+
+                    _ = database.RunGarbageCollection(new GarbageCollectionOptions { RetainRecentCommits = 0 });
+                    var branchRoot = database.GetHistoryTopologyDiagnostics().RetentionRoots.Single(root =>
+                        root.Kind.Equals("BranchBase", StringComparison.Ordinal)
+                        && root.OwnerHistoryId == branch.HistoryId);
+                    marginalPayloadBytes = new RetentionInspector(database.CaptureResearchRetentionSnapshot())
+                        .WhatIfDrop(branchRoot.RootId)
+                        .MarginalPayloadBytes;
+                }
+            }
+
+            CopyDirectory(sourceDirectory, retainedDirectory);
+            CopyDirectory(sourceDirectory, droppedDirectory);
+
+            using (var retained = ChronicleDatabase.Open(retainedDirectory))
+            {
+                _ = retained.RunGarbageCollection(new GarbageCollectionOptions { RetainRecentCommits = 0 });
+                _ = retained.RunCompaction();
+            }
+            using (var dropped = ChronicleDatabase.Open(droppedDirectory))
+            {
+                dropped.DeleteBranch(branchId);
+                _ = dropped.RunGarbageCollection(new GarbageCollectionOptions { RetainRecentCommits = 0 });
+                _ = dropped.RunCompaction();
+            }
+
+            var retainedPhysical = PhysicalStorageProbe.Capture(retainedDirectory);
+            var droppedPhysical = PhysicalStorageProbe.Capture(droppedDirectory);
+            var pairedAllocated = Math.Max(0, retainedPhysical.AllocatedBytes - droppedPhysical.AllocatedBytes);
+            var pairedLogical = Math.Max(0, retainedPhysical.LogicalLengthBytes - droppedPhysical.LogicalLengthBytes);
+            var ratio = marginalPayloadBytes <= 0 ? 0d : (double)pairedAllocated / marginalPayloadBytes;
+            var result = new RetentionPairedPhysicalPilotResult(
+                Pilot: "P1P",
+                Seed: seed,
+                BaseKeyCount: baseKeyCount,
+                ValueBytes: valueBytes,
+                PrivateBytes: privateBytes,
+                LogicalMarginalPayloadBytes: marginalPayloadBytes,
+                RetainedAllocatedBytes: retainedPhysical.AllocatedBytes,
+                DroppedAllocatedBytes: droppedPhysical.AllocatedBytes,
+                PairedAllocatedByteDifference: pairedAllocated,
+                PairedLogicalLengthDifference: pairedLogical,
+                PhysicalToLogicalMarginalRatio: ratio,
+                AllocationMeasurementExact: retainedPhysical.AllocationIsExact && droppedPhysical.AllocationIsExact);
+            File.WriteAllText(
+                Path.Combine(outputDirectory, "p1p-result.json"),
+                JsonSerializer.Serialize(result, JsonOptions));
+            var pass = marginalPayloadBytes > 0
+                && pairedAllocated > 0
+                && result.AllocationMeasurementExact;
+            Console.WriteLine(
+                $"P1P {(pass ? "PASS" : "FAIL")} logical-marginal={marginalPayloadBytes} " +
+                $"paired-allocated={pairedAllocated} ratio={ratio:F2} exact-allocation={result.AllocationMeasurementExact} " +
+                $"output={outputDirectory}");
+            return pass ? 0 : 1;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"P1P FAIL: {exception}");
             return 1;
         }
     }
@@ -1287,6 +1728,22 @@ internal static class ResearchPilotRunner
         }
     }
 
+    private static void CopyDirectory(string sourceDirectory, string destinationDirectory)
+    {
+        Directory.CreateDirectory(destinationDirectory);
+        foreach (var directory in Directory.EnumerateDirectories(sourceDirectory, "*", SearchOption.AllDirectories))
+        {
+            Directory.CreateDirectory(Path.Combine(destinationDirectory, Path.GetRelativePath(sourceDirectory, directory)));
+        }
+
+        foreach (var file in Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.AllDirectories))
+        {
+            var destination = Path.Combine(destinationDirectory, Path.GetRelativePath(sourceDirectory, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.Copy(file, destination, overwrite: true);
+        }
+    }
+
     private static Guid DeterministicGuid(int seed, int ordinal)
     {
         Span<byte> bytes = stackalloc byte[16];
@@ -1371,8 +1828,11 @@ internal static class ResearchPilotRunner
         Console.Error.WriteLine("  pilot P1 <seed> <base-key-count> <value-bytes> <private-bytes> [output-directory]");
         Console.Error.WriteLine("  pilot P1C <seed> <base-key-count> <value-bytes> [output-directory]");
         Console.Error.WriteLine("  pilot P1B <seed> <base-key-count> <value-bytes> <churn-rounds> [output-directory]");
+        Console.Error.WriteLine("  pilot P1S <seed> <base-key-count> <value-bytes> <churn-rounds> <hot-key-count> [output-directory]");
+        Console.Error.WriteLine("  pilot P1P <seed> <base-key-count> <value-bytes> <private-bytes> [output-directory]");
         Console.Error.WriteLine("  pilot P2 <history-count:2..4> [output-directory]");
         Console.Error.WriteLine("  pilot P2R <history-count:2..3> [siblings|chain] [output-directory]");
+        Console.Error.WriteLine("  pilot P2L <history-count:2..4> [siblings|chain] [output-directory]");
         Console.Error.WriteLine("  pilot P3 <seed> <reads-per-depth>=10+ [output-directory]");
         Console.Error.WriteLine("  pilot P3T <seed> <reads-per-depth>=100+ [output-directory]");
         Console.Error.WriteLine("  pilot P4 <seed> <history-count:4..64> <requested-index:1..count-1> [output-directory]");
@@ -1413,6 +1873,37 @@ internal static class ResearchPilotRunner
         long ChurnDropBothMarginalBytes,
         bool NonAdditiveOverlapObserved,
         bool NoChurnNullControlPassed);
+
+    private sealed record RetentionHotSetSweepPilotResult(
+        string Pilot,
+        int Seed,
+        int BaseKeyCount,
+        int ValueBytes,
+        int ChurnRounds,
+        int HotKeyCount,
+        double HotKeyFraction,
+        int TotalOverwriteCount,
+        long ExactRootMarginalPayloadBytes,
+        long CoarseRootInducedPayloadBytes,
+        double CoarseToExactRetentionAmplification,
+        long ExpectedExactPayloadBytes,
+        long ExpectedCoarsePayloadBytes,
+        bool ExactMatchesExpectedHotSet,
+        bool CoarseMatchesExpectedOverwriteHistory);
+
+    private sealed record RetentionPairedPhysicalPilotResult(
+        string Pilot,
+        int Seed,
+        int BaseKeyCount,
+        int ValueBytes,
+        int PrivateBytes,
+        long LogicalMarginalPayloadBytes,
+        long RetainedAllocatedBytes,
+        long DroppedAllocatedBytes,
+        long PairedAllocatedByteDifference,
+        long PairedLogicalLengthDifference,
+        double PhysicalToLogicalMarginalRatio,
+        bool AllocationMeasurementExact);
 
     private sealed record RetentionBaselinePilotResult(
         string Pilot,
@@ -1456,6 +1947,24 @@ internal static class ResearchPilotRunner
         double TimeToPhysicalReclaimMilliseconds,
         double ReclamationEfficiency);
 
+    private sealed record RecoveryTopologyCrashPorPilotResult(
+        string Pilot,
+        string Topology,
+        int HistoryCount,
+        int ActionCount,
+        IReadOnlyList<string> SharedResources,
+        double ProposedCrashPlanReductionFactor,
+        double ResourceOnlyCrashPlanReductionFactor,
+        double ResourceDependencyCrashPlanReductionFactor,
+        bool ProposedObservationSetsEquivalent,
+        bool ResourceOnlyObservationSetsEquivalent,
+        bool ResourceDependencyObservationSetsEquivalent,
+        int ProposedVsResourceOnlyRelationDifferences,
+        int ResourceOnlyVsDependencyRelationDifferences,
+        bool MetadataBlindProposedObservationSetsEquivalent,
+        bool MetadataBlindResourceObservationSetsEquivalent,
+        double ElapsedMilliseconds);
+
     private sealed record RealTraceCrashPorPilotResult(
         string Pilot,
         string Topology,
@@ -1473,6 +1982,10 @@ internal static class ResearchPilotRunner
         bool ObservationSetsEquivalent,
         double OrderReductionFactor,
         double CrashPlanReductionFactor,
+        bool ResourceOnlyUsesSameIndependenceRelation,
+        bool ResourceOnlyObservationSetsEquivalent,
+        int ResourceOnlyReducedCrashPlanCount,
+        double ResourceOnlyCrashPlanReductionFactor,
         bool ResourceBaselineUsesSameIndependenceRelation,
         bool ResourceBaselineObservationSetsEquivalent,
         int ResourceBaselineReducedCrashPlanCount,

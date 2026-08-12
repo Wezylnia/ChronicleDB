@@ -101,6 +101,58 @@ public static class PersistenceTraceSlice
             .ToArray());
     }
 
+    public static IReadOnlyList<PersistenceAction> SelectRecoveryValidationOperations(
+        IEnumerable<ResearchEvent> events,
+        IEnumerable<HistoryId> histories)
+    {
+        ArgumentNullException.ThrowIfNull(events);
+        ArgumentNullException.ThrowIfNull(histories);
+        var requested = histories.Distinct().ToArray();
+        if (requested.Length is < 1 or > 4)
+        {
+            throw new ArgumentOutOfRangeException(nameof(histories));
+        }
+
+        var selectedHistorySet = requested.ToHashSet();
+        var ordered = events
+            .Where(researchEvent => selectedHistorySet.Contains(researchEvent.HistoryId)
+                && researchEvent.EventKind is ResearchEventKind.OperationStarted or ResearchEventKind.HistoryValidated)
+            .OrderBy(researchEvent => researchEvent.LogicalEventId)
+            .ToArray();
+        var operations = ordered
+            .GroupBy(researchEvent => researchEvent.OperationId)
+            .Select(group => group.OrderBy(researchEvent => researchEvent.LogicalEventId).ToArray())
+            .Where(group => group.Length == 2
+                && group[0].EventKind == ResearchEventKind.OperationStarted
+                && group[1].EventKind == ResearchEventKind.HistoryValidated
+                && group[0].HistoryId == group[1].HistoryId)
+            .ToArray();
+        var covered = operations.Select(group => group[0].HistoryId).ToHashSet();
+        if (!selectedHistorySet.SetEquals(covered))
+        {
+            throw new InvalidOperationException(
+                $"Recovery trace covers {covered.Count} requested histories; {selectedHistorySet.Count} required.");
+        }
+
+        var selected = operations.SelectMany(group => group).OrderBy(item => item.LogicalEventId).ToArray();
+        var remap = selected
+            .Select((researchEvent, index) => (researchEvent.LogicalEventId, ActionId: (long)index + 1))
+            .ToDictionary(pair => pair.LogicalEventId, pair => pair.ActionId);
+        return Array.AsReadOnly(selected.Select(researchEvent => new PersistenceAction(
+            remap[researchEvent.LogicalEventId],
+            researchEvent.EventKind,
+            researchEvent.HistoryId,
+            researchEvent.ParentHistoryId,
+            researchEvent.OperationId,
+            researchEvent.ResourceSet,
+            researchEvent.DurabilityPhase,
+            researchEvent.AuthorityGeneration,
+            researchEvent.DependencyEventIds
+                .Where(remap.ContainsKey)
+                .Select(dependency => remap[dependency])))
+            .ToArray());
+    }
+
     private static bool IsCompleteOperation(ResearchEvent[] events)
     {
         if (events.Length != RequiredKinds.Length
@@ -213,7 +265,7 @@ public sealed class PersistenceTraceProjectionOracle
             action.DurabilityPhase,
             action.EventKind == ResearchEventKind.OperationCompleted
                 ? ObservationAvailability.Ready
-                : action.EventKind == ResearchEventKind.AuthorityPublished
+                : action.EventKind is ResearchEventKind.AuthorityPublished or ResearchEventKind.HistoryValidated
                     ? ObservationAvailability.AuthorityValidated
                     : ObservationAvailability.Unvalidated,
             ObservationErrorKind.None,
