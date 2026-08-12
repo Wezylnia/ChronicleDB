@@ -295,3 +295,13 @@ The canonical v3 Pilot-A execution plan is independently sealed before execution
 The v3 plan is executable without translating the preregistration by hand. Every canonical Pilot-A run is executed in a fresh child process through `--publication-case`; the parent verifies the sealed plan SHA-256, writes the complete deterministic trial order before reading any result, and records per-run result hashes. The controlled deep family reuses one deterministic shadow-key set across the chain so depth is the only changing topology variable and the nested closed-form effect model remains exact. Wide cases use seed-dependent deterministic key selection.
 
 The first infrastructure smoke on the sealed v3 plan passed 3/3 representative child processes: depth-8/25% shadow measured 1.6666667x SAR, the 8-branch/0.1% negative control measured 1.0008681x, and the 8-branch/50% full-tombstone case measured 1.8x. These are smoke values, not publication Pilot-A evidence.
+
+### Pilot-A completed evidence audit
+
+The frozen v3 Pilot-A campaign has now completed all **293/293** canonical child-process trials with **0 failures**. The aggregate artifact SHA-256 is `b222310b9f19c22055eac6ae684429650a012a0c3c4bd0c5045a1eb52ca52097`; the canonical execution-plan SHA-256 remains `c410d6f20e93ad288e7f3f8cc87b58c6c4cc803826d97a81c426a5c2f3f425f2`.
+
+A separate post-run integrity audit rehashed all 293 raw child artifacts against the aggregate ledger and found **0 missing trials, 0 result-hash/identity mismatches, 0 FlatExact/subset/equivalence/minimality failures, and 0 controlled-family effect-model mismatches**. The five frozen paired-physical artifacts were also located by their recorded SHA-256 values. This audit confirms Pilot-A evidence integrity; it is **not** a claim that Pilot-A analysis was preregistered after the fact.
+
+The low-shadow negative controls remain part of the evidence: the 8-branch / 0.1% repeated sentinel measures approximately `1.000868x` retained-payload SAR, while higher-shadow/deletion regimes show larger effects. The surviving claim remains explicitly conditional rather than universal.
+
+**Holdout-A and Holdout-B remain unopened.** Before Holdout-A, the exact current-main integration, source revision, toolchain/machine block, Holdout execution order, and Holdout analysis procedure must be sealed. Pilot-A results must not be used to retune the mechanism or frozen Holdout case set.
