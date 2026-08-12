@@ -6,6 +6,11 @@ using ChronicleDB.Diagnostics.Research;
 using ChronicleDB.Maintenance;
 using ChronicleDB.Storage.History;
 
+if (args.Length > 0 && args[0].Equals("--projection-scale", StringComparison.OrdinalIgnoreCase))
+{
+    return RunProjectionScale(args[1..]);
+}
+
 var options = Parse(args);
 Directory.CreateDirectory(options.OutputDirectory);
 
@@ -196,6 +201,241 @@ Console.WriteLine(
     $"median-SAR={result.MedianReclamationRatio:F3}x max-SAR={result.MaximumReclamationRatio:F3}x " +
     $"max-release={result.MaximumReleasedPayloadBytes}B output={options.OutputDirectory}");
 return pass ? 0 : 1;
+
+
+static int RunProjectionScale(string[] args)
+{
+    if (args.Length < 5
+        || !int.TryParse(args[0], out var keyCount)
+        || !int.TryParse(args[1], out var branchCount)
+        || !int.TryParse(args[2], out var shadowPercent)
+        || !Enum.TryParse<ShadowMode>(args[3], ignoreCase: true, out var mode)
+        || !int.TryParse(args[4], out var repetitions)
+        || keyCount is < 8 or > 65536
+        || branchCount is < 1 or > 64
+        || shadowPercent is < 1 or > 100
+        || repetitions is < 1 or > 20)
+    {
+        Console.Error.WriteLine(
+            "Usage: --projection-scale <keys:8..65536> <branches:1..64> <shadow-percent:1..100> " +
+            "<overwrite|tombstone> <repetitions:1..20> [output-directory]");
+        return 2;
+    }
+
+    var outputDirectory = args.Length >= 6
+        ? Path.GetFullPath(args[5])
+        : Path.Combine(
+            Environment.CurrentDirectory,
+            "artifacts",
+            "a1-shadow-scale",
+            $"k{keyCount}-b{branchCount}-s{shadowPercent}-{mode.ToString().ToLowerInvariant()}-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(outputDirectory);
+
+    try
+    {
+        var snapshot = BuildProjectionScaleSnapshot(keyCount, branchCount, shadowPercent, mode);
+        // One untimed warmup ensures JIT and first-use static initialization do not
+        // define the measured projection curve.
+        var warmup = new ShadowAwareRetentionProjection(snapshot).Analyze();
+        ValidateProjectionScaleResult(warmup, keyCount, branchCount, shadowPercent);
+
+        var runs = new List<ProjectionScaleRun>(repetitions);
+        for (var repetition = 0; repetition < repetitions; repetition++)
+        {
+            var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+            var started = Stopwatch.GetTimestamp();
+            var result = new ShadowAwareRetentionProjection(snapshot).Analyze();
+            var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+            ValidateProjectionScaleResult(result, keyCount, branchCount, shadowPercent);
+            runs.Add(new ProjectionScaleRun(
+                repetition,
+                elapsed,
+                result.ConstructionMilliseconds,
+                result.CoreProjectionMilliseconds,
+                result.ObserverVerificationMilliseconds,
+                allocated,
+                result.BaselineVersionCount,
+                result.ShadowAwareVersionCount,
+                result.ShadowReleasedPayloadBytes,
+                result.ShadowAwareReclamationRatio,
+                result.ObserverEquivalenceCheckCount,
+                result.ObserverKeyResolutionCount,
+                result.ParentFallbackHops));
+        }
+
+        var orderedMs = runs.Select(run => run.VerifiedProjectionMilliseconds).Order().ToArray();
+        var orderedAllocated = runs.Select(run => (double)run.ThreadAllocatedBytes).Order().ToArray();
+        var first = runs[0];
+        var summary = new ProjectionScaleResult(
+            Pilot: "A1-SHADOW-PROJECTION-SCALE",
+            KeyCount: keyCount,
+            BranchCount: branchCount,
+            ShadowPercent: shadowPercent,
+            Mode: mode.ToString(),
+            Repetitions: repetitions,
+            VersionCount: snapshot.Histories.Sum(history => history.Versions.Count),
+            BaselineVersionCount: first.BaselineVersionCount,
+            ShadowAwareVersionCount: first.ShadowAwareVersionCount,
+            ShadowReleasedPayloadBytes: first.ShadowReleasedPayloadBytes,
+            ShadowAwareReclamationRatio: first.ShadowAwareReclamationRatio,
+            ObserverEquivalenceCheckCount: first.ObserverEquivalenceCheckCount,
+            ObserverKeyResolutionCount: first.ObserverKeyResolutionCount,
+            ParentFallbackHops: first.ParentFallbackHops,
+            MedianVerifiedProjectionMilliseconds: Percentile(orderedMs, 0.50),
+            P95VerifiedProjectionMilliseconds: Percentile(orderedMs, 0.95),
+            MedianConstructionMilliseconds: Median(runs.Select(run => run.ConstructionMilliseconds)),
+            MedianCoreProjectionMilliseconds: Median(runs.Select(run => run.CoreProjectionMilliseconds)),
+            MedianObserverVerificationMilliseconds: Median(runs.Select(run => run.ObserverVerificationMilliseconds)),
+            MedianThreadAllocatedBytes: (long)Percentile(orderedAllocated, 0.50),
+            P95ThreadAllocatedBytes: (long)Percentile(orderedAllocated, 0.95),
+            Runs: runs);
+        var jsonOptions = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = true,
+        };
+        File.WriteAllText(
+            Path.Combine(outputDirectory, "projection-scale-result.json"),
+            JsonSerializer.Serialize(summary, jsonOptions));
+        Console.WriteLine(
+            $"A1-SHADOW-PROJECTION-SCALE PASS keys={keyCount} branches={branchCount} " +
+            $"shadow={shadowPercent}% mode={mode} versions={summary.VersionCount} " +
+            $"median={summary.MedianVerifiedProjectionMilliseconds:F2}ms " +
+            $"core={summary.MedianCoreProjectionMilliseconds:F2}ms verify={summary.MedianObserverVerificationMilliseconds:F2}ms " +
+            $"alloc={summary.MedianThreadAllocatedBytes}B SAR={summary.ShadowAwareReclamationRatio:F3}x " +
+            $"output={outputDirectory}");
+        return 0;
+    }
+    catch (Exception exception)
+    {
+        Console.Error.WriteLine($"A1-SHADOW-PROJECTION-SCALE FAIL: {exception}");
+        return 1;
+    }
+}
+
+static ResearchRetentionSnapshot BuildProjectionScaleSnapshot(
+    int keyCount,
+    int branchCount,
+    int shadowPercent,
+    ShadowMode mode)
+{
+    const int valueBytes = 4096;
+    var mainHistoryId = DeterministicGuid(1);
+    var histories = new List<ResearchHistoryRetentionSnapshot>(branchCount + 1);
+    var roots = new List<ResearchPersistentRetentionRootSnapshot>(branchCount);
+    var mainVersions = new List<ResearchCommittedVersionSnapshot>((branchCount + 1) * keyCount);
+
+    for (var generation = 1; generation <= branchCount + 1; generation++)
+    {
+        for (var keyId = 0; keyId < keyCount; keyId++)
+        {
+            mainVersions.Add(new ResearchCommittedVersionSnapshot(
+                VersionId: $"main:g{generation}:k{keyId}",
+                TransactionId: DeterministicGuid(checked(10_000 + generation)),
+                CommitSequence: (ulong)generation,
+                KeyId: $"k{keyId:D8}",
+                KeyBytes: 8,
+                ValueBytes: valueBytes,
+                IsTombstone: false));
+        }
+    }
+
+    histories.Add(new ResearchHistoryRetentionSnapshot(
+        mainHistoryId,
+        RetentionFloor: (ulong)(branchCount + 1),
+        CurrentSequence: (ulong)(branchCount + 1),
+        Versions: Array.AsReadOnly(mainVersions.ToArray())));
+
+    var shadowKeyCount = keyCount * shadowPercent / 100;
+    for (var branchIndex = 0; branchIndex < branchCount; branchIndex++)
+    {
+        var historyId = DeterministicGuid(checked(100 + branchIndex));
+        var branchVersions = new List<ResearchCommittedVersionSnapshot>(shadowKeyCount);
+        for (var keyId = 0; keyId < shadowKeyCount; keyId++)
+        {
+            branchVersions.Add(new ResearchCommittedVersionSnapshot(
+                VersionId: $"branch{branchIndex}:k{keyId}",
+                TransactionId: DeterministicGuid(checked(20_000 + branchIndex)),
+                CommitSequence: 1,
+                KeyId: $"k{keyId:D8}",
+                KeyBytes: 8,
+                ValueBytes: mode == ShadowMode.Tombstone ? 0 : valueBytes,
+                IsTombstone: mode == ShadowMode.Tombstone));
+        }
+
+        histories.Add(new ResearchHistoryRetentionSnapshot(
+            historyId,
+            RetentionFloor: 1,
+            CurrentSequence: 1,
+            Versions: Array.AsReadOnly(branchVersions.ToArray())));
+        roots.Add(new ResearchPersistentRetentionRootSnapshot(
+            RootId: DeterministicGuid(checked(1_000 + branchIndex)),
+            Kind: "BranchBase",
+            OwnerHistoryId: historyId,
+            ProtectedHistoryId: mainHistoryId,
+            Boundary: (ulong)(branchIndex + 1)));
+    }
+
+    return new ResearchRetentionSnapshot(
+        Array.AsReadOnly(histories.ToArray()),
+        Array.AsReadOnly(roots.ToArray()),
+        Array.Empty<ResearchActiveRetentionBoundarySnapshot>());
+}
+
+static void ValidateProjectionScaleResult(
+    ShadowAwareRetentionProjectionResult result,
+    int keyCount,
+    int branchCount,
+    int shadowPercent)
+{
+    var shadowKeyCount = keyCount * shadowPercent / 100;
+    var expectedRelease = checked((long)branchCount * shadowKeyCount * 4096L);
+    if (!result.CandidateIsSubsetOfBaseline
+        || !result.ObserverEquivalenceVerified
+        || !result.ObserverMinimalityVerified
+        || result.ShadowReleasedPayloadBytes != expectedRelease)
+    {
+        throw new InvalidOperationException(
+            $"Projection scale invariant failed: release={result.ShadowReleasedPayloadBytes}, expected={expectedRelease}, " +
+            $"subset={result.CandidateIsSubsetOfBaseline}, equivalence={result.ObserverEquivalenceVerified}, " +
+            $"minimal={result.ObserverMinimalityVerified}.");
+    }
+}
+
+static Guid DeterministicGuid(int value)
+{
+    Span<byte> bytes = stackalloc byte[16];
+    BinaryPrimitives.WriteInt32LittleEndian(bytes, value);
+    BinaryPrimitives.WriteInt32LittleEndian(bytes[4..], unchecked(value * 397));
+    BinaryPrimitives.WriteInt32LittleEndian(bytes[8..], unchecked(value * 7919));
+    BinaryPrimitives.WriteInt32LittleEndian(bytes[12..], unchecked(value * 104729));
+    return new Guid(bytes);
+}
+
+static double Percentile(double[] ordered, double percentile)
+{
+    if (ordered.Length == 0)
+    {
+        return 0d;
+    }
+
+    if (ordered.Length == 1)
+    {
+        return ordered[0];
+    }
+
+    var position = percentile * (ordered.Length - 1);
+    var lower = (int)Math.Floor(position);
+    var upper = (int)Math.Ceiling(position);
+    if (lower == upper)
+    {
+        return ordered[lower];
+    }
+
+    var weight = position - lower;
+    return ordered[lower] + ((ordered[upper] - ordered[lower]) * weight);
+}
 
 static CaseResult RunCase(
     Options options,
@@ -781,6 +1021,9 @@ static PhysicalCaseResult RunPhysicalFanoutCase(
         BaselineGcMilliseconds: baselineGcMilliseconds,
         CandidateGcMilliseconds: candidateGcMilliseconds,
         CandidateProjectionAnalysisMilliseconds: candidateGc.ProjectionAnalysisMilliseconds,
+        CandidateProjectionConstructionMilliseconds: candidateGc.ProjectionConstructionMilliseconds,
+        CandidateCoreProjectionMilliseconds: candidateGc.CoreProjectionMilliseconds,
+        CandidateObserverVerificationMilliseconds: candidateGc.ObserverVerificationMilliseconds,
         BaselineCompactionMilliseconds: baselineCompactionMilliseconds,
         CandidateCompactionMilliseconds: candidateCompactionMilliseconds,
         BaselineCheckpointLogicalBytes: baselineCheckpointLogical,
@@ -954,6 +1197,45 @@ static double Median(IEnumerable<double> values)
         : sorted[middle];
 }
 
+internal sealed record ProjectionScaleRun(
+    int Repetition,
+    double VerifiedProjectionMilliseconds,
+    double ConstructionMilliseconds,
+    double CoreProjectionMilliseconds,
+    double ObserverVerificationMilliseconds,
+    long ThreadAllocatedBytes,
+    int BaselineVersionCount,
+    int ShadowAwareVersionCount,
+    long ShadowReleasedPayloadBytes,
+    double ShadowAwareReclamationRatio,
+    int ObserverEquivalenceCheckCount,
+    int ObserverKeyResolutionCount,
+    int ParentFallbackHops);
+
+internal sealed record ProjectionScaleResult(
+    string Pilot,
+    int KeyCount,
+    int BranchCount,
+    int ShadowPercent,
+    string Mode,
+    int Repetitions,
+    int VersionCount,
+    int BaselineVersionCount,
+    int ShadowAwareVersionCount,
+    long ShadowReleasedPayloadBytes,
+    double ShadowAwareReclamationRatio,
+    int ObserverEquivalenceCheckCount,
+    int ObserverKeyResolutionCount,
+    int ParentFallbackHops,
+    double MedianVerifiedProjectionMilliseconds,
+    double P95VerifiedProjectionMilliseconds,
+    double MedianConstructionMilliseconds,
+    double MedianCoreProjectionMilliseconds,
+    double MedianObserverVerificationMilliseconds,
+    long MedianThreadAllocatedBytes,
+    long P95ThreadAllocatedBytes,
+    IReadOnlyList<ProjectionScaleRun> Runs);
+
 internal sealed record Options(
     int BaseKeyCount,
     int ValueBytes,
@@ -1074,6 +1356,9 @@ internal sealed record PhysicalCaseResult(
     double BaselineGcMilliseconds,
     double CandidateGcMilliseconds,
     double CandidateProjectionAnalysisMilliseconds,
+    double CandidateProjectionConstructionMilliseconds,
+    double CandidateCoreProjectionMilliseconds,
+    double CandidateObserverVerificationMilliseconds,
     double BaselineCompactionMilliseconds,
     double CandidateCompactionMilliseconds,
     long BaselineCheckpointLogicalBytes,

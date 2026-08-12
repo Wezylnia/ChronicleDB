@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace ChronicleDB.Diagnostics.Research;
 
 /// <summary>
@@ -18,9 +20,11 @@ public sealed class ShadowAwareRetentionProjection
     private readonly IReadOnlyDictionary<Guid, ResearchHistoryRetentionSnapshot> _histories;
     private readonly Dictionary<Guid, BranchEdge> _parentEdges;
     private readonly Dictionary<Guid, IReadOnlyDictionary<string, ResearchCommittedVersionSnapshot[]>> _versionsByHistoryAndKey;
+    private readonly double _constructionMilliseconds;
 
     public ShadowAwareRetentionProjection(ResearchRetentionSnapshot snapshot)
     {
+        var constructionStarted = Stopwatch.GetTimestamp();
         ArgumentNullException.ThrowIfNull(snapshot);
         Validate(snapshot);
 
@@ -35,10 +39,12 @@ public sealed class ShadowAwareRetentionProjection
                     group => group.Key,
                     group => group.OrderBy(version => version.CommitSequence).ToArray(),
                     StringComparer.Ordinal));
+        _constructionMilliseconds = Stopwatch.GetElapsedTime(constructionStarted).TotalMilliseconds;
     }
 
     public ShadowAwareRetentionProjectionResult Analyze()
     {
+        var coreStarted = Stopwatch.GetTimestamp();
         var required = new Dictionary<string, ResearchCommittedVersionSnapshot>(StringComparer.Ordinal);
 
         // Generic time-travel semantics remain identical to the current exact
@@ -136,7 +142,10 @@ public sealed class ShadowAwareRetentionProjection
         var candidatePayload = Sum(required.Values, version => version.LogicalPayloadBytes);
         var baselineSerialized = checked(baseline.Values.Sum(version => version.SerializedBytes));
         var candidateSerialized = Sum(required.Values, version => version.LogicalSerializedBytes);
+        var coreProjectionMilliseconds = Stopwatch.GetElapsedTime(coreStarted).TotalMilliseconds;
+        var verificationStarted = Stopwatch.GetTimestamp();
         var equivalence = VerifyObserverEquivalence(required.Keys.ToHashSet(StringComparer.Ordinal), allKeyIds);
+        var observerVerificationMilliseconds = Stopwatch.GetElapsedTime(verificationStarted).TotalMilliseconds;
 
         return new ShadowAwareRetentionProjectionResult(
             BaselineVersionCount: baseline.Count,
@@ -163,7 +172,10 @@ public sealed class ShadowAwareRetentionProjection
             ObserverEquivalenceCheckCount: equivalence.CheckCount,
             ObserverMismatches: equivalence.Mismatches,
             ObserverMinimalityVerified: equivalence.UnwitnessedRequiredVersionIds.Count == 0,
-            UnwitnessedRequiredVersionIds: equivalence.UnwitnessedRequiredVersionIds);
+            UnwitnessedRequiredVersionIds: equivalence.UnwitnessedRequiredVersionIds,
+            ConstructionMilliseconds: _constructionMilliseconds,
+            CoreProjectionMilliseconds: coreProjectionMilliseconds,
+            ObserverVerificationMilliseconds: observerVerificationMilliseconds);
     }
 
     private ObserverEquivalenceResult VerifyObserverEquivalence(
@@ -471,7 +483,10 @@ public sealed record ShadowAwareRetentionProjectionResult(
     int ObserverEquivalenceCheckCount,
     IReadOnlyList<ShadowAwareObserverMismatch> ObserverMismatches,
     bool ObserverMinimalityVerified,
-    IReadOnlyList<string> UnwitnessedRequiredVersionIds);
+    IReadOnlyList<string> UnwitnessedRequiredVersionIds,
+    double ConstructionMilliseconds,
+    double CoreProjectionMilliseconds,
+    double ObserverVerificationMilliseconds);
 
 public sealed record ShadowAwareObserverMismatch(
     Guid HistoryId,
