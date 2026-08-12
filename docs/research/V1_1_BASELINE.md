@@ -85,3 +85,14 @@ dotnet run -c Release --project tools/ChronicleDB.ResearchWorkloadRunner -- \
 A gate decision hashes every cited evidence artifact, requires a non-empty narrow-claim version and rationale, and is written with create-new semantics. `ResearchGateReport` canonicalizes candidate ordering and rejects duplicate candidate decisions. The report is an evidence ledger, not an automatic ranking or paper-selection algorithm.
 
 A smoke/pilot gate report is not a publication holdout. Final paper claims still require the preregistered Pilot-A / sealed Holdout-A / sealed Holdout-B protocol, multiple process repetitions, retained raw outputs and the stated machine-block policy.
+
+### Sealed A1 holdout protocol
+
+`P1H` is the executable preregistration path for the current A1 primary track. It creates the candidate configuration, every Holdout-A and Holdout-B `ExperimentManifest`, and the combined `ResearchCampaignRegistration` **before the first Holdout-A child process is started**. Only Holdout-A executes; Holdout-B remains sealed and untouched unless a correctness-invalid Holdout-A requires the predeclared fallback.
+
+```powershell
+dotnet run -c Release --project tools/ChronicleDB.ResearchWorkloadRunner -- \
+  pilot P1H 1101 2101 5 3 128 4096 4 16 4096 20000 machine-block-a .artifacts/a1-holdout
+```
+
+The parent runner constructs child arguments from the sealed plan and verifies identity fields in each `P1I` result against the sealed configuration. Each execution records the manifest SHA-256 and result SHA-256. A `P1H` smoke proves the protocol implementation, not the paper result: publication use still requires the final frozen A1 parameter matrix and declared machine blocks.

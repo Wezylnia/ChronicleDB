@@ -31,10 +31,9 @@ The pilot gate does not force one winner. A1 is the strongest current primary tr
 
 ## What remains outside the pilot gate
 
-1. Freeze the final paper candidate mechanism/configuration.
-2. Generate preregistered Pilot-A / sealed Holdout-A / sealed Holdout-B manifests for candidates that advance.
-3. Run the publication campaign with multiple independent processes, declared machine blocks and retained raw outputs.
-4. If A10 advances, supply and freeze the Dafny/Boogie/Z3 toolchain and complete the mechanized proof/refinement spike.
-5. Produce the final paper-selection report from holdout evidence; do not retune a candidate after opening Holdout-A.
+1. Freeze the final paper candidate mechanism/configuration. The A1-specific `P1H` runner now implements preregistered sealed Holdout-A/B manifests and has passed a protocol smoke; the smoke is not publication evidence.
+2. Run the final publication Holdout-A campaign with the frozen A1 parameter matrix, multiple independent processes, declared machine blocks and retained raw outputs. Keep the presealed Holdout-B unopened unless the correctness-invalid-A rule is triggered.
+3. If A10 advances, supply and freeze the Dafny/Boogie/Z3 toolchain and complete the mechanized proof/refinement spike.
+4. Produce the final paper-selection/publication report from holdout evidence; do not retune a candidate after opening Holdout-A.
 
 The v1.1 **research harness/engineering path is complete at this gate**. The remaining work is publication evidence collection and candidate-specific research, not missing common instrumentation or baseline infrastructure.
