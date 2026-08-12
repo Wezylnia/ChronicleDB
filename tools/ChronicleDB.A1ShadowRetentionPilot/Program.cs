@@ -2,16 +2,27 @@ using System.Buffers.Binary;
 using System.Text.Json;
 using ChronicleDB;
 using ChronicleDB.Diagnostics.Research;
+using ChronicleDB.Maintenance;
+using ChronicleDB.Storage.History;
 
 var options = Parse(args);
 Directory.CreateDirectory(options.OutputDirectory);
 
 var fractions = new[] { 0, 25, 50, 75, 100 };
 var modes = new[] { ShadowMode.Overwrite, ShadowMode.Tombstone };
-var snapshots = new[] { SnapshotMode.None, SnapshotMode.PreShadow, SnapshotMode.PostShadow };
+var snapshots = new[]
+{
+    SnapshotMode.None,
+    SnapshotMode.PreShadow,
+    SnapshotMode.PostShadow,
+    SnapshotMode.ActivePreShadow,
+    SnapshotMode.ActivePostShadow,
+};
 var cases = new List<CaseResult>();
 var fanoutCases = new List<FanoutCaseResult>();
 var nestedCases = new List<NestedCaseResult>();
+var physicalCases = new List<PhysicalCaseResult>();
+var mixedCases = new List<MixedCaseResult>();
 var ordinal = 0;
 
 foreach (var fraction in fractions)
@@ -50,10 +61,56 @@ foreach (var depth in new[] { 1, 2, 4, 8, 16 })
     }
 }
 
-var eligible = cases.Where(item => item.SnapshotMode != SnapshotMode.PreShadow.ToString() && item.ShadowPercent > 0).ToArray();
+foreach (var seed in new[] { 17, 53 })
+{
+    foreach (var branchCount in new[] { 4, 8 })
+    {
+        foreach (var fraction in new[] { 25, 50, 75 })
+        {
+            var caseDirectory = Path.Combine(
+                options.OutputDirectory,
+                $"mixed-seed{seed}-b{branchCount:D2}-s{fraction:D3}");
+            mixedCases.Add(RunMixedFanoutCase(
+                options,
+                seed,
+                branchCount,
+                fraction,
+                caseDirectory));
+        }
+    }
+}
+
+if (options.RunPhysical)
+{
+    foreach (var branchCount in new[] { 4, 8 })
+    {
+        foreach (var fraction in new[] { 50, 100 })
+        {
+            foreach (var mode in modes)
+            {
+                var caseDirectory = Path.Combine(
+                    options.OutputDirectory,
+                    $"physical-b{branchCount:D2}-s{fraction:D3}-{mode.ToString().ToLowerInvariant()}");
+                physicalCases.Add(RunPhysicalFanoutCase(
+                    options,
+                    branchCount,
+                    fraction,
+                    mode,
+                    caseDirectory));
+            }
+        }
+    }
+}
+
+var eligible = cases.Where(item =>
+        item.SnapshotMode != SnapshotMode.PreShadow.ToString()
+        && item.SnapshotMode != SnapshotMode.ActivePreShadow.ToString()
+        && item.ShadowPercent > 0)
+    .ToArray();
 var allRatios = eligible.Select(item => item.ShadowAwareReclamationRatio)
     .Concat(fanoutCases.Select(item => item.ShadowAwareReclamationRatio))
     .Concat(nestedCases.Select(item => item.ShadowAwareReclamationRatio))
+    .Concat(mixedCases.Select(item => item.ShadowAwareReclamationRatio))
     .ToArray();
 var result = new PilotResult(
     Pilot: "A1-SHADOW",
@@ -63,29 +120,42 @@ var result = new PilotResult(
     CaseCount: cases.Count,
     FanoutCaseCount: fanoutCases.Count,
     NestedCaseCount: nestedCases.Count,
+    PhysicalCaseCount: physicalCases.Count,
+    MixedCaseCount: mixedCases.Count,
     CandidateSubsetFailures: cases.Count(item => !item.CandidateIsSubsetOfBaseline)
         + fanoutCases.Count(item => !item.CandidateIsSubsetOfBaseline)
-        + nestedCases.Count(item => !item.CandidateIsSubsetOfBaseline),
+        + nestedCases.Count(item => !item.CandidateIsSubsetOfBaseline)
+        + mixedCases.Count(item => !item.CandidateIsSubsetOfBaseline),
     ExpectedReleaseMismatches: cases.Count(item => item.ShadowReleasedPayloadBytes != item.ExpectedReleasedPayloadBytes)
         + fanoutCases.Count(item => item.ShadowReleasedPayloadBytes != item.ExpectedReleasedPayloadBytes)
-        + nestedCases.Count(item => item.ShadowReleasedPayloadBytes != item.ExpectedReleasedPayloadBytes),
-    PreShadowSafetyFailures: cases.Count(item => item.SnapshotMode == SnapshotMode.PreShadow.ToString() && item.ShadowReleasedPayloadBytes != 0),
+        + nestedCases.Count(item => item.ShadowReleasedPayloadBytes != item.ExpectedReleasedPayloadBytes)
+        + mixedCases.Count(item => item.ShadowReleasedPayloadBytes != item.ExpectedReleasedPayloadBytes),
+    PreShadowSafetyFailures: cases.Count(item =>
+        (item.SnapshotMode == SnapshotMode.PreShadow.ToString()
+            || item.SnapshotMode == SnapshotMode.ActivePreShadow.ToString())
+        && item.ShadowReleasedPayloadBytes != 0),
     ObserverEquivalenceFailures: cases.Count(item => !item.ObserverEquivalenceVerified)
         + fanoutCases.Count(item => !item.ObserverEquivalenceVerified)
-        + nestedCases.Count(item => !item.ObserverEquivalenceVerified),
+        + nestedCases.Count(item => !item.ObserverEquivalenceVerified)
+        + mixedCases.Count(item => !item.ObserverEquivalenceVerified),
     ObserverMinimalityFailures: cases.Count(item => !item.ObserverMinimalityVerified)
         + fanoutCases.Count(item => !item.ObserverMinimalityVerified)
-        + nestedCases.Count(item => !item.ObserverMinimalityVerified),
+        + nestedCases.Count(item => !item.ObserverMinimalityVerified)
+        + mixedCases.Count(item => !item.ObserverMinimalityVerified),
     MaximumReclamationRatio: allRatios.Length == 0 ? 1d : allRatios.Max(),
     MedianReclamationRatio: Median(allRatios),
     MaximumReleasedPayloadBytes: Math.Max(
         cases.Max(item => item.ShadowReleasedPayloadBytes),
         Math.Max(
-            fanoutCases.Max(item => item.ShadowReleasedPayloadBytes),
-            nestedCases.Max(item => item.ShadowReleasedPayloadBytes))),
+            Math.Max(
+                fanoutCases.Max(item => item.ShadowReleasedPayloadBytes),
+                nestedCases.Max(item => item.ShadowReleasedPayloadBytes)),
+            mixedCases.Max(item => item.ShadowReleasedPayloadBytes))),
     Cases: cases,
     FanoutCases: fanoutCases,
-    NestedCases: nestedCases);
+    NestedCases: nestedCases,
+    PhysicalCases: physicalCases,
+    MixedCases: mixedCases);
 
 var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
 File.WriteAllText(Path.Combine(options.OutputDirectory, "a1-shadow-result.json"), JsonSerializer.Serialize(result, jsonOptions));
@@ -131,11 +201,16 @@ static CaseResult RunCase(
         branchHistoryId = branch.HistoryId;
 
         ChronicleBranchSnapshot? retainedSnapshot = null;
+        ChronicleBranchHistoricalView? retainedHistoricalView = null;
         try
         {
             if (snapshotMode == SnapshotMode.PreShadow)
             {
                 retainedSnapshot = branch.CreateSnapshot("pre-shadow");
+            }
+            else if (snapshotMode == SnapshotMode.ActivePreShadow)
+            {
+                retainedHistoricalView = branch.OpenHistoricalView(branch.CurrentSequence);
             }
 
             for (var keyId = 0; keyId < shadowCount; keyId++)
@@ -153,6 +228,10 @@ static CaseResult RunCase(
             if (snapshotMode == SnapshotMode.PostShadow)
             {
                 retainedSnapshot = branch.CreateSnapshot("post-shadow");
+            }
+            else if (snapshotMode == SnapshotMode.ActivePostShadow)
+            {
+                retainedHistoricalView = branch.OpenHistoricalView(branch.CurrentSequence);
             }
 
             // Advance Main for every key so its branch-base predecessor is not also
@@ -179,7 +258,7 @@ static CaseResult RunCase(
             }
 
             var analysis = new ShadowAwareRetentionProjection(evaluation).Analyze();
-            var expectedRelease = snapshotMode == SnapshotMode.PreShadow
+            var expectedRelease = snapshotMode is SnapshotMode.PreShadow or SnapshotMode.ActivePreShadow
                 ? 0L
                 : checked((long)shadowCount * options.ValueBytes);
 
@@ -215,6 +294,7 @@ static CaseResult RunCase(
         }
         finally
         {
+            retainedHistoricalView?.Dispose();
             retainedSnapshot?.Dispose();
         }
     }
@@ -432,6 +512,301 @@ static NestedCaseResult RunNestedCase(
     }
 }
 
+static MixedCaseResult RunMixedFanoutCase(
+    Options options,
+    int seed,
+    int branchCount,
+    int shadowPercent,
+    string directory)
+{
+    if (Directory.Exists(directory))
+    {
+        Directory.Delete(directory, recursive: true);
+    }
+
+    Directory.CreateDirectory(directory);
+    var databaseDirectory = Path.Combine(directory, "db");
+    var random = new Random(seed);
+    var shadowCount = options.BaseKeyCount * shadowPercent / 100;
+    var overwriteCount = 0;
+    var tombstoneCount = 0;
+
+    using var database = ChronicleDatabase.Open(databaseDirectory);
+    for (var keyId = 0; keyId < options.BaseKeyCount; keyId++)
+    {
+        database.Put(Key(keyId), Payload(options.ValueBytes, keyId, generation: 1));
+    }
+
+    var branches = new List<ChronicleBranch>(branchCount);
+    try
+    {
+        for (var branchIndex = 0; branchIndex < branchCount; branchIndex++)
+        {
+            var branch = database.CreateBranch($"mixed-{seed}-{branchCount}-{shadowPercent}-{branchIndex:D2}");
+            branches.Add(branch);
+            var selectedKeys = Enumerable.Range(0, options.BaseKeyCount)
+                .OrderBy(_ => random.Next())
+                .Take(shadowCount)
+                .ToArray();
+            foreach (var keyId in selectedKeys)
+            {
+                if (random.Next(2) == 0)
+                {
+                    branch.Put(Key(keyId), Payload(options.ValueBytes, keyId, generation: checked(5000 + branchIndex)));
+                    overwriteCount++;
+                }
+                else
+                {
+                    _ = branch.Delete(Key(keyId));
+                    tombstoneCount++;
+                }
+            }
+
+            for (var keyId = 0; keyId < options.BaseKeyCount; keyId++)
+            {
+                database.Put(Key(keyId), Payload(options.ValueBytes, keyId, generation: checked(6000 + branchIndex)));
+            }
+        }
+
+        var raw = database.CaptureResearchRetentionSnapshot();
+        var evaluation = raw with
+        {
+            Histories = raw.Histories
+                .Select(history => history with { RetentionFloor = history.CurrentSequence })
+                .ToArray(),
+        };
+        var analysis = new ShadowAwareRetentionProjection(evaluation).Analyze();
+        var expectedRelease = checked((long)branchCount * shadowCount * options.ValueBytes);
+        var result = new MixedCaseResult(
+            Seed: seed,
+            BranchCount: branchCount,
+            ShadowPercent: shadowPercent,
+            ShadowOperations: branchCount * shadowCount,
+            OverwriteCount: overwriteCount,
+            TombstoneCount: tombstoneCount,
+            BaselinePayloadBytes: analysis.BaselinePayloadBytes,
+            ShadowAwarePayloadBytes: analysis.ShadowAwarePayloadBytes,
+            ShadowReleasedPayloadBytes: analysis.ShadowReleasedPayloadBytes,
+            ExpectedReleasedPayloadBytes: expectedRelease,
+            ShadowAwareReclamationRatio: analysis.ShadowAwareReclamationRatio,
+            CandidateIsSubsetOfBaseline: analysis.CandidateIsSubsetOfBaseline,
+            ObserverEquivalenceVerified: analysis.ObserverEquivalenceVerified,
+            ObserverEquivalenceCheckCount: analysis.ObserverEquivalenceCheckCount,
+            ObserverMinimalityVerified: analysis.ObserverMinimalityVerified,
+            UnwitnessedRequiredVersionCount: analysis.UnwitnessedRequiredVersionIds.Count);
+
+        File.WriteAllText(
+            Path.Combine(directory, "case-result.json"),
+            JsonSerializer.Serialize(result, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                WriteIndented = true,
+            }));
+        return result;
+    }
+    finally
+    {
+        foreach (var branch in branches.AsEnumerable().Reverse())
+        {
+            branch.Dispose();
+        }
+    }
+}
+
+static PhysicalCaseResult RunPhysicalFanoutCase(
+    Options options,
+    int branchCount,
+    int shadowPercent,
+    ShadowMode mode,
+    string directory)
+{
+    if (Directory.Exists(directory))
+    {
+        Directory.Delete(directory, recursive: true);
+    }
+
+    Directory.CreateDirectory(directory);
+    var sourceDirectory = Path.Combine(directory, "source");
+    var baselineDirectory = Path.Combine(directory, "baseline");
+    var candidateDirectory = Path.Combine(directory, "candidate");
+    var shadowCount = options.BaseKeyCount * shadowPercent / 100;
+    var branchIds = new List<Guid>(branchCount);
+
+    using (var database = ChronicleDatabase.Open(sourceDirectory))
+    {
+        for (var keyId = 0; keyId < options.BaseKeyCount; keyId++)
+        {
+            database.Put(Key(keyId), Payload(options.ValueBytes, keyId, generation: 1));
+        }
+
+        var branches = new List<ChronicleBranch>(branchCount);
+        try
+        {
+            for (var branchIndex = 0; branchIndex < branchCount; branchIndex++)
+            {
+                var branch = database.CreateBranch($"physical-{branchCount}-{shadowPercent}-{mode}-{branchIndex:D2}");
+                branches.Add(branch);
+                branchIds.Add(branch.BranchId);
+                for (var keyId = 0; keyId < shadowCount; keyId++)
+                {
+                    if (mode == ShadowMode.Overwrite)
+                    {
+                        branch.Put(Key(keyId), Payload(options.ValueBytes, keyId, generation: checked(3000 + branchIndex)));
+                    }
+                    else
+                    {
+                        _ = branch.Delete(Key(keyId));
+                    }
+                }
+
+                for (var keyId = 0; keyId < options.BaseKeyCount; keyId++)
+                {
+                    database.Put(Key(keyId), Payload(options.ValueBytes, keyId, generation: checked(4000 + branchIndex)));
+                }
+            }
+        }
+        finally
+        {
+            foreach (var branch in branches.AsEnumerable().Reverse())
+            {
+                branch.Dispose();
+            }
+        }
+    }
+
+    CopyDirectory(sourceDirectory, baselineDirectory);
+    CopyDirectory(sourceDirectory, candidateDirectory);
+
+    GarbageCollectionResult baselineGc;
+    CompactionResult baselineCompaction;
+    using (var baseline = ChronicleDatabase.Open(baselineDirectory))
+    {
+        baselineGc = baseline.RunGarbageCollection(new GarbageCollectionOptions { RetainRecentCommits = 0 });
+        baselineCompaction = baseline.RunCompaction(new CompactionOptions
+        {
+            MaxHistoriesPerPass = branchCount + 1,
+            MinimumReclaimableBytes = 1,
+        });
+    }
+
+    ShadowAwareGarbageCollectionResult candidateGc;
+    CompactionResult candidateCompaction;
+    using (var candidate = ChronicleDatabase.Open(candidateDirectory))
+    {
+        candidateGc = candidate.RunShadowAwareGarbageCollection(new GarbageCollectionOptions { RetainRecentCommits = 0 });
+        candidateCompaction = candidate.RunCompaction(new CompactionOptions
+        {
+            MaxHistoriesPerPass = branchCount + 1,
+            MinimumReclaimableBytes = 1,
+        });
+    }
+
+    var observerStateEqual = CompareCurrentObserverState(
+        baselineDirectory,
+        candidateDirectory,
+        branchIds,
+        options.BaseKeyCount);
+    var baselinePhysical = PhysicalStorageProbe.Capture(baselineDirectory);
+    var candidatePhysical = PhysicalStorageProbe.Capture(candidateDirectory);
+    var baselineCheckpointLogical = HistoryCheckpointBytes(baselinePhysical, allocated: false);
+    var candidateCheckpointLogical = HistoryCheckpointBytes(candidatePhysical, allocated: false);
+    var baselineCheckpointAllocated = HistoryCheckpointBytes(baselinePhysical, allocated: true);
+    var candidateCheckpointAllocated = HistoryCheckpointBytes(candidatePhysical, allocated: true);
+
+    var result = new PhysicalCaseResult(
+        BranchCount: branchCount,
+        ShadowPercent: shadowPercent,
+        ShadowKeyCount: shadowCount,
+        Mode: mode.ToString(),
+        BaselineGcReclaimedVersions: baselineGc.VersionsReclaimed,
+        CandidateGcReclaimedVersions: candidateGc.ReclaimedVersions,
+        CandidateShadowReleasedPayloadBytes: candidateGc.ShadowReleasedPayloadBytes,
+        CandidateLogicalReclamationRatio: candidateGc.ShadowAwareReclamationRatio,
+        BaselineCheckpointLogicalBytes: baselineCheckpointLogical,
+        CandidateCheckpointLogicalBytes: candidateCheckpointLogical,
+        CheckpointLogicalReductionBytes: Math.Max(0, baselineCheckpointLogical - candidateCheckpointLogical),
+        BaselineCheckpointAllocatedBytes: baselineCheckpointAllocated,
+        CandidateCheckpointAllocatedBytes: candidateCheckpointAllocated,
+        CheckpointAllocatedReductionBytes: Math.Max(0, baselineCheckpointAllocated - candidateCheckpointAllocated),
+        BaselineTotalAllocatedBytes: baselinePhysical.AllocatedBytes,
+        CandidateTotalAllocatedBytes: candidatePhysical.AllocatedBytes,
+        TotalAllocatedReductionBytes: Math.Max(0, baselinePhysical.AllocatedBytes - candidatePhysical.AllocatedBytes),
+        BaselineCompactionBytesReclaimed: baselineCompaction.BytesReclaimed,
+        CandidateCompactionBytesReclaimed: candidateCompaction.BytesReclaimed,
+        AllocationMeasurementExact: baselinePhysical.AllocationIsExact && candidatePhysical.AllocationIsExact,
+        ObserverStateEqualAfterRestart: observerStateEqual);
+
+    File.WriteAllText(
+        Path.Combine(directory, "case-result.json"),
+        JsonSerializer.Serialize(result, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = true,
+        }));
+    return result;
+}
+
+static bool CompareCurrentObserverState(
+    string baselineDirectory,
+    string candidateDirectory,
+    IReadOnlyList<Guid> branchIds,
+    int keyCount)
+{
+    using var baseline = ChronicleDatabase.Open(baselineDirectory);
+    using var candidate = ChronicleDatabase.Open(candidateDirectory);
+    for (var keyId = 0; keyId < keyCount; keyId++)
+    {
+        var key = Key(keyId);
+        var baselineFound = baseline.TryGet(key, out var baselineValue);
+        var candidateFound = candidate.TryGet(key, out var candidateValue);
+        if (baselineFound != candidateFound
+            || (baselineFound && !baselineValue.AsSpan().SequenceEqual(candidateValue)))
+        {
+            return false;
+        }
+    }
+
+    foreach (var branchId in branchIds)
+    {
+        using var baselineBranch = baseline.OpenBranch(branchId);
+        using var candidateBranch = candidate.OpenBranch(branchId);
+        for (var keyId = 0; keyId < keyCount; keyId++)
+        {
+            var key = Key(keyId);
+            var baselineFound = baselineBranch.TryGet(key, out var baselineValue);
+            var candidateFound = candidateBranch.TryGet(key, out var candidateValue);
+            if (baselineFound != candidateFound
+                || (baselineFound && !baselineValue.AsSpan().SequenceEqual(candidateValue)))
+            {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+static long HistoryCheckpointBytes(ResearchPhysicalStorageSnapshot snapshot, bool allocated)
+    => snapshot.Files
+        .Where(file => file.RelativePath.EndsWith(PersistentHistoryCheckpoint.FileName, StringComparison.OrdinalIgnoreCase))
+        .Sum(file => allocated ? file.AllocatedBytes : file.LogicalLengthBytes);
+
+static void CopyDirectory(string source, string destination)
+{
+    Directory.CreateDirectory(destination);
+    foreach (var directory in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
+    {
+        Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, directory)));
+    }
+
+    foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+    {
+        var target = Path.Combine(destination, Path.GetRelativePath(source, file));
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        File.Copy(file, target, overwrite: true);
+    }
+}
+
 static Options Parse(string[] args)
 {
     var baseKeyCount = 0;
@@ -450,7 +825,8 @@ static Options Parse(string[] args)
         ? Path.GetFullPath(args[2])
         : Path.Combine(Environment.CurrentDirectory, "artifacts", "a1-shadow", Guid.NewGuid().ToString("N"));
     var commit = args.Length >= 4 ? args[3] : "5fa3d3835c42e929cef14ab90288e04b9e5c113b";
-    return new Options(baseKeyCount, valueBytes, output, commit);
+    var runPhysical = args.Length >= 5 && args[4].Equals("--physical", StringComparison.OrdinalIgnoreCase);
+    return new Options(baseKeyCount, valueBytes, output, commit, runPhysical);
 }
 
 static byte[] Key(int value)
@@ -493,7 +869,12 @@ static double Median(IEnumerable<double> values)
         : sorted[middle];
 }
 
-internal sealed record Options(int BaseKeyCount, int ValueBytes, string OutputDirectory, string MainCommit);
+internal sealed record Options(
+    int BaseKeyCount,
+    int ValueBytes,
+    string OutputDirectory,
+    string MainCommit,
+    bool RunPhysical);
 
 internal enum ShadowMode : byte
 {
@@ -506,6 +887,8 @@ internal enum SnapshotMode : byte
     None = 1,
     PreShadow = 2,
     PostShadow = 3,
+    ActivePreShadow = 4,
+    ActivePostShadow = 5,
 }
 
 internal sealed record CaseResult(
@@ -568,6 +951,47 @@ internal sealed record NestedCaseResult(
     int ReleasedVersionCount,
     int ParentFallbackHops);
 
+internal sealed record MixedCaseResult(
+    int Seed,
+    int BranchCount,
+    int ShadowPercent,
+    int ShadowOperations,
+    int OverwriteCount,
+    int TombstoneCount,
+    long BaselinePayloadBytes,
+    long ShadowAwarePayloadBytes,
+    long ShadowReleasedPayloadBytes,
+    long ExpectedReleasedPayloadBytes,
+    double ShadowAwareReclamationRatio,
+    bool CandidateIsSubsetOfBaseline,
+    bool ObserverEquivalenceVerified,
+    int ObserverEquivalenceCheckCount,
+    bool ObserverMinimalityVerified,
+    int UnwitnessedRequiredVersionCount);
+
+internal sealed record PhysicalCaseResult(
+    int BranchCount,
+    int ShadowPercent,
+    int ShadowKeyCount,
+    string Mode,
+    int BaselineGcReclaimedVersions,
+    int CandidateGcReclaimedVersions,
+    long CandidateShadowReleasedPayloadBytes,
+    double CandidateLogicalReclamationRatio,
+    long BaselineCheckpointLogicalBytes,
+    long CandidateCheckpointLogicalBytes,
+    long CheckpointLogicalReductionBytes,
+    long BaselineCheckpointAllocatedBytes,
+    long CandidateCheckpointAllocatedBytes,
+    long CheckpointAllocatedReductionBytes,
+    long BaselineTotalAllocatedBytes,
+    long CandidateTotalAllocatedBytes,
+    long TotalAllocatedReductionBytes,
+    long BaselineCompactionBytesReclaimed,
+    long CandidateCompactionBytesReclaimed,
+    bool AllocationMeasurementExact,
+    bool ObserverStateEqualAfterRestart);
+
 internal sealed record PilotResult(
     string Pilot,
     string MainCommitUnderTest,
@@ -576,6 +1000,8 @@ internal sealed record PilotResult(
     int CaseCount,
     int FanoutCaseCount,
     int NestedCaseCount,
+    int PhysicalCaseCount,
+    int MixedCaseCount,
     int CandidateSubsetFailures,
     int ExpectedReleaseMismatches,
     int PreShadowSafetyFailures,
@@ -586,4 +1012,6 @@ internal sealed record PilotResult(
     long MaximumReleasedPayloadBytes,
     IReadOnlyList<CaseResult> Cases,
     IReadOnlyList<FanoutCaseResult> FanoutCases,
-    IReadOnlyList<NestedCaseResult> NestedCases);
+    IReadOnlyList<NestedCaseResult> NestedCases,
+    IReadOnlyList<PhysicalCaseResult> PhysicalCases,
+    IReadOnlyList<MixedCaseResult> MixedCases);
