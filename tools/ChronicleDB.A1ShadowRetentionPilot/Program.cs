@@ -26,9 +26,29 @@ if (args.Length > 0 && args[0].Equals("--write-publication-plan", StringComparis
     }
 }
 
+if (args.Length > 0 && args[0].Equals("--publication-case", StringComparison.OrdinalIgnoreCase))
+{
+    return A1PublicationPilot.RunCase(args[1..]);
+}
+
+if (args.Length > 0 && args[0].Equals("--pilot-a-smoke", StringComparison.OrdinalIgnoreCase))
+{
+    return A1PublicationPilot.RunPilotA(args[1..], smoke: true);
+}
+
+if (args.Length > 0 && args[0].Equals("--run-pilot-a", StringComparison.OrdinalIgnoreCase))
+{
+    return A1PublicationPilot.RunPilotA(args[1..], smoke: false);
+}
+
 if (args.Length > 0 && args[0].Equals("--heterogeneous-scale", StringComparison.OrdinalIgnoreCase))
 {
     return RunHeterogeneousScale(args[1..]);
+}
+
+if (args.Length > 0 && args[0].Equals("--nested-scale", StringComparison.OrdinalIgnoreCase))
+{
+    return RunNestedScale(args[1..]);
 }
 
 if (args.Length > 0 && args[0].Equals("--projection-scale", StringComparison.OrdinalIgnoreCase))
@@ -255,7 +275,7 @@ static int RunHeterogeneousScale(string[] args)
     {
         Console.Error.WriteLine(
             "Usage: --heterogeneous-scale <keys:100..65536> " +
-            "<shadow-percent:tombstone-percent,...> <repetitions:1..20> [output-directory]");
+            "<shadow-percent:tombstone-percent,...> <repetitions:1..20> [output-directory] [seed]");
         return 2;
     }
 
@@ -266,11 +286,12 @@ static int RunHeterogeneousScale(string[] args)
             "artifacts",
             "a1-shadow-heterogeneous",
             $"k{keyCount}-b{profileSpecs.Count}-{Guid.NewGuid():N}");
+    var seed = args.Length >= 5 && int.TryParse(args[4], out var parsedSeed) ? parsedSeed : 0;
     Directory.CreateDirectory(outputDirectory);
 
     try
     {
-        var (snapshot, realizedProfiles) = BuildHeterogeneousProjectionSnapshot(keyCount, profileSpecs);
+        var (snapshot, realizedProfiles) = BuildHeterogeneousProjectionSnapshot(keyCount, profileSpecs, seed);
         var expected = ShadowRetentionEffectModel.PredictHeterogeneous(keyCount, realizedProfiles, 4096);
         var runs = new List<ProjectionScaleRun>(repetitions);
 
@@ -305,6 +326,7 @@ static int RunHeterogeneousScale(string[] args)
         var orderedMs = runs.Select(run => run.VerifiedProjectionMilliseconds).Order().ToArray();
         var summary = new HeterogeneousScaleResult(
             Pilot: "A1-SHADOW-HETEROGENEOUS-SCALE",
+            Seed: seed,
             KeyCount: keyCount,
             Repetitions: repetitions,
             Profiles: profileSpecs,
@@ -326,7 +348,7 @@ static int RunHeterogeneousScale(string[] args)
                 WriteIndented = true,
             }));
         Console.WriteLine(
-            $"A1-SHADOW-HETEROGENEOUS-SCALE PASS keys={keyCount} branches={profileSpecs.Count} " +
+            $"A1-SHADOW-HETEROGENEOUS-SCALE PASS seed={seed} keys={keyCount} branches={profileSpecs.Count} " +
             $"SAR={summary.MeasuredReclamationRatio:F3}x expected={summary.ExpectedReclamationRatio:F3}x " +
             $"release={summary.MeasuredReleasedPayloadBytes}B median={summary.MedianVerifiedProjectionMilliseconds:F2}ms " +
             $"output={outputDirectory}");
@@ -346,8 +368,18 @@ static bool TryParseBranchProfiles(string text, out IReadOnlyList<HeterogeneousB
     {
         var pieces = token.Split(':', StringSplitOptions.TrimEntries);
         if (pieces.Length != 2
-            || !int.TryParse(pieces[0], out var shadowPercent)
-            || !int.TryParse(pieces[1], out var tombstonePercent)
+            || !double.TryParse(
+                pieces[0],
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var shadowPercent)
+            || !double.TryParse(
+                pieces[1],
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var tombstonePercent)
+            || !double.IsFinite(shadowPercent)
+            || !double.IsFinite(tombstonePercent)
             || shadowPercent is < 0 or > 100
             || tombstonePercent is < 0 or > 100)
         {
@@ -371,7 +403,8 @@ static bool TryParseBranchProfiles(string text, out IReadOnlyList<HeterogeneousB
 static (ResearchRetentionSnapshot Snapshot, IReadOnlyList<ShadowRetentionBranchProfile> RealizedProfiles)
     BuildHeterogeneousProjectionSnapshot(
         int keyCount,
-        IReadOnlyList<HeterogeneousBranchProfileSpec> profileSpecs)
+        IReadOnlyList<HeterogeneousBranchProfileSpec> profileSpecs,
+        int seed)
 {
     const int valueBytes = 4096;
     var mainHistoryId = DeterministicGuid(300_001);
@@ -405,12 +438,18 @@ static (ResearchRetentionSnapshot Snapshot, IReadOnlyList<ShadowRetentionBranchP
     {
         var spec = profileSpecs[branchIndex];
         var historyId = DeterministicGuid(checked(320_000 + branchIndex));
-        var shadowKeyCount = keyCount * spec.ShadowPercent / 100;
-        var tombstoneKeyCount = shadowKeyCount * spec.TombstonePercent / 100;
+        var shadowKeyCount = (int)Math.Floor(keyCount * spec.ShadowPercent / 100d);
+        var tombstoneKeyCount = (int)Math.Floor(shadowKeyCount * spec.TombstonePercent / 100d);
+        var selectedKeys = SelectDeterministicKeys(keyCount, shadowKeyCount, seed, branchIndex);
+        var tombstoneKeys = SelectDeterministicSubset(
+            selectedKeys,
+            tombstoneKeyCount,
+            seed,
+            checked(100_000 + branchIndex));
         var branchVersions = new List<ResearchCommittedVersionSnapshot>(shadowKeyCount);
-        for (var keyId = 0; keyId < shadowKeyCount; keyId++)
+        foreach (var keyId in selectedKeys)
         {
-            var tombstone = keyId < tombstoneKeyCount;
+            var tombstone = tombstoneKeys.Contains(keyId);
             branchVersions.Add(new ResearchCommittedVersionSnapshot(
                 VersionId: $"hetero-b{branchIndex}:k{keyId}",
                 TransactionId: DeterministicGuid(checked(330_000 + branchIndex)),
@@ -458,6 +497,242 @@ static void ValidateHeterogeneousResult(
     {
         throw new InvalidOperationException(
             $"Heterogeneous projection invariant failed: release={result.ShadowReleasedPayloadBytes}, " +
+            $"expectedRelease={expected.ReleasedParentPayloadBytes}, ratio={result.ShadowAwareReclamationRatio:F6}, " +
+            $"expectedRatio={expected.ShadowAwareReclamationRatio:F6}, flatExact={result.FlatExactBaselineVerified}, " +
+            $"equivalence={result.ObserverEquivalenceVerified}, minimal={result.ObserverMinimalityVerified}.");
+    }
+}
+
+static int RunNestedScale(string[] args)
+{
+    if (args.Length < 4
+        || !int.TryParse(args[0], out var keyCount)
+        || !int.TryParse(args[1], out var depth)
+        || !double.TryParse(
+            args[2],
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var shadowPercent)
+        || !int.TryParse(args[3], out var repetitions)
+        || keyCount is < 100 or > 65536
+        || depth is < 1 or > 16
+        || !double.IsFinite(shadowPercent)
+        || shadowPercent is <= 0d or > 100d
+        || repetitions is < 1 or > 20)
+    {
+        Console.Error.WriteLine(
+            "Usage: --nested-scale <keys:100..65536> <depth:1..16> <shadow-percent:(0,100]> " +
+            "<repetitions:1..20> [output-directory] [seed]");
+        return 2;
+    }
+
+    var outputDirectory = args.Length >= 5
+        ? Path.GetFullPath(args[4])
+        : Path.Combine(
+            Environment.CurrentDirectory,
+            "artifacts",
+            "a1-shadow-nested-scale",
+            $"k{keyCount}-d{depth}-s{shadowPercent.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}-{Guid.NewGuid():N}");
+    var seed = args.Length >= 6 && int.TryParse(args[5], out var parsedSeed) ? parsedSeed : 0;
+    Directory.CreateDirectory(outputDirectory);
+
+    try
+    {
+        var (snapshot, shadowKeyCount) = BuildNestedProjectionScaleSnapshot(
+            keyCount,
+            depth,
+            shadowPercent,
+            seed);
+        var realizedShadowFraction = (double)shadowKeyCount / keyCount;
+        var expected = ShadowRetentionEffectModel.PredictNested(
+            keyCount,
+            depth,
+            realizedShadowFraction,
+            valueBytes: 4096);
+
+        // Warmup keeps JIT/first-use costs out of the recorded curve.
+        var warmup = AnalyzeShadowProjection(snapshot);
+        ValidateNestedScaleResult(warmup, expected);
+
+        var runs = new List<ProjectionScaleRun>(repetitions);
+        for (var repetition = 0; repetition < repetitions; repetition++)
+        {
+            var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+            var started = Stopwatch.GetTimestamp();
+            var result = AnalyzeShadowProjection(snapshot);
+            var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+            ValidateNestedScaleResult(result, expected);
+            runs.Add(new ProjectionScaleRun(
+                repetition,
+                elapsed,
+                result.ConstructionMilliseconds,
+                result.CoreProjectionMilliseconds,
+                result.ObserverVerificationMilliseconds,
+                allocated,
+                result.BaselineVersionCount,
+                result.ShadowAwareVersionCount,
+                result.ShadowReleasedPayloadBytes,
+                result.ShadowAwareReclamationRatio,
+                result.ObserverEquivalenceCheckCount,
+                result.ObserverKeyResolutionCount,
+                result.ParentFallbackHops));
+        }
+
+        var orderedMs = runs.Select(run => run.VerifiedProjectionMilliseconds).Order().ToArray();
+        var first = runs[0];
+        var summary = new NestedScaleResult(
+            Pilot: "A1-SHADOW-NESTED-SCALE",
+            Seed: seed,
+            KeyCount: keyCount,
+            Depth: depth,
+            RequestedShadowPercent: shadowPercent,
+            RealizedShadowFraction: realizedShadowFraction,
+            Repetitions: repetitions,
+            VersionCount: snapshot.Histories.Sum(history => history.Versions.Count),
+            ExpectedReleasedPayloadBytes: checked((long)expected.ReleasedParentPayloadBytes),
+            MeasuredReleasedPayloadBytes: first.ShadowReleasedPayloadBytes,
+            ExpectedReclamationRatio: expected.ShadowAwareReclamationRatio,
+            MeasuredReclamationRatio: first.ShadowAwareReclamationRatio,
+            MedianVerifiedProjectionMilliseconds: Percentile(orderedMs, 0.50),
+            P95VerifiedProjectionMilliseconds: Percentile(orderedMs, 0.95),
+            MedianThreadAllocatedBytes: checked((long)Percentile(
+                runs.Select(run => (double)run.ThreadAllocatedBytes).Order().ToArray(),
+                0.50)),
+            Runs: runs);
+        File.WriteAllText(
+            Path.Combine(outputDirectory, "nested-scale-result.json"),
+            JsonSerializer.Serialize(summary, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                WriteIndented = true,
+            }));
+        Console.WriteLine(
+            $"A1-SHADOW-NESTED-SCALE PASS seed={seed} keys={keyCount} depth={depth} " +
+            $"shadow={realizedShadowFraction:P2} SAR={summary.MeasuredReclamationRatio:F3}x " +
+            $"expected={summary.ExpectedReclamationRatio:F3}x median={summary.MedianVerifiedProjectionMilliseconds:F2}ms " +
+            $"output={outputDirectory}");
+        return 0;
+    }
+    catch (Exception exception)
+    {
+        Console.Error.WriteLine($"A1-SHADOW-NESTED-SCALE FAIL: {exception}");
+        return 1;
+    }
+}
+
+static (ResearchRetentionSnapshot Snapshot, int ShadowKeyCount) BuildNestedProjectionScaleSnapshot(
+    int keyCount,
+    int depth,
+    double shadowPercent,
+    int seed)
+{
+    const int valueBytes = 4096;
+    var shadowKeyCount = (int)Math.Floor(keyCount * shadowPercent / 100d);
+    var selectedKeys = SelectDeterministicKeys(keyCount, shadowKeyCount, seed, branchIndex: 0);
+    var histories = new List<ResearchHistoryRetentionSnapshot>(depth + 1);
+    var roots = new List<ResearchPersistentRetentionRootSnapshot>(depth);
+
+    var mainHistoryId = DeterministicGuid(400_001);
+    var mainVersions = new List<ResearchCommittedVersionSnapshot>(keyCount + shadowKeyCount);
+    for (var keyId = 0; keyId < keyCount; keyId++)
+    {
+        mainVersions.Add(new ResearchCommittedVersionSnapshot(
+            VersionId: $"nested-main:base:k{keyId}",
+            TransactionId: DeterministicGuid(410_001),
+            CommitSequence: 1,
+            KeyId: $"k{keyId:D8}",
+            KeyBytes: 8,
+            ValueBytes: valueBytes,
+            IsTombstone: false));
+    }
+
+    foreach (var keyId in selectedKeys)
+    {
+        mainVersions.Add(new ResearchCommittedVersionSnapshot(
+            VersionId: $"nested-main:current:k{keyId}",
+            TransactionId: DeterministicGuid(410_002),
+            CommitSequence: 2,
+            KeyId: $"k{keyId:D8}",
+            KeyBytes: 8,
+            ValueBytes: valueBytes,
+            IsTombstone: false));
+    }
+
+    histories.Add(new ResearchHistoryRetentionSnapshot(
+        mainHistoryId,
+        RetentionFloor: 2,
+        CurrentSequence: 2,
+        Versions: Array.AsReadOnly(mainVersions.ToArray())));
+
+    var parentHistoryId = mainHistoryId;
+    for (var level = 1; level <= depth; level++)
+    {
+        var historyId = DeterministicGuid(checked(420_000 + level));
+        var versions = new List<ResearchCommittedVersionSnapshot>(
+            level < depth ? shadowKeyCount * 2 : shadowKeyCount);
+        foreach (var keyId in selectedKeys)
+        {
+            versions.Add(new ResearchCommittedVersionSnapshot(
+                VersionId: $"nested-l{level}:base:k{keyId}",
+                TransactionId: DeterministicGuid(checked(430_000 + (level * 2))),
+                CommitSequence: 1,
+                KeyId: $"k{keyId:D8}",
+                KeyBytes: 8,
+                ValueBytes: valueBytes,
+                IsTombstone: false));
+        }
+
+        if (level < depth)
+        {
+            foreach (var keyId in selectedKeys)
+            {
+                versions.Add(new ResearchCommittedVersionSnapshot(
+                    VersionId: $"nested-l{level}:current:k{keyId}",
+                    TransactionId: DeterministicGuid(checked(430_001 + (level * 2))),
+                    CommitSequence: 2,
+                    KeyId: $"k{keyId:D8}",
+                    KeyBytes: 8,
+                    ValueBytes: valueBytes,
+                    IsTombstone: false));
+            }
+        }
+
+        histories.Add(new ResearchHistoryRetentionSnapshot(
+            historyId,
+            RetentionFloor: level < depth ? 2UL : 1UL,
+            CurrentSequence: level < depth ? 2UL : 1UL,
+            Versions: Array.AsReadOnly(versions.ToArray())));
+        roots.Add(new ResearchPersistentRetentionRootSnapshot(
+            RootId: DeterministicGuid(checked(440_000 + level)),
+            Kind: "BranchBase",
+            OwnerHistoryId: historyId,
+            ProtectedHistoryId: parentHistoryId,
+            Boundary: 1));
+        parentHistoryId = historyId;
+    }
+
+    return (
+        new ResearchRetentionSnapshot(
+            Array.AsReadOnly(histories.ToArray()),
+            Array.AsReadOnly(roots.ToArray()),
+            Array.Empty<ResearchActiveRetentionBoundarySnapshot>()),
+        shadowKeyCount);
+}
+
+static void ValidateNestedScaleResult(
+    ShadowAwareRetentionProjectionResult result,
+    ShadowRetentionEffectPrediction expected)
+{
+    if (!result.CandidateIsSubsetOfBaseline
+        || !result.FlatExactBaselineVerified
+        || !result.ObserverEquivalenceVerified
+        || !result.ObserverMinimalityVerified
+        || result.ShadowReleasedPayloadBytes != checked((long)expected.ReleasedParentPayloadBytes)
+        || Math.Abs(result.ShadowAwareReclamationRatio - expected.ShadowAwareReclamationRatio) > 1e-12)
+    {
+        throw new InvalidOperationException(
+            $"Nested projection invariant failed: release={result.ShadowReleasedPayloadBytes}, " +
             $"expectedRelease={expected.ReleasedParentPayloadBytes}, ratio={result.ShadowAwareReclamationRatio:F6}, " +
             $"expectedRatio={expected.ShadowAwareReclamationRatio:F6}, flatExact={result.FlatExactBaselineVerified}, " +
             $"equivalence={result.ObserverEquivalenceVerified}, minimal={result.ObserverMinimalityVerified}.");
@@ -672,6 +947,67 @@ static void ValidateProjectionScaleResult(
             $"subset={result.CandidateIsSubsetOfBaseline}, flatExact={result.FlatExactBaselineVerified}, equivalence={result.ObserverEquivalenceVerified}, " +
             $"minimal={result.ObserverMinimalityVerified}, ratio={result.ShadowAwareReclamationRatio:F6}, " +
             $"expectedRatio={expectedRatio:F6}.");
+    }
+}
+
+static int[] SelectDeterministicKeys(int keyCount, int selectedCount, int seed, int branchIndex)
+{
+    if (selectedCount <= 0)
+    {
+        return [];
+    }
+
+    if (selectedCount >= keyCount)
+    {
+        return Enumerable.Range(0, keyCount).ToArray();
+    }
+
+    return Enumerable.Range(0, keyCount)
+        .Select(keyId => (KeyId: keyId, Score: StableKeyScore(keyId, seed, branchIndex)))
+        .OrderBy(item => item.Score)
+        .ThenBy(item => item.KeyId)
+        .Take(selectedCount)
+        .Select(item => item.KeyId)
+        .Order()
+        .ToArray();
+}
+
+static HashSet<int> SelectDeterministicSubset(
+    IReadOnlyList<int> candidates,
+    int selectedCount,
+    int seed,
+    int salt)
+{
+    if (selectedCount <= 0)
+    {
+        return [];
+    }
+
+    if (selectedCount >= candidates.Count)
+    {
+        return candidates.ToHashSet();
+    }
+
+    return candidates
+        .Select(keyId => (KeyId: keyId, Score: StableKeyScore(keyId, seed, salt)))
+        .OrderBy(item => item.Score)
+        .ThenBy(item => item.KeyId)
+        .Take(selectedCount)
+        .Select(item => item.KeyId)
+        .ToHashSet();
+}
+
+static ulong StableKeyScore(int keyId, int seed, int branchIndex)
+{
+    unchecked
+    {
+        var value = ((ulong)(uint)keyId << 32)
+            ^ (uint)seed
+            ^ (0x9E3779B97F4A7C15UL * (ulong)(uint)(branchIndex + 1));
+        value += 0x9E3779B97F4A7C15UL;
+        value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9UL;
+        value = (value ^ (value >> 27)) * 0x94D049BB133111EBUL;
+        return value ^ (value >> 31);
     }
 }
 
@@ -1497,14 +1833,33 @@ static double Median(IEnumerable<double> values)
         : sorted[middle];
 }
 
-internal sealed record HeterogeneousBranchProfileSpec(int ShadowPercent, int TombstonePercent);
+internal sealed record HeterogeneousBranchProfileSpec(double ShadowPercent, double TombstonePercent);
 
 internal sealed record HeterogeneousScaleResult(
     string Pilot,
+    int Seed,
     int KeyCount,
     int Repetitions,
     IReadOnlyList<HeterogeneousBranchProfileSpec> Profiles,
     IReadOnlyList<ShadowRetentionBranchProfile> RealizedProfiles,
+    int VersionCount,
+    long ExpectedReleasedPayloadBytes,
+    long MeasuredReleasedPayloadBytes,
+    double ExpectedReclamationRatio,
+    double MeasuredReclamationRatio,
+    double MedianVerifiedProjectionMilliseconds,
+    double P95VerifiedProjectionMilliseconds,
+    long MedianThreadAllocatedBytes,
+    IReadOnlyList<ProjectionScaleRun> Runs);
+
+internal sealed record NestedScaleResult(
+    string Pilot,
+    int Seed,
+    int KeyCount,
+    int Depth,
+    double RequestedShadowPercent,
+    double RealizedShadowFraction,
+    int Repetitions,
     int VersionCount,
     long ExpectedReleasedPayloadBytes,
     long MeasuredReleasedPayloadBytes,
