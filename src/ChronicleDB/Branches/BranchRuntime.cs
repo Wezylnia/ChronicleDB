@@ -1,6 +1,7 @@
 using ChronicleDB.Core.Identifiers;
 using ChronicleDB.Core.Keys;
 using ChronicleDB.Core.Sequences;
+using ChronicleDB.Diagnostics.Research;
 using ChronicleDB.History.Branches;
 using ChronicleDB.History.Snapshots;
 using ChronicleDB.Indexing.Baseline;
@@ -94,13 +95,89 @@ internal sealed class BranchRuntime : IDisposable
         Snapshots.AdvanceRetentionFloor(floor, Definition.LocalCurrentSequence);
     }
 
+    private static (Guid OperationId, long StartedEventId) StartRecoveryPhase(
+        ResearchEventPublisher? researchEvents,
+        BranchDefinition definition,
+        ResearchRecoveryPhaseKind phase,
+        IReadOnlyList<string> resources,
+        long dependencyEventId)
+    {
+        if (researchEvents is null || researchEvents.Mode == ResearchTelemetryMode.Disabled)
+        {
+            return (Guid.Empty, 0);
+        }
+
+        var operationId = Guid.NewGuid();
+        researchEvents.TryPublish(
+            logicalEventId => new ResearchEvent(
+                logicalEventId,
+                logicalEventId,
+                ResearchEventKind.RecoveryPhaseStarted,
+                definition.HistoryId,
+                definition.ParentHistoryId,
+                operationId,
+                transactionId: null,
+                resources,
+                ResearchDurabilityPhase.None,
+                definition.LocalCurrentSequence.Value,
+                dependencyEventId > 0 ? [dependencyEventId] : [],
+                logicalKeyId: null,
+                versionId: null,
+                offset: null,
+                bytes: null,
+                readObservation: null,
+                new ResearchRecoveryPhaseObservation(phase)),
+            out var startedEventId);
+        return (operationId, startedEventId);
+    }
+
+    private static long CompleteRecoveryPhase(
+        ResearchEventPublisher? researchEvents,
+        BranchDefinition definition,
+        ResearchRecoveryPhaseKind phase,
+        IReadOnlyList<string> resources,
+        Guid operationId,
+        long startedEventId)
+    {
+        if (researchEvents is null
+            || researchEvents.Mode == ResearchTelemetryMode.Disabled
+            || operationId == Guid.Empty)
+        {
+            return startedEventId;
+        }
+
+        researchEvents.TryPublish(
+            logicalEventId => new ResearchEvent(
+                logicalEventId,
+                logicalEventId,
+                ResearchEventKind.RecoveryPhaseCompleted,
+                definition.HistoryId,
+                definition.ParentHistoryId,
+                operationId,
+                transactionId: null,
+                resources,
+                ResearchDurabilityPhase.None,
+                definition.LocalCurrentSequence.Value,
+                startedEventId > 0 ? [startedEventId] : [],
+                logicalKeyId: null,
+                versionId: null,
+                offset: null,
+                bytes: null,
+                readObservation: null,
+                new ResearchRecoveryPhaseObservation(phase)),
+            out var completedEventId);
+        return completedEventId > 0 ? completedEventId : startedEventId;
+    }
+
     public static BranchRuntime Open(
         string databaseDirectory,
         BranchDefinition definition,
         BranchStoreRecord publishedState,
         IReadOnlyList<BranchCommitDescriptor> legacyCommits,
         PersistentBranchMetadataStore branchStore,
-        StorageOptions databaseOptions)
+        StorageOptions databaseOptions,
+        ResearchEventPublisher? researchEvents = null,
+        long recoveryDependencyEventId = 0)
     {
         ArgumentNullException.ThrowIfNull(definition);
         ArgumentNullException.ThrowIfNull(publishedState);
@@ -121,12 +198,32 @@ internal sealed class BranchRuntime : IDisposable
         CommittedVersionStore? versions = null;
         try
         {
+            var phaseDependency = recoveryDependencyEventId;
+            var phase = StartRecoveryPhase(
+                researchEvents,
+                definition,
+                ResearchRecoveryPhaseKind.LocalStoreOpen,
+                [$"branch-{definition.BranchId.Value:N}-data"],
+                phaseDependency);
             store = PersistentKeyValueStore.Open(directory, localOptions, allowIncompleteFinalPage: true);
             if (store.DatabaseId != definition.LocalStorageId)
             {
                 throw new StorageCorruptionException($"Branch {definition.BranchId.Value} local storage identity does not match metadata.");
             }
+            phaseDependency = CompleteRecoveryPhase(
+                researchEvents,
+                definition,
+                ResearchRecoveryPhaseKind.LocalStoreOpen,
+                [$"branch-{definition.BranchId.Value:N}-data"],
+                phase.OperationId,
+                phase.StartedEventId);
 
+            phase = StartRecoveryPhase(
+                researchEvents,
+                definition,
+                ResearchRecoveryPhaseKind.WalAuthorityOpen,
+                [$"branch-{definition.BranchId.Value:N}-wal"],
+                phaseDependency);
             var walPath = Path.Combine(directory, WalFileName);
             var walInitialized = store.HasFormatFlag(DatabaseHeader.WalInitializedFlag);
             if (!walInitialized && File.Exists(walPath))
@@ -160,7 +257,20 @@ internal sealed class BranchRuntime : IDisposable
                 wal.Flush();
                 store.EnsureFormatFlags(DatabaseHeader.WalInitializedFlag);
             }
+            phaseDependency = CompleteRecoveryPhase(
+                researchEvents,
+                definition,
+                ResearchRecoveryPhaseKind.WalAuthorityOpen,
+                [$"branch-{definition.BranchId.Value:N}-wal"],
+                phase.OperationId,
+                phase.StartedEventId);
 
+            phase = StartRecoveryPhase(
+                researchEvents,
+                definition,
+                ResearchRecoveryPhaseKind.CheckpointLoadAndReplay,
+                [$"branch-{definition.BranchId.Value:N}-checkpoint"],
+                phaseDependency);
             HistoryCheckpoint? checkpoint = null;
             var checkpointPath = Path.Combine(directory, PersistentHistoryCheckpoint.FileName);
             if (store.HasFormatFlag(DatabaseHeader.HistoryCheckpointInitializedFlag))
@@ -190,7 +300,20 @@ internal sealed class BranchRuntime : IDisposable
                     $"Branch {definition.BranchId.Value} history checkpoint");
                 ReplayCheckpoint(checkpoint, versions);
             }
+            phaseDependency = CompleteRecoveryPhase(
+                researchEvents,
+                definition,
+                ResearchRecoveryPhaseKind.CheckpointLoadAndReplay,
+                [$"branch-{definition.BranchId.Value:N}-checkpoint"],
+                phase.OperationId,
+                phase.StartedEventId);
 
+            phase = StartRecoveryPhase(
+                researchEvents,
+                definition,
+                ResearchRecoveryPhaseKind.WalReplay,
+                [$"branch-{definition.BranchId.Value:N}-wal"],
+                phaseDependency);
             var checkpointTransactionIds = checkpoint?.Versions
                 .Select(version => version.TransactionId)
                 .ToHashSet();
@@ -210,7 +333,20 @@ internal sealed class BranchRuntime : IDisposable
                 versions.ValidateReplayCapacity(committed.Mutations);
                 versions.ReplayCommitted(committed.TransactionId, committed.CommitSequence, committed.Mutations);
             }
+            phaseDependency = CompleteRecoveryPhase(
+                researchEvents,
+                definition,
+                ResearchRecoveryPhaseKind.WalReplay,
+                [$"branch-{definition.BranchId.Value:N}-wal"],
+                phase.OperationId,
+                phase.StartedEventId);
 
+            phase = StartRecoveryPhase(
+                researchEvents,
+                definition,
+                ResearchRecoveryPhaseKind.PhysicalStateValidation,
+                [$"branch-{definition.BranchId.Value:N}-data", "branch-catalog"],
+                phaseDependency);
             if (definition.LocalCurrentSequence > recovery.CurrentCommitSequence)
             {
                 throw new StorageCorruptionException(
@@ -279,7 +415,20 @@ internal sealed class BranchRuntime : IDisposable
             }
 
             ValidatePhysicalHistory(repairedDefinition, store, versions, historyFloor);
+            phaseDependency = CompleteRecoveryPhase(
+                researchEvents,
+                repairedDefinition,
+                ResearchRecoveryPhaseKind.PhysicalStateValidation,
+                [$"branch-{definition.BranchId.Value:N}-data", "branch-catalog"],
+                phase.OperationId,
+                phase.StartedEventId);
 
+            phase = StartRecoveryPhase(
+                researchEvents,
+                repairedDefinition,
+                ResearchRecoveryPhaseKind.SnapshotMetadataOpen,
+                [$"branch-{definition.BranchId.Value:N}-snapshots", "history-roots"],
+                phaseDependency);
             var snapshotPath = Path.Combine(directory, PersistentSnapshotStore.FileName);
             if (store.HasFormatFlag(DatabaseHeader.SnapshotStoreInitializedFlag) && !File.Exists(snapshotPath))
             {
@@ -298,6 +447,13 @@ internal sealed class BranchRuntime : IDisposable
 
             store.EnsureFormatFlags(DatabaseHeader.SnapshotStoreInitializedFlag);
             var records = snapshotStore.ListActive();
+            _ = CompleteRecoveryPhase(
+                researchEvents,
+                repairedDefinition,
+                ResearchRecoveryPhaseKind.SnapshotMetadataOpen,
+                [$"branch-{definition.BranchId.Value:N}-snapshots", "history-roots"],
+                phase.OperationId,
+                phase.StartedEventId);
             var snapshots = new SnapshotCatalog(
                 historyFloor,
                 repairedDefinition.LocalCurrentSequence,

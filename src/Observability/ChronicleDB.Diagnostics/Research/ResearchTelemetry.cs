@@ -25,7 +25,22 @@ public enum ResearchEventKind : byte
     RootTransition = 11,
     SafetyPredicateEvaluated = 12,
     HistoryReadObserved = 13,
+    RecoveryPhaseStarted = 14,
+    RecoveryPhaseCompleted = 15,
 }
+
+public enum ResearchRecoveryPhaseKind : byte
+{
+    None = 0,
+    LocalStoreOpen = 1,
+    WalAuthorityOpen = 2,
+    CheckpointLoadAndReplay = 3,
+    WalReplay = 4,
+    PhysicalStateValidation = 5,
+    SnapshotMetadataOpen = 6,
+}
+
+public sealed record ResearchRecoveryPhaseObservation(ResearchRecoveryPhaseKind Phase);
 
 public enum ResearchDurabilityPhase : byte
 {
@@ -59,7 +74,8 @@ public sealed class ResearchEvent
         ulong? versionId,
         long? offset,
         long? bytes,
-        ResearchReadObservation? readObservation = null)
+        ResearchReadObservation? readObservation = null,
+        ResearchRecoveryPhaseObservation? recoveryPhaseObservation = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(logicalEventId);
         ArgumentOutOfRangeException.ThrowIfNegative(logicalClock);
@@ -122,11 +138,28 @@ public sealed class ResearchEvent
                 nameof(readObservation));
         }
 
+        var isRecoveryPhaseEvent = eventKind is ResearchEventKind.RecoveryPhaseStarted
+            or ResearchEventKind.RecoveryPhaseCompleted;
+        if (recoveryPhaseObservation is not null && !isRecoveryPhaseEvent)
+        {
+            throw new ArgumentException(
+                "Recovery phase observations are valid only for recovery-phase events.",
+                nameof(recoveryPhaseObservation));
+        }
+        if (isRecoveryPhaseEvent
+            && (recoveryPhaseObservation is null || recoveryPhaseObservation.Phase == ResearchRecoveryPhaseKind.None))
+        {
+            throw new ArgumentException(
+                "Recovery-phase events require a concrete recovery phase observation.",
+                nameof(recoveryPhaseObservation));
+        }
+
         LogicalKeyId = logicalKeyId;
         VersionId = versionId;
         Offset = offset;
         Bytes = bytes;
         ReadObservation = readObservation;
+        RecoveryPhaseObservation = recoveryPhaseObservation;
     }
 
     public long LogicalEventId { get; }
@@ -160,6 +193,8 @@ public sealed class ResearchEvent
     public long? Bytes { get; }
 
     public ResearchReadObservation? ReadObservation { get; }
+
+    public ResearchRecoveryPhaseObservation? RecoveryPhaseObservation { get; }
 }
 
 public interface IResearchEventSink

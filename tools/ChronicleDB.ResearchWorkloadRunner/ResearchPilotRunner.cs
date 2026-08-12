@@ -533,7 +533,36 @@ internal static partial class ResearchPilotRunner
                 .OrderBy(item => item.StartMilliseconds)
                 .ToArray();
 
+            var historyIndexById = branchMeasurements.ToDictionary(item => item.HistoryId, item => item.Index);
+            var phaseMeasurements = timed
+                .Where(item => item.Event.EventKind is ResearchEventKind.RecoveryPhaseStarted
+                    or ResearchEventKind.RecoveryPhaseCompleted)
+                .GroupBy(item => (item.Event.HistoryId, item.Event.OperationId))
+                .Select(group => group.OrderBy(item => item.Event.LogicalEventId).ToArray())
+                .Where(group => group.Length == 2
+                    && group[0].Event.EventKind == ResearchEventKind.RecoveryPhaseStarted
+                    && group[1].Event.EventKind == ResearchEventKind.RecoveryPhaseCompleted
+                    && group[0].Event.RecoveryPhaseObservation is not null
+                    && group[1].Event.RecoveryPhaseObservation is not null
+                    && group[0].Event.RecoveryPhaseObservation!.Phase == group[1].Event.RecoveryPhaseObservation!.Phase)
+                .Select(group => new MeasuredRecoveryPhase(
+                    historyIndexById[group[0].Event.HistoryId.Value],
+                    group[0].Event.HistoryId.Value,
+                    group[0].Event.RecoveryPhaseObservation!.Phase,
+                    group[0].Elapsed.TotalMilliseconds - recoveryStarted.Elapsed.TotalMilliseconds,
+                    group[1].Elapsed.TotalMilliseconds - recoveryStarted.Elapsed.TotalMilliseconds,
+                    group[1].Elapsed.TotalMilliseconds - group[0].Elapsed.TotalMilliseconds))
+                .OrderBy(item => item.StartMilliseconds)
+                .ToArray();
+            var expectedPhaseCount = checked(historyCount * Enum.GetValues<ResearchRecoveryPhaseKind>().Count(phase => phase != ResearchRecoveryPhaseKind.None));
+            if (phaseMeasurements.Length != expectedPhaseCount)
+            {
+                throw new InvalidOperationException(
+                    $"P4R expected {expectedPhaseCount} branch recovery phase measurements, found {phaseMeasurements.Length}.");
+            }
+
             var requested = branchMeasurements.Single(item => item.Index == requestedIndex);
+            var requestedPhases = phaseMeasurements.Where(item => item.Index == requestedIndex).ToArray();
             var firstBranchStart = branchMeasurements.Min(item => item.StartMilliseconds);
             var lastBranchValidated = branchMeasurements.Max(item => item.ValidatedMilliseconds);
             var recoveryCompletedMilliseconds = recoveryCompleted.Elapsed.TotalMilliseconds
@@ -552,6 +581,15 @@ internal static partial class ResearchPilotRunner
                 CommitsPerHistory: commitsPerHistory,
                 RequestedIndex: requestedIndex,
                 Histories: branchMeasurements,
+                RecoveryPhases: phaseMeasurements,
+                RequestedCheckpointLoadReplayMilliseconds: SumPhase(requestedPhases, ResearchRecoveryPhaseKind.CheckpointLoadAndReplay),
+                RequestedWalReplayMilliseconds: SumPhase(requestedPhases, ResearchRecoveryPhaseKind.WalReplay),
+                RequestedPhysicalValidationMilliseconds: SumPhase(requestedPhases, ResearchRecoveryPhaseKind.PhysicalStateValidation),
+                RequestedSnapshotMetadataMilliseconds: SumPhase(requestedPhases, ResearchRecoveryPhaseKind.SnapshotMetadataOpen),
+                TotalCheckpointLoadReplayMilliseconds: SumPhase(phaseMeasurements, ResearchRecoveryPhaseKind.CheckpointLoadAndReplay),
+                TotalWalReplayMilliseconds: SumPhase(phaseMeasurements, ResearchRecoveryPhaseKind.WalReplay),
+                TotalPhysicalValidationMilliseconds: SumPhase(phaseMeasurements, ResearchRecoveryPhaseKind.PhysicalStateValidation),
+                TotalSnapshotMetadataMilliseconds: SumPhase(phaseMeasurements, ResearchRecoveryPhaseKind.SnapshotMetadataOpen),
                 WallClockOpenMilliseconds: wallClock.Elapsed.TotalMilliseconds,
                 RecoveryCompletedMilliseconds: recoveryCompletedMilliseconds,
                 PreBranchRecoveryMilliseconds: firstBranchStart,
@@ -571,6 +609,7 @@ internal static partial class ResearchPilotRunner
             Console.WriteLine(
                 $"P4R PASS histories={historyCount} commits={commitsPerHistory} " +
                 $"open-ms={result.RecoveryCompletedMilliseconds:F2} branch-fraction={result.BranchRecoveryFraction:P1} " +
+                $"wal-ms={result.TotalWalReplayMilliseconds:F2} physical-ms={result.TotalPhysicalValidationMilliseconds:F2} " +
                 $"optimistic-upper={result.OptimisticUpperBoundSpeedup:F2}x selective-ready={result.CurrentSemanticsAllowsSelectiveHistoryReady} " +
                 $"output={outputDirectory}");
             return result.TelemetryComplete ? 0 : 1;
@@ -581,6 +620,11 @@ internal static partial class ResearchPilotRunner
             return 1;
         }
     }
+
+    private static double SumPhase(
+        IEnumerable<MeasuredRecoveryPhase> phases,
+        ResearchRecoveryPhaseKind phase)
+        => phases.Where(item => item.Phase == phase).Sum(item => item.DurationMilliseconds);
 
     private static int RunRecoverySchedulingPilot(string[] args)
     {
@@ -2299,6 +2343,14 @@ internal static partial class ResearchPilotRunner
         double ValidatedMilliseconds,
         double DurationMilliseconds);
 
+    private sealed record MeasuredRecoveryPhase(
+        int Index,
+        Guid HistoryId,
+        ResearchRecoveryPhaseKind Phase,
+        double StartMilliseconds,
+        double CompletedMilliseconds,
+        double DurationMilliseconds);
+
     private sealed record MeasuredRecoveryPilotResult(
         string Pilot,
         int Seed,
@@ -2306,6 +2358,15 @@ internal static partial class ResearchPilotRunner
         int CommitsPerHistory,
         int RequestedIndex,
         IReadOnlyList<MeasuredHistoryRecovery> Histories,
+        IReadOnlyList<MeasuredRecoveryPhase> RecoveryPhases,
+        double RequestedCheckpointLoadReplayMilliseconds,
+        double RequestedWalReplayMilliseconds,
+        double RequestedPhysicalValidationMilliseconds,
+        double RequestedSnapshotMetadataMilliseconds,
+        double TotalCheckpointLoadReplayMilliseconds,
+        double TotalWalReplayMilliseconds,
+        double TotalPhysicalValidationMilliseconds,
+        double TotalSnapshotMetadataMilliseconds,
         double WallClockOpenMilliseconds,
         double RecoveryCompletedMilliseconds,
         double PreBranchRecoveryMilliseconds,

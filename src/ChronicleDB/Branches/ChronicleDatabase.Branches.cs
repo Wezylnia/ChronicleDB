@@ -1537,7 +1537,9 @@ public sealed partial class ChronicleDatabase
                     publishedState,
                     branchStore.ListCommits(branch.BranchId),
                     branchStore,
-                    options);
+                    options,
+                    researchEvents,
+                    branchRecoveryStartedEventId);
                 ReconcileBranchSnapshotRoots(rootStore, branch, runtime.SnapshotStore.ListActive(), databaseId);
                 researchEvents.TryPublish(
                     logicalEventId => new ResearchEvent(
