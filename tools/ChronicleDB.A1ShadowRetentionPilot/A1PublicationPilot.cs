@@ -220,8 +220,9 @@ internal static class A1PublicationPilot
                 }
 
                 executions.Add(new PilotATrialExecution(
-                    trial.TrialOrder,
+                    trial.RunId,
                     trial.Tier,
+                    trial.TrialOrder,
                     trial.CaseId,
                     trial.Seed,
                     trial.ProcessRepetition,
@@ -701,7 +702,7 @@ internal sealed record PublicationCaseResult(
 
 internal sealed record PilotATrialExecution(
     string RunId,
-    string Tier,
+    ShadowRetentionPilotTier Tier,
     int TrialOrder,
     string CaseId,
     int Seed,
@@ -727,6 +728,8 @@ internal sealed record PilotAResult(
     string PublicationPlanSha256,
     string ExecutionPlanSha256,
     bool IsSmoke,
+    int CanonicalSweepRunCount,
+    int CanonicalRepeatedRunCount,
     int PlannedTrialCount,
     int ExecutedTrialCount,
     int FailureCount,
