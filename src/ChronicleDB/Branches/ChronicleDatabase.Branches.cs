@@ -274,7 +274,8 @@ public sealed partial class ChronicleDatabase
                         ResearchReadResolutionKind.LocalValue,
                         AncestorProbes: 0,
                         ResolvedDepth: 0,
-                        definition.HistoryId);
+                        definition.HistoryId,
+                        ResolvedBoundary: null);
                     break;
                 case CommittedVersionResolutionKind.Tombstone:
                     value = [];
@@ -283,9 +284,20 @@ public sealed partial class ChronicleDatabase
                         ResearchReadResolutionKind.LocalTombstone,
                         AncestorProbes: 0,
                         ResolvedDepth: 0,
-                        definition.HistoryId);
+                        definition.HistoryId,
+                        ResolvedBoundary: null);
                     break;
                 case CommittedVersionResolutionKind.NoVisibleVersion:
+                    if (runtime.TryGetResearchAncestryRoute(binaryKey, out var cachedRoute)
+                        && TryResolveResearchAncestryRoute(cachedRoute, binaryKey, out found, out value, out observation))
+                    {
+                        break;
+                    }
+
+                    if (runtime.ResearchAncestryRoutingEnabled && !cachedRoute.Equals(default(ResearchAncestryRoute)))
+                    {
+                        runtime.InvalidateResearchAncestryRoute(binaryKey);
+                    }
                     found = ResolveHistoryReadCore(
                         definition.ParentHistoryId,
                         definition.ParentBaseSequence,
@@ -293,6 +305,16 @@ public sealed partial class ChronicleDatabase
                         initialDepth: 1,
                         out value,
                         out observation);
+                    if (runtime.ResearchAncestryRoutingEnabled)
+                    {
+                        runtime.RecordResearchAncestryRoute(
+                            binaryKey,
+                            new ResearchAncestryRoute(
+                                observation.ResolvedHistoryId,
+                                observation.ResolvedBoundary,
+                                observation.ResolvedDepth,
+                                observation.Resolution == ResearchReadResolutionKind.Missing));
+                    }
                     break;
                 default:
                     throw new InvalidOperationException("Unknown committed-version resolution result.");
@@ -1053,8 +1075,104 @@ public sealed partial class ChronicleDatabase
                 readKind,
                 AncestorProbes: depth,
                 ResolvedDepth: resolution.Kind == CommittedVersionResolutionKind.NoVisibleVersion ? null : depth,
-                resolution.Kind == CommittedVersionResolutionKind.NoVisibleVersion ? null : currentHistoryId);
+                resolution.Kind == CommittedVersionResolutionKind.NoVisibleVersion ? null : currentHistoryId,
+                resolution.Kind == CommittedVersionResolutionKind.NoVisibleVersion ? null : currentBoundary);
             return resolution.Kind == CommittedVersionResolutionKind.Value;
+        }
+    }
+
+    private bool TryResolveResearchAncestryRoute(
+        ResearchAncestryRoute route,
+        BinaryKey key,
+        out bool found,
+        out byte[] value,
+        out HistoryReadObservation observation)
+    {
+        if (route.IsMissing)
+        {
+            found = false;
+            value = [];
+            observation = new HistoryReadObservation(
+                ResearchReadResolutionKind.Missing,
+                AncestorProbes: 0,
+                ResolvedDepth: null,
+                ResolvedHistoryId: null,
+                ResolvedBoundary: null);
+            return true;
+        }
+
+        if (route.ResolvedHistoryId is not { } resolvedHistoryId
+            || route.ResolvedBoundary is not { } resolvedBoundary
+            || route.ResolvedDepth is not { } resolvedDepth)
+        {
+            found = false;
+            value = [];
+            observation = default;
+            return false;
+        }
+
+        CommittedVersionResolution resolution;
+        if (resolvedHistoryId == _mainHistoryId)
+        {
+            resolution = _versions.Resolve(key, resolvedBoundary);
+        }
+        else
+        {
+            if (!_branches.TryGetByHistory(resolvedHistoryId, out var definition) || definition is null)
+            {
+                found = false;
+                value = [];
+                observation = default;
+                return false;
+            }
+            resolution = GetBranchRuntime(definition.BranchId).Versions.Resolve(key, resolvedBoundary);
+        }
+
+        if (resolution.Kind == CommittedVersionResolutionKind.NoVisibleVersion)
+        {
+            found = false;
+            value = [];
+            observation = default;
+            return false;
+        }
+
+        var resolutionKind = resolution.Kind == CommittedVersionResolutionKind.Value
+            ? ResearchReadResolutionKind.InheritedValue
+            : ResearchReadResolutionKind.InheritedTombstone;
+        found = resolution.Kind == CommittedVersionResolutionKind.Value;
+        value = found ? resolution.Value : [];
+        observation = new HistoryReadObservation(
+            resolutionKind,
+            AncestorProbes: 1,
+            ResolvedDepth: resolvedDepth,
+            resolvedHistoryId,
+            resolvedBoundary);
+        return true;
+    }
+
+    internal void SetResearchAncestryRoutingEnabled(Guid branchId, bool enabled)
+    {
+        EnterOperation();
+        try
+        {
+            GetBranchRuntime(new BranchId(branchId)).SetResearchAncestryRoutingEnabled(enabled);
+        }
+        finally
+        {
+            ExitOperation();
+        }
+    }
+
+    internal ResearchAncestryRoutingDiagnostics CaptureResearchAncestryRoutingDiagnostics(Guid branchId)
+    {
+        EnterOperation();
+        try
+        {
+            return GetBranchRuntime(new BranchId(branchId)).CaptureResearchAncestryRoutingDiagnostics();
+        }
+        finally
+        {
+            ExitOperation();
         }
     }
 
@@ -1102,7 +1220,8 @@ public sealed partial class ChronicleDatabase
         ResearchReadResolutionKind Resolution,
         int AncestorProbes,
         int? ResolvedDepth,
-        HistoryId? ResolvedHistoryId);
+        HistoryId? ResolvedHistoryId,
+        CommitSequence? ResolvedBoundary);
 
     private void ValidateHistoryBoundary(HistoryId historyId, CommitSequence boundary)
     {

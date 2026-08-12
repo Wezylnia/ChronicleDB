@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using ChronicleDB.Core.Identifiers;
 using ChronicleDB.Core.Keys;
 using ChronicleDB.Core.Sequences;
@@ -33,6 +34,12 @@ internal sealed class BranchRuntime : IDisposable
     private int _openBranchHandles;
     private int _activeTransactions;
     private int _openHistoricalHandles;
+    private readonly ConcurrentDictionary<BinaryKey, ResearchAncestryRoute> _researchAncestryRoutes = new();
+    private int _researchAncestryRoutingEnabled;
+    private long _researchAncestryRouteHits;
+    private long _researchAncestryRouteMisses;
+    private long _researchAncestryRouteBuilds;
+    private long _researchAncestryRouteInvalidations;
 
     private BranchRuntime(
         BranchDefinition definition,
@@ -68,6 +75,67 @@ internal sealed class BranchRuntime : IDisposable
     public int ActiveTransactions => Volatile.Read(ref _activeTransactions);
     public int OpenHistoricalHandles => Volatile.Read(ref _openHistoricalHandles);
     public bool HasOpenHandles => OpenBranchHandles != 0 || ActiveTransactions != 0 || OpenHistoricalHandles != 0;
+
+    internal bool ResearchAncestryRoutingEnabled => Volatile.Read(ref _researchAncestryRoutingEnabled) != 0;
+
+    internal void SetResearchAncestryRoutingEnabled(bool enabled)
+    {
+        _researchAncestryRoutes.Clear();
+        Interlocked.Exchange(ref _researchAncestryRouteHits, 0);
+        Interlocked.Exchange(ref _researchAncestryRouteMisses, 0);
+        Interlocked.Exchange(ref _researchAncestryRouteBuilds, 0);
+        Interlocked.Exchange(ref _researchAncestryRouteInvalidations, 0);
+        Volatile.Write(ref _researchAncestryRoutingEnabled, enabled ? 1 : 0);
+    }
+
+    internal bool TryGetResearchAncestryRoute(BinaryKey key, out ResearchAncestryRoute route)
+    {
+        if (!ResearchAncestryRoutingEnabled)
+        {
+            route = default;
+            return false;
+        }
+
+        if (_researchAncestryRoutes.TryGetValue(key, out route))
+        {
+            Interlocked.Increment(ref _researchAncestryRouteHits);
+            return true;
+        }
+
+        Interlocked.Increment(ref _researchAncestryRouteMisses);
+        return false;
+    }
+
+    internal void RecordResearchAncestryRoute(BinaryKey key, ResearchAncestryRoute route)
+    {
+        if (!ResearchAncestryRoutingEnabled)
+        {
+            return;
+        }
+
+        if (_researchAncestryRoutes.TryAdd(key, route))
+        {
+            Interlocked.Increment(ref _researchAncestryRouteBuilds);
+        }
+    }
+
+    internal void InvalidateResearchAncestryRoute(BinaryKey key)
+    {
+        if (_researchAncestryRoutes.TryRemove(key, out _))
+        {
+            Interlocked.Increment(ref _researchAncestryRouteInvalidations);
+        }
+    }
+
+    internal ResearchAncestryRoutingDiagnostics CaptureResearchAncestryRoutingDiagnostics()
+        => new(
+            Enabled: ResearchAncestryRoutingEnabled,
+            EntryCount: _researchAncestryRoutes.Count,
+            KeyBytes: _researchAncestryRoutes.Keys.Sum(key => (long)key.Length),
+            Hits: Interlocked.Read(ref _researchAncestryRouteHits),
+            Misses: Interlocked.Read(ref _researchAncestryRouteMisses),
+            Builds: Interlocked.Read(ref _researchAncestryRouteBuilds),
+            Invalidations: Interlocked.Read(ref _researchAncestryRouteInvalidations));
 
     public void AcquireBranchHandle() => Interlocked.Increment(ref _openBranchHandles);
     public void ReleaseBranchHandle() => DecrementNonNegative(ref _openBranchHandles, "branch handle");
@@ -835,3 +903,18 @@ internal static class BranchStorageLayout
         };
     }
 }
+
+internal readonly record struct ResearchAncestryRoute(
+    HistoryId? ResolvedHistoryId,
+    CommitSequence? ResolvedBoundary,
+    int? ResolvedDepth,
+    bool IsMissing);
+
+internal readonly record struct ResearchAncestryRoutingDiagnostics(
+    bool Enabled,
+    int EntryCount,
+    long KeyBytes,
+    long Hits,
+    long Misses,
+    long Builds,
+    long Invalidations);
