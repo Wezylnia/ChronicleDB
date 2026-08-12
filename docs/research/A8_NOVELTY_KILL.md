@@ -184,7 +184,28 @@ A8 is killed or demoted if:
 - safe force semantics require destroying whole snapshots/branches in the same way as established storage systems;
 - crash-safe acknowledgement adds no obligation beyond a straightforward application of existing secure-purge/checkpoint/WAL protocols.
 
-## 6. Score after this kill pass
+## 6. A8-O1 observer-exact falsification result
+
+A8-O1 was implemented as an independent research-only oracle in `ObserverExactErasureOracle`. It does not call the frozen A1 projection and it does not alter production erasure, GC, checkpoint, recovery, or branch-read paths.
+
+The prototype passed the following gates:
+
+- **8/8 targeted semantic unit tests** covering nested inheritance, tombstone cutoff, local shadow, pre/post-shadow boundaries, generic time travel, BranchBase false-positive control, nested edge necessity, and malformed-cycle rejection;
+- **500 deterministic randomized history forests** against an independent slow reference observer enumerator/resolver, with exact agreement on observer identity, content, resolved version/history/sequence, and fallback-hop count;
+- **4/4 real ChronicleDB persistence/integration tests** differential-tested against public branch snapshot/historical read APIs;
+- full repository regression **495/495 PASS** (`8` architecture + `223` unit + `184` persistence + `25` correctness + `55` recovery), with Release build at **0 warnings / 0 errors**.
+
+The falsification produced several material differences from current P6/local-root classification rather than collapsing to generic snapshot reachability:
+
+1. a nested branch snapshot with no local target-key version resolves `A1 -> A -> Main` and witnesses the inherited Main value, while current local-root P6 classifies the same snapshot root as `Absent`;
+2. a child-local tombstone stops fallback exactly as the public branch read does;
+3. a `BranchBase` whose child has fully shadowed the target key can appear as a value blocker in local-root classification even though no legal child observer needs that edge for the key;
+4. generic time-travel can retain a historical value with **no persistent snapshot root at all**;
+5. an open process-local nested historical view can be a real inherited blocker while current P6 does not independently enumerate that active boundary.
+
+These are correctness/semantic differences, not performance claims. They are sufficient to keep the narrow A8 hypothesis alive, but they do not yet prove that a practical force-erasure protocol can preserve the desired non-target semantics.
+
+## 7. Score after A8-O1
 
 This score is research priority/readiness, not acceptance probability.
 
@@ -193,15 +214,23 @@ This score is research priority/readiness, not acceptance probability.
 | Novelty | 17/20 |
 | Importance | 15/15 |
 | Prior-art defensibility | 16/20 |
-| Experimental evidence | 13/20 |
+| Experimental evidence | 17/20 |
 | ChronicleDB fit | 14/15 |
-| Readiness | 6/10 |
-| **Total** | **81/100** |
+| Readiness | 8/10 |
+| **Total** | **87/100** |
 
-The score fell from the earlier ~87 because OpenZFS/ONTAP, VMware true-clone retention, FAST'05, temporal privileged-history deletion, Lethe/WAL purge, and deletion-proof literature close several broad parts of the story. The remaining hypothesis is narrower and potentially stronger, but the current P6 observer classifier must first be falsified and repaired by a research oracle.
+The broad story remains heavily constrained by established secure-deletion, snapshot/clone dependency, privileged-history override, WAL purge, and crash-consistency prior art. The score rises from the post-kill 81 because A8-O1 demonstrated a real MVCC-specific semantic gap that strong storage-level reachability models and the current P6 classifier do not capture.
 
-## 7. Decision
+## 8. Decision after A8-O1
 
-**GO — but only for the observer-exact correctness prototype.**
+**GO — to a research-only contract/revocation planner, not production `ForceErasure`.**
 
-Do not implement production `ForceErasure` yet. The next engineering effort is justified only as a falsification experiment for the surviving semantic difference. If A8-O1 passes and produces blocker/revocation sets that genuinely differ from strong snapshot/clone reachability baselines, then implement the crash-safe authority transition. Otherwise stop A8 and leave P6 as a useful erasure-audit diagnostic rather than a paper candidate.
+The next falsification step (A8-O2) must combine the observer-exact witnesses with fail-closed physical/recovery representation closure and derive an explicit minimal action class for each blocker:
+
+- current-state value -> logical delete/rewrite, not observer destruction;
+- generic time-travel value -> explicit target-key historical-contract revocation or a stronger globally visible retention change;
+- persistent snapshot value -> explicit snapshot/key observer revocation;
+- active historical observer -> block until release or explicit handle invalidation;
+- WAL/checkpoint/physical value occurrence -> rewrite/reclaim only after semantic revocations are durably authoritative.
+
+A8 is killed or demoted if O2 shows that safe execution necessarily degenerates to whole-snapshot/whole-branch destruction already covered by storage prior art, or if the proposed key-specific revocation cannot be specified without violating unrelated v1.0 semantics. Crash-injected physical execution should only be implemented after that contract planner passes.
