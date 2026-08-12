@@ -87,23 +87,36 @@ if (!options.PhysicalOnly)
 
 if (options.RunPhysical)
 {
-    foreach (var branchCount in new[] { 4, 8 })
+    var physicalPlan = new List<PhysicalTarget>(8);
+    if (options.PhysicalTarget is { } target)
     {
-        foreach (var fraction in new[] { 50, 100 })
+        physicalPlan.Add(target);
+    }
+    else
+    {
+        foreach (var branchCount in new[] { 4, 8 })
         {
-            foreach (var mode in modes)
+            foreach (var fraction in new[] { 50, 100 })
             {
-                var caseDirectory = Path.Combine(
-                    options.OutputDirectory,
-                    $"physical-b{branchCount:D2}-s{fraction:D3}-{mode.ToString().ToLowerInvariant()}");
-                physicalCases.Add(RunPhysicalFanoutCase(
-                    options,
-                    branchCount,
-                    fraction,
-                    mode,
-                    caseDirectory));
+                foreach (var mode in modes)
+                {
+                    physicalPlan.Add(new PhysicalTarget(branchCount, fraction, mode));
+                }
             }
         }
+    }
+
+    foreach (var physicalCase in physicalPlan)
+    {
+        var caseDirectory = Path.Combine(
+            options.OutputDirectory,
+            $"physical-b{physicalCase.BranchCount:D2}-s{physicalCase.ShadowPercent:D3}-{physicalCase.Mode.ToString().ToLowerInvariant()}");
+        physicalCases.Add(RunPhysicalFanoutCase(
+            options,
+            physicalCase.BranchCount,
+            physicalCase.ShadowPercent,
+            physicalCase.Mode,
+            caseDirectory));
     }
 }
 
@@ -647,9 +660,14 @@ static PhysicalCaseResult RunPhysicalFanoutCase(
 
     using (var database = ChronicleDatabase.Open(sourceDirectory))
     {
-        for (var keyId = 0; keyId < options.BaseKeyCount; keyId++)
+        using (var baseTransaction = database.BeginTransaction())
         {
-            database.Put(Key(keyId), Payload(options.ValueBytes, keyId, generation: 1));
+            for (var keyId = 0; keyId < options.BaseKeyCount; keyId++)
+            {
+                baseTransaction.Put(Key(keyId), Payload(options.ValueBytes, keyId, generation: 1));
+            }
+
+            baseTransaction.Commit();
         }
 
         var branches = new List<ChronicleBranch>(branchCount);
@@ -660,22 +678,34 @@ static PhysicalCaseResult RunPhysicalFanoutCase(
                 var branch = database.CreateBranch($"physical-{branchCount}-{shadowPercent}-{mode}-{branchIndex:D2}");
                 branches.Add(branch);
                 branchIds.Add(branch.BranchId);
-                for (var keyId = 0; keyId < shadowCount; keyId++)
+                using (var branchTransaction = branch.BeginTransaction())
                 {
-                    if (mode == ShadowMode.Overwrite)
+                    for (var keyId = 0; keyId < shadowCount; keyId++)
                     {
-                        branch.Put(Key(keyId), Payload(options.ValueBytes, keyId, generation: checked(3000 + branchIndex)));
+                        if (mode == ShadowMode.Overwrite)
+                        {
+                            branchTransaction.Put(
+                                Key(keyId),
+                                Payload(options.ValueBytes, keyId, generation: checked(3000 + branchIndex)));
+                        }
+                        else
+                        {
+                            branchTransaction.Delete(Key(keyId));
+                        }
                     }
-                    else
-                    {
-                        _ = branch.Delete(Key(keyId));
-                    }
+
+                    branchTransaction.Commit();
                 }
 
+                using var mainTransaction = database.BeginTransaction();
                 for (var keyId = 0; keyId < options.BaseKeyCount; keyId++)
                 {
-                    database.Put(Key(keyId), Payload(options.ValueBytes, keyId, generation: checked(4000 + branchIndex)));
+                    mainTransaction.Put(
+                        Key(keyId),
+                        Payload(options.ValueBytes, keyId, generation: checked(4000 + branchIndex)));
                 }
+
+                mainTransaction.Commit();
             }
         }
         finally
@@ -747,6 +777,7 @@ static PhysicalCaseResult RunPhysicalFanoutCase(
         CandidateGcReclaimedVersions: candidateGc.ReclaimedVersions,
         CandidateShadowReleasedPayloadBytes: candidateGc.ShadowReleasedPayloadBytes,
         CandidateLogicalReclamationRatio: candidateGc.ShadowAwareReclamationRatio,
+        CandidateSerializedReclamationRatio: candidateGc.ShadowAwareSerializedReclamationRatio,
         BaselineGcMilliseconds: baselineGcMilliseconds,
         CandidateGcMilliseconds: candidateGcMilliseconds,
         CandidateProjectionAnalysisMilliseconds: candidateGc.ProjectionAnalysisMilliseconds,
@@ -847,7 +878,7 @@ static Options Parse(string[] args)
         || baseKeyCount is < 8 or > 4096
         || valueBytes is < 1 or > 1_048_576)
     {
-        Console.Error.WriteLine("Usage: <base-key-count:8..4096> <value-bytes:1..1048576> [output-directory] [main-commit] [--physical|--physical-only]");
+        Console.Error.WriteLine("Usage: <base-key-count:8..4096> <value-bytes:1..1048576> [output-directory] [main-commit] [--physical|--physical-only|--physical-case <branches:1..64> <shadow-percent:1..100> <overwrite|tombstone>]");
         Environment.Exit(2);
     }
 
@@ -858,7 +889,29 @@ static Options Parse(string[] args)
     var physicalOnly = args.Length >= 5 && args[4].Equals("--physical-only", StringComparison.OrdinalIgnoreCase);
     var runPhysical = physicalOnly
         || (args.Length >= 5 && args[4].Equals("--physical", StringComparison.OrdinalIgnoreCase));
-    return new Options(baseKeyCount, valueBytes, output, commit, runPhysical, physicalOnly);
+    PhysicalTarget? physicalTarget = null;
+    if (args.Length >= 5 && args[4].Equals("--physical-case", StringComparison.OrdinalIgnoreCase))
+    {
+        var branchCount = 0;
+        var shadowPercent = 0;
+        var mode = ShadowMode.Overwrite;
+        if (args.Length < 8
+            || !int.TryParse(args[5], out branchCount)
+            || branchCount is < 1 or > 64
+            || !int.TryParse(args[6], out shadowPercent)
+            || shadowPercent is < 1 or > 100
+            || !Enum.TryParse(args[7], ignoreCase: true, out mode))
+        {
+            Console.Error.WriteLine("Usage: --physical-case <branches:1..64> <shadow-percent:1..100> <overwrite|tombstone>");
+            Environment.Exit(2);
+        }
+
+        physicalTarget = new PhysicalTarget(branchCount, shadowPercent, mode);
+        physicalOnly = true;
+        runPhysical = true;
+    }
+
+    return new Options(baseKeyCount, valueBytes, output, commit, runPhysical, physicalOnly, physicalTarget);
 }
 
 static byte[] Key(int value)
@@ -907,7 +960,13 @@ internal sealed record Options(
     string OutputDirectory,
     string MainCommit,
     bool RunPhysical,
-    bool PhysicalOnly);
+    bool PhysicalOnly,
+    PhysicalTarget? PhysicalTarget);
+
+internal sealed record PhysicalTarget(
+    int BranchCount,
+    int ShadowPercent,
+    ShadowMode Mode);
 
 internal enum ShadowMode : byte
 {
@@ -1011,6 +1070,7 @@ internal sealed record PhysicalCaseResult(
     int CandidateGcReclaimedVersions,
     long CandidateShadowReleasedPayloadBytes,
     double CandidateLogicalReclamationRatio,
+    double CandidateSerializedReclamationRatio,
     double BaselineGcMilliseconds,
     double CandidateGcMilliseconds,
     double CandidateProjectionAnalysisMilliseconds,

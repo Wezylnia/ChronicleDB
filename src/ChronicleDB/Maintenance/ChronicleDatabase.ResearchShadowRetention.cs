@@ -231,6 +231,12 @@ public sealed partial class ChronicleDatabase
                         RetainedPayloadBytes: analysis.ShadowAwarePayloadBytes,
                         ShadowReleasedPayloadBytes: analysis.ShadowReleasedPayloadBytes,
                         ShadowAwareReclamationRatio: analysis.ShadowAwareReclamationRatio,
+                        BaselineSerializedBytes: analysis.BaselineSerializedBytes,
+                        RetainedSerializedBytes: analysis.ShadowAwareSerializedBytes,
+                        ShadowReleasedSerializedBytes: analysis.ShadowReleasedSerializedBytes,
+                        ShadowAwareSerializedReclamationRatio: analysis.ShadowAwareSerializedBytes == 0
+                            ? (analysis.BaselineSerializedBytes == 0 ? 1d : double.PositiveInfinity)
+                            : (double)analysis.BaselineSerializedBytes / analysis.ShadowAwareSerializedBytes,
                         ObserverEquivalenceCheckCount: analysis.ObserverEquivalenceCheckCount,
                         ProjectionAnalysisMilliseconds: projectionAnalysisMilliseconds,
                         MainRetentionFloor: mainTargetFloor.Value,
@@ -273,6 +279,10 @@ public sealed record ShadowAwareGarbageCollectionResult(
     long RetainedPayloadBytes,
     long ShadowReleasedPayloadBytes,
     double ShadowAwareReclamationRatio,
+    long BaselineSerializedBytes,
+    long RetainedSerializedBytes,
+    long ShadowReleasedSerializedBytes,
+    double ShadowAwareSerializedReclamationRatio,
     int ObserverEquivalenceCheckCount,
     double ProjectionAnalysisMilliseconds,
     ulong MainRetentionFloor,
