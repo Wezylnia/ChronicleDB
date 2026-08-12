@@ -31,6 +31,9 @@ public sealed class ObserverScopedErasureAuthorityModelTests
     [InlineData(
         ObserverScopedErasureMutant.AuthorityRevokesNonBlockingTargetObservation,
         "NonBlockingTargetObservationStable")]
+    [InlineData(
+        ObserverScopedErasureMutant.PublishGenericRedactionScope,
+        "ExactObserverScope")]
     public void CheckerRejectsDeliberateProtocolMutants(
         ObserverScopedErasureMutant mutant,
         string expectedInvariantFragment)

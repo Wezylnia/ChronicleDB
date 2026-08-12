@@ -22,6 +22,7 @@ public enum ObserverScopedErasureMutant : byte
     RewriteBeforeAuthority = 3,
     AuthorityRevokesUnrelatedObservation = 4,
     AuthorityRevokesNonBlockingTargetObservation = 5,
+    PublishGenericRedactionScope = 6,
 }
 
 public sealed record ObserverScopedErasureState(
@@ -37,7 +38,8 @@ public sealed record ObserverScopedErasureState(
     bool Crashed,
     bool Ready,
     bool NonTargetObservationIntact,
-    bool NonBlockingTargetObservationIntact)
+    bool NonBlockingTargetObservationIntact,
+    bool AuthorityScopeMatchesExactPlan)
 {
     public static ObserverScopedErasureState Initial { get; } = new(
         ForceAuthorized: false,
@@ -52,7 +54,8 @@ public sealed record ObserverScopedErasureState(
         Crashed: false,
         Ready: true,
         NonTargetObservationIntact: true,
-        NonBlockingTargetObservationIntact: true);
+        NonBlockingTargetObservationIntact: true,
+        AuthorityScopeMatchesExactPlan: true);
 
     public bool AnyTargetRepresentationRemains =>
         CheckpointContainsTarget || WalContainsTarget || PhysicalDataContainsTarget;
@@ -170,6 +173,7 @@ public static class ObserverScopedErasureAuthorityModel
                     RuntimeAuthorityLoaded = true,
                     NonTargetObservationIntact = mutant != ObserverScopedErasureMutant.AuthorityRevokesUnrelatedObservation,
                     NonBlockingTargetObservationIntact = mutant != ObserverScopedErasureMutant.AuthorityRevokesNonBlockingTargetObservation,
+                    AuthorityScopeMatchesExactPlan = mutant != ObserverScopedErasureMutant.PublishGenericRedactionScope,
                 };
                 return true;
 
@@ -344,6 +348,14 @@ public static class ObserverScopedErasureAuthorityModel
         CheckInvariant(
             "NonBlockingTargetObservationStable",
             state.NonBlockingTargetObservationIntact,
+            state,
+            trace,
+            violations,
+            violationKeys);
+
+        CheckInvariant(
+            "DurableAuthority => ExactObserverScope",
+            !state.AuthorityDurable || state.AuthorityScopeMatchesExactPlan,
             state,
             trace,
             violations,
