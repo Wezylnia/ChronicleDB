@@ -80,6 +80,37 @@ public sealed class ShadowRetentionPublicationPlanTests
     }
 
 
+
+    [Fact]
+    public void DefaultPlanFreezesPilotHoldoutAndPhysicalCaseSelections()
+    {
+        var plan = ShadowRetentionPublicationPlan.CreateDefault();
+
+        Assert.Equal(9, plan.PilotRepeatedCases.Count);
+        Assert.Equal(7, plan.HoldoutCases.Count);
+        Assert.Equal(5, plan.PhysicalCases.Count);
+        Assert.Equal(4096, plan.PilotSweepKeyCount);
+        Assert.Equal(301, plan.PilotSweepSeed);
+        Assert.Contains(plan.HoldoutCases, item => item.CaseId == "holdout-neg-b08-s001");
+        Assert.Contains(plan.PhysicalCases, item => item.CaseId == "physical-neg-b08-s010");
+        Assert.Equal(
+            plan.HoldoutCases.Select(item => item.CaseId).Order(StringComparer.Ordinal),
+            plan.HoldoutCases.Select(item => item.CaseId));
+    }
+
+    [Fact]
+    public void PlanRejectsSelectedCaseOutsideFamilyGrid()
+    {
+        var plan = ShadowRetentionPublicationPlan.CreateDefault();
+        var changed = plan.HoldoutCases
+            .Select(item => item.CaseId == "holdout-wide-b08-s020"
+                ? item with { ShadowFraction = 0.33 }
+                : item)
+            .ToArray();
+
+        Assert.Throws<InvalidOperationException>(() => (plan with { HoldoutCases = changed }).Validate());
+    }
+
     [Fact]
     public void SourceAnchorsSeparateObservedEvidenceFromShadowMapping()
     {

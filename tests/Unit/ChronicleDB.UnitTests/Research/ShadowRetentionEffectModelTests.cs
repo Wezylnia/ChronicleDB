@@ -5,6 +5,24 @@ namespace ChronicleDB.UnitTests.Research;
 public sealed class ShadowRetentionEffectModelTests
 {
     [Theory]
+    [InlineData(1, 1.5)]
+    [InlineData(2, 5d / 3d)]
+    [InlineData(4, 9d / 5d)]
+    [InlineData(8, 17d / 9d)]
+    [InlineData(16, 33d / 17d)]
+    public void NestedFullShadowMatchesClosedFormDepthBound(int depth, double expectedRatio)
+    {
+        var prediction = ShadowRetentionEffectModel.PredictNested(
+            keyCount: 100,
+            depth,
+            shadowFraction: 1d,
+            valueBytes: 4096);
+
+        Assert.Equal(expectedRatio, prediction.ShadowAwareReclamationRatio, precision: 12);
+        Assert.Equal((double)depth * 100 * 4096, prediction.ReleasedParentPayloadBytes);
+    }
+
+    [Theory]
     [InlineData(1, 1.50)]
     [InlineData(2, 1.6666666666666667)]
     [InlineData(4, 1.80)]

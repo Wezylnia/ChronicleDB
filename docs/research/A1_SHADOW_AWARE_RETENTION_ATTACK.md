@@ -241,7 +241,7 @@ The v2 plan seals four source anchors and, crucially, separates what each source
 
 The frozen families are:
 
-- `branchbench-deep-refinement-sensitivity`: depth 2/4/8/16, 10/25/50/75/100% shadow, 0/25% tombstones;
+- `branchbench-deep-refinement-sensitivity`: depth 2/4/8/16, 10/25/50/75/100% overwrite shadow;
 - `low-shadow-negative-control`: 1/4/8 branches at 0.1/1/5/10% overwrite shadow;
 - `published-wide-mutation-sensitivity`: 4/8/10/16/32/50 staggered branch bases, 5/10/20/25/50/75/100% shadow, 0/25/100% tombstone fractions.
 

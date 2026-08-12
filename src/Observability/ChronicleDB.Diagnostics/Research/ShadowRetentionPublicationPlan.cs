@@ -11,7 +11,7 @@ namespace ChronicleDB.Diagnostics.Research;
 /// </summary>
 public sealed record ShadowRetentionPublicationPlan
 {
-    public const int CurrentFormatVersion = 2;
+    public const int CurrentFormatVersion = 3;
 
     public required int FormatVersion { get; init; }
 
@@ -38,6 +38,16 @@ public sealed record ShadowRetentionPublicationPlan
     public required IReadOnlyList<int> HoldoutBSeeds { get; init; }
 
     public required IReadOnlyList<ShadowRetentionPublicationFamily> Families { get; init; }
+
+    public required int PilotSweepKeyCount { get; init; }
+
+    public required int PilotSweepSeed { get; init; }
+
+    public required IReadOnlyList<ShadowRetentionPublicationCase> PilotRepeatedCases { get; init; }
+
+    public required IReadOnlyList<ShadowRetentionPublicationCase> HoldoutCases { get; init; }
+
+    public required IReadOnlyList<ShadowRetentionPublicationCase> PhysicalCases { get; init; }
 
     public required IReadOnlyList<string> MandatoryCorrectnessGates { get; init; }
 
@@ -127,6 +137,20 @@ public sealed record ShadowRetentionPublicationPlan
             family.Validate();
         }
 
+        if (PilotSweepKeyCount <= 0 || !ProjectionKeyCounts.Contains(PilotSweepKeyCount))
+        {
+            throw new InvalidOperationException("PilotSweepKeyCount must be one of ProjectionKeyCounts.");
+        }
+
+        if (PilotSweepSeed <= 0 || !PilotSeeds.Contains(PilotSweepSeed))
+        {
+            throw new InvalidOperationException("PilotSweepSeed must be one of PilotSeeds.");
+        }
+
+        ValidateCases(PilotRepeatedCases, nameof(PilotRepeatedCases), requirePhysicalKeyCount: false);
+        ValidateCases(HoldoutCases, nameof(HoldoutCases), requirePhysicalKeyCount: false);
+        ValidateCases(PhysicalCases, nameof(PhysicalCases), requirePhysicalKeyCount: true);
+
         if (MandatoryCorrectnessGates.Count == 0 || InterpretationRules.Count == 0)
         {
             throw new InvalidOperationException("Publication plan requires correctness gates and interpretation rules.");
@@ -191,7 +215,7 @@ public sealed record ShadowRetentionPublicationPlan
                     TopologyKind = "nested-chain",
                     BranchCountsOrDepths = [2, 4, 8, 16],
                     ShadowFractions = [0.10, 0.25, 0.50, 0.75, 1.00],
-                    TombstoneFractions = [0.00, 0.25],
+                    TombstoneFractions = [0.00],
                     IsNegativeControlFamily = false,
                     Interpretation = "ChronicleDB caps the source-inspired deep topology at its legal depth 16; shadow fractions are sensitivity parameters, not measured MCTS distributions.",
                 },
@@ -218,6 +242,38 @@ public sealed record ShadowRetentionPublicationPlan
                     Interpretation = "Topology is source-anchored; shadow/tombstone fractions are preregistered sensitivity axes and must not be described as measured production distributions.",
                 },
             ],
+            PilotSweepKeyCount = 4096,
+            PilotSweepSeed = 301,
+            PilotRepeatedCases =
+            [
+                Case("pilot-deep-d08-s025", "branchbench-deep-refinement-sensitivity", 8, 0.25, 0.00, 4096),
+                Case("pilot-deep-d16-s050", "branchbench-deep-refinement-sensitivity", 16, 0.50, 0.00, 4096),
+                Case("pilot-neg-b08-s001", "low-shadow-negative-control", 8, 0.001, 0.00, 4096),
+                Case("pilot-neg-b08-s010", "low-shadow-negative-control", 8, 0.10, 0.00, 4096),
+                Case("pilot-wide-b08-s020", "published-wide-mutation-sensitivity", 8, 0.20, 0.00, 4096),
+                Case("pilot-wide-b08-s050", "published-wide-mutation-sensitivity", 8, 0.50, 0.00, 4096),
+                Case("pilot-wide-b08-s050-t100", "published-wide-mutation-sensitivity", 8, 0.50, 1.00, 4096),
+                Case("pilot-wide-b16-s050-t025", "published-wide-mutation-sensitivity", 16, 0.50, 0.25, 4096),
+                Case("pilot-wide-b32-s075-t025", "published-wide-mutation-sensitivity", 32, 0.75, 0.25, 4096),
+            ],
+            HoldoutCases =
+            [
+                Case("holdout-deep-d08-s025", "branchbench-deep-refinement-sensitivity", 8, 0.25, 0.00, 16384),
+                Case("holdout-deep-d16-s050", "branchbench-deep-refinement-sensitivity", 16, 0.50, 0.00, 16384),
+                Case("holdout-neg-b08-s001", "low-shadow-negative-control", 8, 0.001, 0.00, 16384),
+                Case("holdout-wide-b08-s020", "published-wide-mutation-sensitivity", 8, 0.20, 0.00, 16384),
+                Case("holdout-wide-b08-s050", "published-wide-mutation-sensitivity", 8, 0.50, 0.00, 16384),
+                Case("holdout-wide-b08-s050-t100", "published-wide-mutation-sensitivity", 8, 0.50, 1.00, 16384),
+                Case("holdout-wide-b16-s075-t025", "published-wide-mutation-sensitivity", 16, 0.75, 0.25, 16384),
+            ],
+            PhysicalCases =
+            [
+                Case("physical-neg-b08-s010", "low-shadow-negative-control", 8, 0.10, 0.00, 1024),
+                Case("physical-wide-b08-s025", "published-wide-mutation-sensitivity", 8, 0.25, 0.00, 1024),
+                Case("physical-wide-b08-s050", "published-wide-mutation-sensitivity", 8, 0.50, 0.00, 1024),
+                Case("physical-wide-b08-s100", "published-wide-mutation-sensitivity", 8, 1.00, 0.00, 1024),
+                Case("physical-wide-b08-s100-t100", "published-wide-mutation-sensitivity", 8, 1.00, 1.00, 1024),
+            ],
             MandatoryCorrectnessGates =
             [
                 "independent-flat-exact-baseline-equality",
@@ -238,6 +294,70 @@ public sealed record ShadowRetentionPublicationPlan
                 "Do not retune candidate mechanics or workload axes after opening Holdout-A.",
                 "Open Holdout-B only if Holdout-A is invalidated by a preregistered correctness/infrastructure failure, never because its effect size is weak.",
             ],
+        };
+
+    private void ValidateCases(
+        IReadOnlyList<ShadowRetentionPublicationCase> cases,
+        string name,
+        bool requirePhysicalKeyCount)
+    {
+        if (cases.Count == 0
+            || cases.Select(item => item.CaseId).Distinct(StringComparer.Ordinal).Count() != cases.Count)
+        {
+            throw new InvalidOperationException($"{name} must be non-empty and uniquely named.");
+        }
+
+        var orderedIds = cases.Select(item => item.CaseId).Order(StringComparer.Ordinal).ToArray();
+        if (!cases.Select(item => item.CaseId).SequenceEqual(orderedIds, StringComparer.Ordinal))
+        {
+            throw new InvalidOperationException($"{name} must be sorted by CaseId for canonical ordering.");
+        }
+
+        var families = Families.ToDictionary(family => family.FamilyId, StringComparer.Ordinal);
+        foreach (var item in cases)
+        {
+            item.Validate();
+            if (!families.TryGetValue(item.FamilyId, out var family))
+            {
+                throw new InvalidOperationException($"Case '{item.CaseId}' references unknown family '{item.FamilyId}'.");
+            }
+
+            if (!family.BranchCountsOrDepths.Contains(item.BranchCountOrDepth)
+                || !family.ShadowFractions.Contains(item.ShadowFraction)
+                || !family.TombstoneFractions.Contains(item.TombstoneFraction))
+            {
+                throw new InvalidOperationException($"Case '{item.CaseId}' is outside its preregistered family grid.");
+            }
+
+            if (requirePhysicalKeyCount)
+            {
+                if (item.KeyCount != PhysicalKeyCount || !family.TopologyKind.Equals("staggered-wide", StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException($"Physical case '{item.CaseId}' must use PhysicalKeyCount and staggered-wide topology.");
+                }
+            }
+            else if (!ProjectionKeyCounts.Contains(item.KeyCount))
+            {
+                throw new InvalidOperationException($"Case '{item.CaseId}' key count is outside ProjectionKeyCounts.");
+            }
+        }
+    }
+
+    private static ShadowRetentionPublicationCase Case(
+        string caseId,
+        string familyId,
+        int branchCountOrDepth,
+        double shadowFraction,
+        double tombstoneFraction,
+        int keyCount)
+        => new()
+        {
+            CaseId = caseId,
+            FamilyId = familyId,
+            BranchCountOrDepth = branchCountOrDepth,
+            ShadowFraction = shadowFraction,
+            TombstoneFraction = tombstoneFraction,
+            KeyCount = keyCount,
         };
 
     private static void ValidatePositiveUniqueSorted(IReadOnlyList<int> values, string name)
@@ -280,6 +400,37 @@ public sealed record ShadowRetentionLiteratureAnchor
             {
                 throw new InvalidOperationException("Publication source-anchor strings must not be empty.");
             }
+        }
+    }
+}
+
+public sealed record ShadowRetentionPublicationCase
+{
+    public required string CaseId { get; init; }
+
+    public required string FamilyId { get; init; }
+
+    public required int BranchCountOrDepth { get; init; }
+
+    public required double ShadowFraction { get; init; }
+
+    public required double TombstoneFraction { get; init; }
+
+    public required int KeyCount { get; init; }
+
+    internal void Validate()
+    {
+        if (string.IsNullOrWhiteSpace(CaseId) || string.IsNullOrWhiteSpace(FamilyId))
+        {
+            throw new InvalidOperationException("Publication-case IDs must not be empty.");
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(BranchCountOrDepth);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(KeyCount);
+        if (!double.IsFinite(ShadowFraction) || ShadowFraction is < 0d or > 1d
+            || !double.IsFinite(TombstoneFraction) || TombstoneFraction is < 0d or > 1d)
+        {
+            throw new InvalidOperationException("Publication-case fractions must be finite values in [0,1].");
         }
     }
 }

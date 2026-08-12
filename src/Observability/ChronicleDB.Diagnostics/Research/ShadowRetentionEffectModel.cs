@@ -50,6 +50,33 @@ public static class ShadowRetentionEffectModel
             ShadowAwareReclamationRatio: baselinePayload / candidatePayload);
     }
 
+    public static ShadowRetentionEffectPrediction PredictNested(
+        int keyCount,
+        int depth,
+        double shadowFraction,
+        int valueBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(keyCount);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(depth);
+        if (shadowFraction is < 0d or > 1d)
+        {
+            throw new ArgumentOutOfRangeException(nameof(shadowFraction));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(valueBytes);
+
+        var mainPayload = (double)keyCount * valueBytes;
+        var shadowPayloadPerEdge = mainPayload * shadowFraction;
+        var releasedParentPayload = shadowPayloadPerEdge * depth;
+        var baselinePayload = mainPayload + (2d * releasedParentPayload);
+        var candidatePayload = baselinePayload - releasedParentPayload;
+        return new ShadowRetentionEffectPrediction(
+            BaselinePayloadBytes: baselinePayload,
+            ShadowAwarePayloadBytes: candidatePayload,
+            ReleasedParentPayloadBytes: releasedParentPayload,
+            ShadowAwareReclamationRatio: baselinePayload / candidatePayload);
+    }
+
     public static double? MinimumShadowFractionForRatio(
         int branchCount,
         double tombstoneFraction,
