@@ -48,11 +48,11 @@ Bir card değiştiğinde eski sürüm korunur; değişiklik gerekçesi, tarih ve
 
 ### Aday 2 — Online ancestry acceleration
 
-- **Narrow claim:** Fixed parent-boundary branch resolution için rebuildable, false-negative-free, stable ancestry routing ile read amplification/P99–memory–write Pareto iyileşmesi.
-- **Claims we must not make:** Generation numbers, Bloom summaries, memoization veya binary lifting'in genel anlamda ilk kullanımı.
-- **Differentiating experiment:** Recursive, memoized ve stable routing baselines; cold/warm, reopen/rebuild, tombstone, negative lookup, compaction ve skew matrix.
-- **Kill condition:** Depth/topology gerçek bottleneck üretmiyor veya P3-B baseline'lara karşı Pareto üstünlük göstermiyor.
-- **Status:** `ATTACKED` — Git commit-graph, persistent structures, Decibel/ForkBase mekanizmalarıyla daraltılmalı.
+- **Narrow claim:** Writable ancestor histories ilerlemeye devam ederken her child edge'in sabit historical MVCC boundary'sinde kaldığı history tree için rebuildable, non-authoritative, logical per-key routing; value/tombstone/no-visible-version semantiği, compaction ve reopen altında güvenli fallback.
+- **Claims we must not make:** Parent/lower-layer traversal'ın, resolved-layer memoization'ın, whiteout/tombstone shadowing'in, generation numbers'ın, Bloom/change summaries'nin veya binary lifting'in genel anlamda ilk kullanımı. Linux OverlayFS layered lookup + cached dentry result + whiteout semantiğiyle generic memoization claim'ini kapatır; Neon fixed `ancestor_lsn` ile database ancestor fallback semantiğini yakın biçimde kapsar.
+- **Differentiating experiment:** Recursive fixed-boundary fallback; **simple per-key memoization (current P3B as baseline)**; eager materialization; branch-membership/change/range summaries; ancak bunlardan materially farklı bir MVCC-boundary-aware candidate bulunursa cold/warm, reopen/rebuild, tombstone, negative lookup, compaction, skew, invalidation bytes/cost ve reads-to-amortize Pareto matrix.
+- **Kill condition:** Direct prior art aynı fixed historical MVCC-boundary route semantics'ini gösterir; veya simple memoization fair baseline olduktan sonra daha MVCC-specific candidate anlamlı Pareto farkı üretemez; veya fayda yalnız deep/high-reuse synthetic bölgede kalır.
+- **Status:** `WEAKENED / NARROW` — problem BranchBench ile güçlü biçimde doğrulandı, fakat OverlayFS/VHDX/qcow2 generic layered lookup/memoization sahipliğini ve Neon fixed-boundary ancestor fallback sahipliğini kapatıyor. Ayrıntı: `A2_NOVELTY_KILL.md`.
 
 ### Aday 8 — Erasure-consistent branching
 
