@@ -237,7 +237,7 @@ static int RunProjectionScale(string[] args)
         // One untimed warmup ensures JIT and first-use static initialization do not
         // define the measured projection curve.
         var warmup = new ShadowAwareRetentionProjection(snapshot).Analyze();
-        ValidateProjectionScaleResult(warmup, keyCount, branchCount, shadowPercent);
+        ValidateProjectionScaleResult(warmup, keyCount, branchCount, shadowPercent, mode);
 
         var runs = new List<ProjectionScaleRun>(repetitions);
         for (var repetition = 0; repetition < repetitions; repetition++)
@@ -247,7 +247,7 @@ static int RunProjectionScale(string[] args)
             var result = new ShadowAwareRetentionProjection(snapshot).Analyze();
             var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             var allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
-            ValidateProjectionScaleResult(result, keyCount, branchCount, shadowPercent);
+            ValidateProjectionScaleResult(result, keyCount, branchCount, shadowPercent, mode);
             runs.Add(new ProjectionScaleRun(
                 repetition,
                 elapsed,
@@ -387,20 +387,30 @@ static void ValidateProjectionScaleResult(
     ShadowAwareRetentionProjectionResult result,
     int keyCount,
     int branchCount,
-    int shadowPercent)
+    int shadowPercent,
+    ShadowMode mode)
 {
     var shadowKeyCount = keyCount * shadowPercent / 100;
     var expectedRelease = checked((long)branchCount * shadowKeyCount * 4096L);
+    var effect = ShadowRetentionEffectModel.Predict(
+        keyCount,
+        branchCount,
+        (double)shadowKeyCount / keyCount,
+        tombstoneFraction: mode == ShadowMode.Tombstone ? 1d : 0d,
+        valueBytes: 4096);
+    var expectedRatio = effect.ShadowAwareReclamationRatio;
     if (!result.CandidateIsSubsetOfBaseline
         || !result.FlatExactBaselineVerified
         || !result.ObserverEquivalenceVerified
         || !result.ObserverMinimalityVerified
-        || result.ShadowReleasedPayloadBytes != expectedRelease)
+        || result.ShadowReleasedPayloadBytes != expectedRelease
+        || Math.Abs(result.ShadowAwareReclamationRatio - expectedRatio) > 1e-12)
     {
         throw new InvalidOperationException(
             $"Projection scale invariant failed: release={result.ShadowReleasedPayloadBytes}, expected={expectedRelease}, " +
             $"subset={result.CandidateIsSubsetOfBaseline}, flatExact={result.FlatExactBaselineVerified}, equivalence={result.ObserverEquivalenceVerified}, " +
-            $"minimal={result.ObserverMinimalityVerified}.");
+            $"minimal={result.ObserverMinimalityVerified}, ratio={result.ShadowAwareReclamationRatio:F6}, " +
+            $"expectedRatio={expectedRatio:F6}.");
     }
 }
 
