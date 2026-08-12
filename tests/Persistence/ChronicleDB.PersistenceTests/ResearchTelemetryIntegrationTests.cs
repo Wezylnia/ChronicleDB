@@ -184,6 +184,28 @@ public sealed class ResearchTelemetryIntegrationTests
         Assert.Contains(started.ResourceSet, resource => resource.EndsWith("-data", StringComparison.Ordinal));
         Assert.Contains("branch-catalog", validated.ResourceSet);
         Assert.Contains("history-roots", validated.ResourceSet);
+
+        var phaseEvents = events
+            .Where(item => item.HistoryId.Value == branchHistoryId
+                && item.EventKind is ResearchEventKind.RecoveryPhaseStarted or ResearchEventKind.RecoveryPhaseCompleted)
+            .ToArray();
+        var phases = Enum.GetValues<ResearchRecoveryPhaseKind>()
+            .Where(phase => phase != ResearchRecoveryPhaseKind.None)
+            .ToArray();
+        Assert.Equal(phases.Length * 2, phaseEvents.Length);
+        foreach (var phase in phases)
+        {
+            var startedPhase = Assert.Single(phaseEvents, item =>
+                item.EventKind == ResearchEventKind.RecoveryPhaseStarted
+                && item.RecoveryPhaseObservation?.Phase == phase);
+            var completedPhase = Assert.Single(phaseEvents, item =>
+                item.EventKind == ResearchEventKind.RecoveryPhaseCompleted
+                && item.OperationId == startedPhase.OperationId
+                && item.RecoveryPhaseObservation?.Phase == phase);
+            Assert.Equal([startedPhase.LogicalEventId], completedPhase.DependencyEventIds);
+            Assert.True(startedPhase.LogicalEventId < completedPhase.LogicalEventId);
+        }
+
         Assert.True(validated.LogicalEventId < events.Single(item => item.EventKind == ResearchEventKind.RecoveryCompleted).LogicalEventId);
     }
 
