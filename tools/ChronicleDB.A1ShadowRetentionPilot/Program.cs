@@ -6,6 +6,26 @@ using ChronicleDB.Diagnostics.Research;
 using ChronicleDB.Maintenance;
 using ChronicleDB.Storage.History;
 
+if (args.Length > 0 && args[0].Equals("--write-publication-plan", StringComparison.OrdinalIgnoreCase))
+{
+    var outputDirectory = args.Length >= 2
+        ? Path.GetFullPath(args[1])
+        : Path.Combine(Environment.CurrentDirectory, "artifacts", "a1-shadow-publication-plan");
+    try
+    {
+        var plan = ShadowRetentionPublicationPlan.CreateDefault();
+        var artifact = ShadowRetentionPublicationPlanWriter.Write(outputDirectory, plan);
+        Console.WriteLine(
+            $"A1-SHADOW-PUBLICATION-PLAN SEALED sha256={artifact.Sha256} output={outputDirectory}");
+        return 0;
+    }
+    catch (Exception exception)
+    {
+        Console.Error.WriteLine($"A1-SHADOW-PUBLICATION-PLAN FAIL: {exception}");
+        return 1;
+    }
+}
+
 if (args.Length > 0 && args[0].Equals("--heterogeneous-scale", StringComparison.OrdinalIgnoreCase))
 {
     return RunHeterogeneousScale(args[1..]);

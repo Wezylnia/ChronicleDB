@@ -254,3 +254,11 @@ The current A1 research HEAD was revalidated after the independent flat-exact ba
 - independent FlatExact divergence is fail-closed rather than report-only.
 
 A heterogeneous 1,024-key / four-branch smoke with branch profiles `10:0,25:20,50:100,75:50` produced measured SAR **1.392523x**, exactly matching the heterogeneous closed-form prediction, while all semantic gates remained satisfied. This is a model/implementation consistency check, not a publication workload result.
+
+## Post-attack publication-plan freeze path
+
+The A1 tooling now exposes an immutable publication-plan artifact before any publication holdout is opened. The default post-novelty-attack claim identifier is `semantic-shadow-aware-mvcc-projection-v2`; it explicitly incorporates the Helios branch-horizon and COW-clone prior-art attacks and forbids generic COW/reference-counting novelty claims.
+
+The preregistered family structure keeps three distinct regimes: a depth/refinement sensitivity family capped at ChronicleDB's legal depth 16, a wide/staggered mutation sensitivity family, and an explicit 1–10% low-shadow negative-control family. Shadow/tombstone fractions remain sensitivity axes rather than claimed production distributions. Pilot, Holdout-A and Holdout-B seed partitions are disjoint, and interpretation rules forbid retuning after opening Holdout-A or opening Holdout-B merely because A is weak.
+
+A deterministic CLI smoke sealed the default plan twice with the identical SHA-256 `13fecb8806ac7b1eefd13e342d33545bf38f399b4c062c8a2afd94e36f2a1bcd`. This demonstrates the preregistration mechanism; the smoke artifact itself is not publication evidence and does not mean Holdout-A has been opened.
