@@ -234,3 +234,126 @@ The next falsification step (A8-O2) must combine the observer-exact witnesses wi
 - WAL/checkpoint/physical value occurrence -> rewrite/reclaim only after semantic revocations are durably authoritative.
 
 A8 is killed or demoted if O2 shows that safe execution necessarily degenerates to whole-snapshot/whole-branch destruction already covered by storage prior art, or if the proposed key-specific revocation cannot be specified without violating unrelated v1.0 semantics. Crash-injected physical execution should only be implemented after that contract planner passes.
+
+## 9. A8-O2 contract-planner result
+
+A8-O2 was implemented as the research-only `ObserverExactErasureContractPlanner`. It composes O1 semantic witnesses with the existing fail-closed representation inventory but performs no deletion, no observer revocation, and no recovery-authority mutation.
+
+The planner deliberately separates two classes of action:
+
+1. **existing coarse/collateral mechanisms**, such as deleting the current key, advancing a whole-history retention floor, deleting a whole persistent snapshot, waiting for active observers, and rewriting/reclaiming storage representations;
+2. **candidate key-scoped semantic revocations**, such as revoking generic historical visibility for the target key or redacting the target key from one retained snapshot contract while leaving unrelated keys visible.
+
+A8-O2 passed:
+
+- **17/17 targeted O1+O2 unit tests**, including force authorization, incomplete-closure fail-closed behavior, nested inherited snapshot planning, topology validation, generic-history revocation, and active-observer quiescence;
+- **5/5 real ChronicleDB persistence/integration tests**;
+- full repository regression **504/504 PASS** (`8` architecture + `231` unit + `185` persistence + `25` correctness + `55` recovery), with Release build at **0 warnings / 0 errors**.
+
+The most important falsification was that a current value at `floor == current` is still covered by two semantically distinct contracts: current-state visibility and the ordinary retained historical range at that same boundary. A new delete commit does not erase the old boundary; it simply makes that boundary historical. Therefore a global erase cannot be acknowledged merely because the latest value is tombstoned while the ordinary time-travel contract still permits the older boundary.
+
+O2 therefore refuses to claim acknowledgement when the only safe plan requires a key-scoped semantic extension that ChronicleDB does not yet implement.
+
+## 10. Final targeted prior-art attack on a durable redaction authority
+
+O2 naturally suggested a durable authority record that would make selected historical observations of the target key invalid before old physical bytes are rewritten. That mechanism was attacked before implementation.
+
+### 10.1 Amazon US10866865B1 — authoritative journal redaction
+
+Amazon's *Storage system journal entry redaction* (priority 2015-06-29) is very close prior art for the broad mechanism. It describes an append-only authoritative journal in which a later redaction entry causes one or more earlier committed journal entries to be ignored/bypassed. Compact snapshot generation processes redaction entries so that redacted state changes are excluded. If a redacted state change has already been materialized at a member data store, the store can be treated as divergent and recovered/resynchronized from a redaction-aware snapshot.
+
+This kills broad claims such as:
+
+- first durable redaction/supersession authority over earlier committed history;
+- first append-only authority record that masks a previous authoritative record;
+- first redaction-aware snapshot generation;
+- first recovery/resynchronization when a redacted change was already materialized.
+
+Source: https://patents.google.com/patent/US10866865B1/en
+
+### 10.2 Amazon US10235407B1 — journal forking
+
+Amazon's *Distributed storage system journal forking* (priority 2015-08-21) creates a second journal for a selected database subset while metadata of the second journal refers to a sequence-number range stored in the first journal. This is strong prior art for durable writable histories that inherit an older authoritative journal range.
+
+The reviewed material did **not** directly combine this fork mechanism with US10866865B1's redaction mechanism to compute key-specific MVCC observer revocations across a retained branch tree. That absence is evidence-bounded, not proof of novelty.
+
+Source: https://patents.justia.com/patent/10235407
+
+### 10.3 Snapshot-aware key deletion and true cloning
+
+Recent snapshot-aware object-store patents explicitly walk snapshot chains at key/object granularity to decide whether a deleted key is reclaimable. VMware true-clone work also supports deletion/reclamation of data within snapshots/clones using shared-reference metadata.
+
+These kill:
+
+- first key-specific deletion in snapshot storage;
+- first snapshot-chain key reachability/reclaimability analysis;
+- first physical reclamation of selected data while snapshots/clones exist.
+
+Examples:
+- https://patents.google.com/patent/US20230385157A1/en
+- https://patents.google.com/patent/US10031672B2/en
+
+### 10.4 Claim-survival matrix after O2
+
+| Question | Strongest reviewed overlap | Surviving A8 difference |
+|---|---|---|
+| Later durable record masks earlier committed history? | Amazon US10866865B1 | **Not novel by itself** |
+| Redaction-aware snapshots/recovery? | Amazon US10866865B1 | **Not novel by itself** |
+| Forked/writable history inherits an older journal range? | Amazon US10235407B1 | **Not novel by itself** |
+| Key/object deletion through snapshot chains? | US20230385157A1, VMware true clones | **Not novel by itself** |
+| Determine blockers from actual MVCC value/tombstone/no-visible-version semantics across fixed branch boundaries? | No direct match found in this review | **Survives** |
+| Distinguish current, generic time-travel, persistent-snapshot and active-observer contracts for one target key? | No direct match found in this review | **Survives** |
+| Revoke only the target-key observations that O1 proves reconstruct the value, while preserving unrelated observer results? | No direct match found in this review | **Survives, unimplemented** |
+| Publish that observer-scoped authority before rewrite, make recovery honor it, then acknowledge only after no engine-controlled representation can resurrect the value? | Components exist separately | **Survives only as a narrow composition hypothesis** |
+
+The defensible contribution must therefore **not** be described as a redaction log, key deletion, snapshot-aware deletion, clone reclamation, or crash-safe deletion in isolation.
+
+## 11. Score after O2 and the redaction-authority kill pass
+
+This score is research priority/readiness, not acceptance probability.
+
+| Dimension | Score |
+|---|---:|
+| Novelty | 16/20 |
+| Importance | 15/15 |
+| Prior-art defensibility | 16/20 |
+| Experimental evidence | 18/20 |
+| ChronicleDB fit | 14/15 |
+| Readiness | 7/10 |
+| **Total** | **86/100** |
+
+The evidence improved after O2, but Amazon journal redaction materially narrows the systems novelty and prevents a score increase. The remaining hypothesis is stronger semantically but narrower technically.
+
+## 12. Decision — A8-O3 model only
+
+**GO — to a pure/research-only O3 model. Do not implement production `ForceErasure` yet.**
+
+Working mechanism name:
+
+> **Observer-Scoped Erasure Authority (OSEA)**
+
+The proposed authority must not claim generic redaction novelty. It exists only to test whether O1's exact MVCC observer witnesses can be turned into a durable, minimally collateral semantic change.
+
+O3 must model the protocol in this order:
+
+```text
+Analyze exact observer closure
+    -> obtain explicit force authorization
+    -> publish observer-scoped erasure authority durably
+    -> recovery/read path must honor authority before serving observations
+    -> rewrite/reclaim checkpoint, WAL, and engine-controlled physical generations
+    -> verify representation closure
+    -> acknowledge erasure
+```
+
+Hard O3 gates:
+
+1. **Non-target observational stability:** every legal read for every non-target key is unchanged.
+2. **Minimal target revocation:** target-key observations that did not reconstruct the erased value remain unchanged whenever the declared force scope permits it.
+3. **No premature acknowledgement:** durable semantic masking is not physical-erasure acknowledgement.
+4. **Recovery safety:** after authority publication, no supported crash/recovery state may serve the revoked target value even while stale bytes remain.
+5. **Physical closure:** acknowledgement is allowed only after all engine-controlled recovery/physical representations in scope are proven non-reconstructing; incomplete scan remains fail-closed.
+6. **Authority/rewrite ordering:** physical rewrite may lag authority publication, but authority publication may never lag a rewrite that would make recovery semantics ambiguous.
+7. **No production integration until the bounded model and mutants pass.**
+
+Kill A8 if O3 collapses to a generic journal-redaction protocol once O1's observer semantics are removed, if preserving non-target semantics requires whole-snapshot/whole-branch destruction, or if crash-safe acknowledgement adds no property beyond the reviewed redaction/snapshot-recovery prior art.
