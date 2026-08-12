@@ -41,6 +41,16 @@ if (args.Length > 0 && args[0].Equals("--prepare-holdout", StringComparison.Ordi
     return A1PublicationPilot.PrepareHoldout(args[1..]);
 }
 
+if (args.Length > 0 && args[0].Equals("--run-holdout-a", StringComparison.OrdinalIgnoreCase))
+{
+    return A1PublicationPilot.RunHoldout(args[1..], ShadowRetentionHoldoutPartition.HoldoutA);
+}
+
+if (args.Length > 0 && args[0].Equals("--run-holdout-b", StringComparison.OrdinalIgnoreCase))
+{
+    return A1PublicationPilot.RunHoldout(args[1..], ShadowRetentionHoldoutPartition.HoldoutB);
+}
+
 if (args.Length > 0 && args[0].Equals("--pilot-a-smoke", StringComparison.OrdinalIgnoreCase))
 {
     return A1PublicationPilot.RunPilotA(args[1..], smoke: true);

@@ -259,6 +259,201 @@ internal static class A1PublicationPilot
         }
     }
 
+    public static int RunHoldout(string[] args, ShadowRetentionHoldoutPartition partition)
+    {
+        if (args.Length != 2)
+        {
+            Console.Error.WriteLine(
+                partition == ShadowRetentionHoldoutPartition.HoldoutA
+                    ? "Usage: --run-holdout-a <prepared-holdout-directory> <machine-block-id>"
+                    : "Usage: --run-holdout-b <prepared-holdout-directory> <machine-block-id>");
+            return 2;
+        }
+
+        var preparedDirectory = Path.GetFullPath(args[0]);
+        var machineBlockId = args[1];
+        try
+        {
+            var context = ReadAndVerifyPreparedHoldout(preparedDirectory, machineBlockId);
+            var invalidationPath = Path.Combine(
+                preparedDirectory,
+                "invalidation",
+                ShadowRetentionHoldoutInvalidationWriter.FileName);
+            if (partition == ShadowRetentionHoldoutPartition.HoldoutA)
+            {
+                var bDirectory = Path.Combine(preparedDirectory, "holdout-b");
+                if ((Directory.Exists(bDirectory) && Directory.EnumerateFileSystemEntries(bDirectory).Any())
+                    || File.Exists(invalidationPath))
+                {
+                    throw new InvalidOperationException(
+                        "Holdout-A cannot run after Holdout-B output exists or Holdout-A has been invalidated.");
+                }
+            }
+            else
+            {
+                var invalidation = ReadAndVerifyInvalidation(preparedDirectory, context.Registration);
+                invalidation.ValidateAgainst(context.Registration);
+                var aResultPath = Path.Combine(preparedDirectory, "holdout-a", "holdout-a-result.json");
+                if (File.Exists(aResultPath))
+                {
+                    var aResult = JsonSerializer.Deserialize<HoldoutPartitionResult>(File.ReadAllText(aResultPath), ReadOptions)
+                        ?? throw new InvalidOperationException("Could not deserialize Holdout-A aggregate result.");
+                    if (aResult.Complete && aResult.FailureCount == 0)
+                    {
+                        throw new InvalidOperationException(
+                            "Holdout-B is forbidden because Holdout-A completed successfully; weak or unfavorable effect size is not an invalidation reason.");
+                    }
+                }
+            }
+
+            return ExecuteHoldoutPartition(context, preparedDirectory, partition);
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"A1-{partition.ToString().ToUpperInvariant()} FAIL: {exception}");
+            return 1;
+        }
+    }
+
+    private static int ExecuteHoldoutPartition(
+        PreparedHoldoutContext context,
+        string preparedDirectory,
+        ShadowRetentionHoldoutPartition partition)
+    {
+        var partitionName = partition == ShadowRetentionHoldoutPartition.HoldoutA ? "holdout-a" : "holdout-b";
+        var partitionDirectory = Path.Combine(preparedDirectory, partitionName);
+        Directory.CreateDirectory(partitionDirectory);
+        var aggregatePath = Path.Combine(partitionDirectory, partitionName + "-result.json");
+        if (File.Exists(aggregatePath))
+        {
+            var existing = JsonSerializer.Deserialize<HoldoutPartitionResult>(File.ReadAllText(aggregatePath), ReadOptions)
+                ?? throw new InvalidOperationException($"Could not deserialize existing {partition} aggregate result.");
+            if (!string.Equals(existing.RegistrationSha256, context.RegistrationHash, StringComparison.Ordinal)
+                || existing.Partition != partition)
+            {
+                throw new InvalidOperationException($"Existing {partition} aggregate result belongs to a different registration.");
+            }
+            Console.WriteLine(
+                $"A1-{partition.ToString().ToUpperInvariant()} EXISTING complete={existing.Complete} " +
+                $"trials={existing.ExecutedTrialCount}/{existing.PlannedTrialCount} failures={existing.FailureCount} output={partitionDirectory}");
+            return existing.Complete && existing.FailureCount == 0 ? 0 : 1;
+        }
+
+        var trials = context.Execution.Runs
+            .Where(run => run.Partition == partition)
+            .OrderBy(run => run.TrialOrder)
+            .ToArray();
+        var executions = new List<HoldoutTrialExecution>(trials.Length);
+        var failureCount = 0;
+        foreach (var trial in trials)
+        {
+            var runDirectory = Path.Combine(
+                partitionDirectory,
+                "runs",
+                $"trial-{trial.TrialOrder:D4}-{trial.CaseId}-seed-{trial.Seed}-rep-{trial.ProcessRepetition:D2}");
+            Directory.CreateDirectory(runDirectory);
+            var resultPath = Path.Combine(runDirectory, "publication-case-result.json");
+            if (File.Exists(resultPath))
+            {
+                var resumed = ReadAndValidateHoldoutCaseResult(trial, resultPath);
+                executions.Add(ToHoldoutExecution(trial, resultPath, resumed, "RESUMED: verified immutable existing result artifact."));
+                continue;
+            }
+
+            if (Directory.EnumerateFileSystemEntries(runDirectory).Any())
+            {
+                throw new InvalidOperationException(
+                    $"{partition} run directory is non-empty without a complete immutable result for '{trial.RunId}'. Resume is refused until the interrupted directory is audited.");
+            }
+
+            var childArgs = BuildHoldoutChildArguments(context.Publication, trial, runDirectory);
+            ChildResult child;
+            try
+            {
+                child = RunChild(childArgs);
+            }
+            catch (Exception exception) when (partition == ShadowRetentionHoldoutPartition.HoldoutA)
+            {
+                WriteHoldoutAInvalidation(
+                    context,
+                    preparedDirectory,
+                    trial,
+                    ShadowRetentionHoldoutInvalidationCategory.InfrastructureFailure,
+                    "Child process infrastructure failure: " + exception.Message,
+                    exception.ToString());
+                throw;
+            }
+
+            if (child.ExitCode != 0)
+            {
+                failureCount++;
+                var evidence = $"exit={child.ExitCode}{Environment.NewLine}stdout:{Environment.NewLine}{child.StandardOutput}" +
+                    $"{Environment.NewLine}stderr:{Environment.NewLine}{child.StandardError}";
+                if (partition == ShadowRetentionHoldoutPartition.HoldoutA)
+                {
+                    var category = child.StandardError.Contains("invariant failed", StringComparison.OrdinalIgnoreCase)
+                        ? ShadowRetentionHoldoutInvalidationCategory.CorrectnessFailure
+                        : ShadowRetentionHoldoutInvalidationCategory.InfrastructureFailure;
+                    WriteHoldoutAInvalidation(
+                        context,
+                        preparedDirectory,
+                        trial,
+                        category,
+                        "Observed child-process failure during preregistered Holdout-A run.",
+                        evidence);
+                }
+
+                executions.Add(new HoldoutTrialExecution(
+                    trial.RunId,
+                    trial.TrialOrder,
+                    trial.CaseId,
+                    trial.Seed,
+                    trial.ProcessRepetition,
+                    child.ExitCode,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    child.StandardOutput,
+                    child.StandardError));
+                break;
+            }
+
+            if (!File.Exists(resultPath))
+            {
+                throw new InvalidOperationException(
+                    $"{partition} child succeeded without immutable result artifact for '{trial.RunId}'.");
+            }
+            var result = ReadAndValidateHoldoutCaseResult(trial, resultPath);
+            executions.Add(ToHoldoutExecution(trial, resultPath, result, child.StandardOutput, child.StandardError));
+        }
+
+        var complete = executions.Count == trials.Length && failureCount == 0;
+        var summaries = BuildHoldoutCaseSummaries(executions);
+        var aggregate = new HoldoutPartitionResult(
+            Pilot: "A1-SHADOW-" + partition.ToString().ToUpperInvariant(),
+            RegistrationSha256: context.RegistrationHash,
+            PublicationPlanSha256: context.PublicationHash,
+            ExecutionPlanSha256: context.ExecutionHash,
+            AnalysisPlanSha256: context.AnalysisHash,
+            Partition: partition,
+            PlannedTrialCount: trials.Length,
+            ExecutedTrialCount: executions.Count,
+            FailureCount: failureCount,
+            Complete: complete,
+            PartitionInvalidated: partition == ShadowRetentionHoldoutPartition.HoldoutA
+                && File.Exists(Path.Combine(preparedDirectory, "invalidation", ShadowRetentionHoldoutInvalidationWriter.FileName)),
+            Cases: summaries,
+            Runs: executions);
+        WriteCreateNew(aggregatePath, JsonSerializer.Serialize(aggregate, JsonOptions) + Environment.NewLine);
+
+        Console.WriteLine(
+            $"A1-{partition.ToString().ToUpperInvariant()} {(complete ? "PASS" : "FAIL")} " +
+            $"trials={executions.Count}/{trials.Length} failures={failureCount} registration={context.RegistrationHash} output={partitionDirectory}");
+        return complete ? 0 : 1;
+    }
+
     public static int RunPilotA(string[] args, bool smoke)
     {
         if (args.Length is < 1 or > 2)
@@ -425,6 +620,123 @@ internal static class A1PublicationPilot
         }
     }
 
+    private static IReadOnlyList<string> BuildHoldoutChildArguments(
+        ShadowRetentionPublicationPlan publicationPlan,
+        ShadowRetentionHoldoutRunSpec trial,
+        string runDirectory)
+        =>
+        [
+            "--publication-case",
+            trial.TopologyKind,
+            trial.KeyCount.ToString(CultureInfo.InvariantCulture),
+            trial.BranchCountOrDepth.ToString(CultureInfo.InvariantCulture),
+            trial.ShadowFraction.ToString("R", CultureInfo.InvariantCulture),
+            trial.TombstoneFraction.ToString("R", CultureInfo.InvariantCulture),
+            publicationPlan.ValueBytes.ToString(CultureInfo.InvariantCulture),
+            trial.Seed.ToString(CultureInfo.InvariantCulture),
+            runDirectory,
+        ];
+
+    private static PublicationCaseResult ReadAndValidateHoldoutCaseResult(
+        ShadowRetentionHoldoutRunSpec trial,
+        string resultPath)
+    {
+        var result = JsonSerializer.Deserialize<PublicationCaseResult>(File.ReadAllText(resultPath), ReadOptions)
+            ?? throw new InvalidOperationException(
+                $"Could not deserialize existing holdout publication-case result for run '{trial.RunId}'.");
+        ValidateCaseIdentity(trial, result);
+        return result;
+    }
+
+    private static HoldoutTrialExecution ToHoldoutExecution(
+        ShadowRetentionHoldoutRunSpec trial,
+        string resultPath,
+        PublicationCaseResult result,
+        string standardOutput,
+        string standardError = "")
+        => new(
+            trial.RunId,
+            trial.TrialOrder,
+            trial.CaseId,
+            trial.Seed,
+            trial.ProcessRepetition,
+            0,
+            Sha256(File.ReadAllBytes(resultPath)),
+            result.MeasuredReclamationRatio,
+            result.MeasuredReleasedPayloadBytes,
+            result.VerifiedProjectionMilliseconds,
+            result.ThreadAllocatedBytes,
+            standardOutput,
+            standardError);
+
+    private static HoldoutCaseSummary[] BuildHoldoutCaseSummaries(IReadOnlyList<HoldoutTrialExecution> executions)
+        => executions
+            .Where(run => run.ExitCode == 0 && run.MeasuredReclamationRatio.HasValue)
+            .GroupBy(run => run.CaseId, StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .Select(group => new HoldoutCaseSummary(
+                group.Key,
+                group.Count(),
+                Quantiles(group.Select(item => item.MeasuredReclamationRatio!.Value)),
+                Quantiles(group.Select(item => (double)item.MeasuredReleasedPayloadBytes!.Value)),
+                Quantiles(group.Select(item => item.VerifiedProjectionMilliseconds!.Value)),
+                Quantiles(group.Select(item => (double)item.ThreadAllocatedBytes!.Value))))
+            .ToArray();
+
+    private static HoldoutMetricQuantiles Quantiles(IEnumerable<double> values)
+    {
+        var ordered = values.Order().ToArray();
+        if (ordered.Length == 0)
+        {
+            return new HoldoutMetricQuantiles(0d, 0d, 0d);
+        }
+        return new HoldoutMetricQuantiles(
+            QuantileLinear(ordered, 0.05d),
+            QuantileLinear(ordered, 0.50d),
+            QuantileLinear(ordered, 0.95d));
+    }
+
+    private static double QuantileLinear(double[] ordered, double probability)
+    {
+        var index = (ordered.Length - 1) * probability;
+        var lower = (int)Math.Floor(index);
+        var upper = (int)Math.Ceiling(index);
+        if (lower == upper)
+        {
+            return ordered[lower];
+        }
+        var fraction = index - lower;
+        return ordered[lower] + ((ordered[upper] - ordered[lower]) * fraction);
+    }
+
+    private static void WriteHoldoutAInvalidation(
+        PreparedHoldoutContext context,
+        string preparedDirectory,
+        ShadowRetentionHoldoutRunSpec trial,
+        ShadowRetentionHoldoutInvalidationCategory category,
+        string reason,
+        string evidence)
+    {
+        var evidenceDirectory = Path.Combine(preparedDirectory, "invalidation");
+        Directory.CreateDirectory(evidenceDirectory);
+        var evidencePath = Path.Combine(evidenceDirectory, "a1-shadow-holdout-a-failure-evidence.txt");
+        WriteCreateNew(evidencePath, evidence + Environment.NewLine);
+        var invalidation = new ShadowRetentionHoldoutInvalidation
+        {
+            FormatVersion = ShadowRetentionHoldoutInvalidation.CurrentFormatVersion,
+            CandidateId = context.Publication.CandidateId,
+            RegistrationSha256 = context.RegistrationHash,
+            HoldoutExecutionPlanSha256 = context.ExecutionHash,
+            InvalidatedPartition = ShadowRetentionHoldoutPartition.HoldoutA,
+            Category = category,
+            FailedRunId = trial.RunId,
+            FailureEvidenceSha256 = Sha256(File.ReadAllBytes(evidencePath)),
+            Reason = reason,
+        };
+        invalidation.ValidateAgainst(context.Registration);
+        _ = ShadowRetentionHoldoutInvalidationWriter.Write(evidenceDirectory, invalidation);
+    }
+
     private static ShadowRetentionPilotRunSpec[] BuildSmokeTrials(
         ShadowRetentionPilotExecutionPlan executionPlan,
         int pilotSeed)
@@ -589,6 +901,143 @@ internal static class A1PublicationPilot
                 $"Git source-identity command failed ({string.Join(' ', arguments)}): {result.StandardError.Trim()}");
         }
         return result;
+    }
+
+    private static void ValidateCaseIdentity(
+        ShadowRetentionHoldoutRunSpec trial,
+        PublicationCaseResult result)
+    {
+        if (!string.Equals(result.Topology, trial.TopologyKind, StringComparison.Ordinal)
+            || result.Seed != trial.Seed
+            || result.KeyCount != trial.KeyCount
+            || result.BranchCountOrDepth != trial.BranchCountOrDepth
+            || BitConverter.DoubleToInt64Bits(result.RequestedShadowFraction)
+                != BitConverter.DoubleToInt64Bits(trial.ShadowFraction)
+            || BitConverter.DoubleToInt64Bits(result.RequestedTombstoneFraction)
+                != BitConverter.DoubleToInt64Bits(trial.TombstoneFraction)
+            || !string.Equals(result.Pilot, "A1-SHADOW-PUBLICATION-CASE", StringComparison.Ordinal)
+            || !result.FlatExactBaselineVerified
+            || !result.CandidateSubsetVerified
+            || !result.ObserverEquivalenceVerified
+            || !result.ObserverMinimalityVerified
+            || result.ExpectedReleasedPayloadBytes != result.MeasuredReleasedPayloadBytes
+            || Math.Abs(result.ExpectedReclamationRatio - result.MeasuredReclamationRatio) > 1e-12
+            || !double.IsFinite(result.MeasuredReclamationRatio)
+            || !double.IsFinite(result.VerifiedProjectionMilliseconds)
+            || result.VerifiedProjectionMilliseconds < 0d
+            || result.ThreadAllocatedBytes < 0
+            || result.RealizedShadowKeyCount < 0
+            || result.RealizedShadowKeyCount > result.KeyCount
+            || result.RealizedTombstoneKeyCount < 0
+            || result.RealizedTombstoneKeyCount > result.RealizedShadowKeyCount)
+        {
+            throw new InvalidOperationException(
+                $"Holdout publication-case result identity or correctness gates do not match sealed run '{trial.RunId}'.");
+        }
+    }
+
+    private static PreparedHoldoutContext ReadAndVerifyPreparedHoldout(
+        string preparedDirectory,
+        string machineBlockId)
+    {
+        var registrationDirectory = Path.Combine(preparedDirectory, "registration");
+        var (publication, publicationHash) = ReadAndVerifyPlan(registrationDirectory);
+
+        var executionPath = Path.Combine(registrationDirectory, ShadowRetentionHoldoutExecutionPlanWriter.PlanFileName);
+        var executionHashPath = Path.Combine(registrationDirectory, ShadowRetentionHoldoutExecutionPlanWriter.PlanHashFileName);
+        var analysisPath = Path.Combine(registrationDirectory, ShadowRetentionHoldoutAnalysisPlanWriter.PlanFileName);
+        var analysisHashPath = Path.Combine(registrationDirectory, ShadowRetentionHoldoutAnalysisPlanWriter.PlanHashFileName);
+        var registrationPath = Path.Combine(registrationDirectory, ShadowRetentionHoldoutRegistrationWriter.RegistrationFileName);
+        var registrationHashPath = Path.Combine(registrationDirectory, ShadowRetentionHoldoutRegistrationWriter.RegistrationHashFileName);
+        foreach (var path in new[]
+        {
+            executionPath,
+            executionHashPath,
+            analysisPath,
+            analysisHashPath,
+            registrationPath,
+            registrationHashPath,
+        })
+        {
+            if (!File.Exists(path))
+            {
+                throw new InvalidOperationException($"Prepared holdout artifact is missing: {path}");
+            }
+        }
+
+        var execution = JsonSerializer.Deserialize<ShadowRetentionHoldoutExecutionPlan>(File.ReadAllText(executionPath), ReadOptions)
+            ?? throw new InvalidOperationException("Could not deserialize holdout execution plan.");
+        execution.ValidateAgainst(publication);
+        var executionHash = execution.ComputeCanonicalSha256();
+        if (!string.Equals(executionHash, File.ReadAllText(executionHashPath).Trim(), StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Holdout execution-plan hash sidecar mismatch.");
+        }
+
+        var analysis = JsonSerializer.Deserialize<ShadowRetentionHoldoutAnalysisPlan>(File.ReadAllText(analysisPath), ReadOptions)
+            ?? throw new InvalidOperationException("Could not deserialize holdout analysis plan.");
+        analysis.ValidateAgainst(publication, execution);
+        var analysisHash = analysis.ComputeCanonicalSha256();
+        if (!string.Equals(analysisHash, File.ReadAllText(analysisHashPath).Trim(), StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Holdout analysis-plan hash sidecar mismatch.");
+        }
+
+        var registration = JsonSerializer.Deserialize<ShadowRetentionHoldoutRegistration>(File.ReadAllText(registrationPath), ReadOptions)
+            ?? throw new InvalidOperationException("Could not deserialize holdout registration.");
+        registration.ValidateAgainst(publication, execution, analysis);
+        var registrationHash = registration.ComputeCanonicalSha256();
+        if (!string.Equals(registrationHash, File.ReadAllText(registrationHashPath).Trim(), StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Holdout registration hash sidecar mismatch.");
+        }
+
+        var currentSource = ResolveGitRepositoryIdentity(registration.ExpectedMainBaseCommit);
+        var currentBinaries = CaptureBinaryArtifacts();
+        if (!string.Equals(machineBlockId, registration.MachineBlockId, StringComparison.Ordinal)
+            || !string.Equals(currentSource.SourceCommit, registration.SourceCommit, StringComparison.Ordinal)
+            || !string.Equals(currentSource.SourceTree, registration.SourceTree, StringComparison.Ordinal)
+            || !string.Equals(RuntimeInformation.FrameworkDescription, registration.FrameworkDescription, StringComparison.Ordinal)
+            || !string.Equals(RuntimeInformation.OSDescription, registration.OsDescription, StringComparison.Ordinal)
+            || !string.Equals(RuntimeInformation.ProcessArchitecture.ToString(), registration.ProcessArchitecture, StringComparison.Ordinal)
+            || !string.Equals(RuntimeInformation.OSArchitecture.ToString(), registration.OsArchitecture, StringComparison.Ordinal)
+            || !currentBinaries.SequenceEqual(registration.BinaryArtifacts))
+        {
+            throw new InvalidOperationException(
+                "Current source, binary, runtime or machine-block identity differs from the sealed holdout registration.");
+        }
+
+        return new PreparedHoldoutContext(
+            publication,
+            publicationHash,
+            execution,
+            executionHash,
+            analysis,
+            analysisHash,
+            registration,
+            registrationHash);
+    }
+
+    private static ShadowRetentionHoldoutInvalidation ReadAndVerifyInvalidation(
+        string preparedDirectory,
+        ShadowRetentionHoldoutRegistration registration)
+    {
+        var directory = Path.Combine(preparedDirectory, "invalidation");
+        var path = Path.Combine(directory, ShadowRetentionHoldoutInvalidationWriter.FileName);
+        var hashPath = Path.Combine(directory, ShadowRetentionHoldoutInvalidationWriter.HashFileName);
+        if (!File.Exists(path) || !File.Exists(hashPath))
+        {
+            throw new InvalidOperationException(
+                "Holdout-B is sealed. A preregistered correctness/infrastructure Holdout-A invalidation artifact is required before B can execute.");
+        }
+        var invalidation = JsonSerializer.Deserialize<ShadowRetentionHoldoutInvalidation>(File.ReadAllText(path), ReadOptions)
+            ?? throw new InvalidOperationException("Could not deserialize Holdout-A invalidation artifact.");
+        invalidation.ValidateAgainst(registration);
+        if (!string.Equals(invalidation.ComputeCanonicalSha256(), File.ReadAllText(hashPath).Trim(), StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Holdout-A invalidation hash sidecar mismatch.");
+        }
+        return invalidation;
     }
 
     private static (ShadowRetentionPublicationPlan Plan, string Hash) ReadAndVerifyPlan(string directory)
@@ -921,6 +1370,16 @@ internal static class A1PublicationPilot
             : ordered[middle];
     }
 
+    private sealed record PreparedHoldoutContext(
+        ShadowRetentionPublicationPlan Publication,
+        string PublicationHash,
+        ShadowRetentionHoldoutExecutionPlan Execution,
+        string ExecutionHash,
+        ShadowRetentionHoldoutAnalysisPlan Analysis,
+        string AnalysisHash,
+        ShadowRetentionHoldoutRegistration Registration,
+        string RegistrationHash);
+
     private sealed record ChildResult(int ExitCode, string StandardOutput, string StandardError);
 
     private sealed record GitCommandResult(int ExitCode, string StandardOutput, string StandardError);
@@ -999,3 +1458,44 @@ internal sealed record PilotAResult(
     bool Complete,
     IReadOnlyList<PilotACaseSummary> Cases,
     IReadOnlyList<PilotATrialExecution> Runs);
+
+internal sealed record HoldoutMetricQuantiles(double P05, double P50, double P95);
+
+internal sealed record HoldoutCaseSummary(
+    string CaseId,
+    int RunCount,
+    HoldoutMetricQuantiles ReclamationRatio,
+    HoldoutMetricQuantiles ReleasedPayloadBytes,
+    HoldoutMetricQuantiles VerifiedProjectionMilliseconds,
+    HoldoutMetricQuantiles ThreadAllocatedBytes);
+
+internal sealed record HoldoutTrialExecution(
+    string RunId,
+    int TrialOrder,
+    string CaseId,
+    int Seed,
+    int ProcessRepetition,
+    int ExitCode,
+    string? ResultSha256,
+    double? MeasuredReclamationRatio,
+    long? MeasuredReleasedPayloadBytes,
+    double? VerifiedProjectionMilliseconds,
+    long? ThreadAllocatedBytes,
+    string StandardOutput,
+    string StandardError);
+
+internal sealed record HoldoutPartitionResult(
+    string Pilot,
+    string RegistrationSha256,
+    string PublicationPlanSha256,
+    string ExecutionPlanSha256,
+    string AnalysisPlanSha256,
+    ShadowRetentionHoldoutPartition Partition,
+    int PlannedTrialCount,
+    int ExecutedTrialCount,
+    int FailureCount,
+    bool Complete,
+    bool PartitionInvalidated,
+    IReadOnlyList<HoldoutCaseSummary> Cases,
+    IReadOnlyList<HoldoutTrialExecution> Runs);
+
