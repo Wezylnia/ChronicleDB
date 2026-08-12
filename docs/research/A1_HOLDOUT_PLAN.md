@@ -104,4 +104,3 @@ The source state containing the complete holdout planning/registration/executor 
 - total xUnit: **482 / 482 PASS**.
 
 This validates the local A1 source state only. It does not replace the required regression after composing the A1 chain onto the actual GitHub `main` checkout.
-
