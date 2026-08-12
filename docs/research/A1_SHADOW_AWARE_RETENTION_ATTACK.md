@@ -105,6 +105,21 @@ SAR               = baseline / candidate
 
 Two useful bounds follow. With full overwrite shadow (`s=1,t=0`), `SAR=(1+2B)/(1+B)` and therefore approaches but never exceeds `2x`. With full tombstone shadow (`s=1,t=1`), `SAR=B+1`. The measured 1.89x overwrite and 9.0x tombstone results at eight branches match these bounds exactly. This model is an experiment oracle under controlled assumptions, not a production sizing formula.
 
+## Heterogeneous proxy-workload attack
+
+Two deliberately labeled **proxy** families were added to avoid evaluating only uniform fanout. They are pre-publication falsification workloads, not claims about measured production branch distributions. Each branch has its own shadow fraction and tombstone fraction, the closed-form heterogeneous effect model predicts the expected retained payload, and the measured projection must also pass FlatExact, observer-equivalence and witness-minimality gates.
+
+At 10,000 keys and 8 staggered branch bases:
+
+| Proxy | Branch-local mutation profile | Measured / predicted logical SAR | Interpretation |
+| --- | --- | ---: | --- |
+| development/test-like | 3% -> 25% shadow across branches, ~5% tombstones | 1.109x | borderline; low-mutation branches are not a strong A1 regime |
+| agent/analytical-like | 20% -> 70% shadow, 20% -> 35% tombstones | 1.411x | material retained-set reduction |
+
+The development/test proxy is intentionally a near-negative result. It confirms that A1 must not be sold as a universal branch-storage optimization. A workload must cross the benefit frontier (through enough shadowing, deletion, or long-lived branch-base multiplicity) before the additional projection machinery is worthwhile.
+
+Existing paired physical negative controls support the same interpretation. With 1,024 keys, 8 branches and only 10% overwrite shadow, the candidate released ~3.19 MiB logical payload and ~3.25 MiB allocated storage at SAR ~1.0885x while remaining observer-equivalent after restart; candidate maintenance was not faster in that case. At 25% and 50% overwrite shadow, physical allocated reduction rose to ~8.13 MiB and ~16.28 MiB with SAR ~1.22x and ~1.44x respectively.
+
 ## Physical realization
 
 Paired physical experiments start from the same database image and apply current exact GC to one copy and descendant-first shadow-aware GC to the other, followed by compaction and restart observer comparison.
@@ -141,7 +156,7 @@ One full crash-harness iteration returned RC=0; all five new process-death scena
 
 ## Projection-cost attack
 
-A disk-independent scale mode measures the complete verified research projection (index construction + core projection + observer equivalence/minimality verification).
+A disk-independent scale mode measures the complete verified research projection (index construction + core projection + observer equivalence/minimality verification). Current scale runs also execute the independent FlatExact differential baseline gate; therefore total verified-pipeline time is deliberately stricter than candidate-core time and should not be presented as foreground algorithm latency.
 
 With 8 branches, 100% overwrite:
 
@@ -210,7 +225,7 @@ It should be demoted or abandoned if any of the following occurs:
 
 1. Rebase/apply the A1 research commits onto the current GitHub `main` and rerun the complete gate there; the current local checkout was older, although the production retention/GC blobs used by the hypothesis were verified byte-identical to the then-current main.
 2. Perform one final targeted novelty-kill search centered on Tardis/branch visibility + precise MVCC GC composition and any 2025–2026 shadow-aware branch reclamation work.
-3. Define two realistic workload families (not only synthetic fanout): branch-mutating analytical/agent workflow and long-lived development/test branches with skewed key updates.
-4. Freeze the strong baseline and candidate configuration.
+3. Replace the current explicit proxy profiles with publication workload families whose parameter distributions are justified by external systems/workload evidence; do not relabel the proxy results as real-world evidence.
+4. Freeze the strong baseline, benefit-frontier thresholds and candidate configuration.
 5. Preregister and run independent-process Pilot-A, then sealed Holdout-A. Do not tune after opening holdout data.
 
