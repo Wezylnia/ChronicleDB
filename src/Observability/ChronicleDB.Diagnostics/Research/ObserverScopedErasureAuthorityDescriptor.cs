@@ -230,6 +230,41 @@ public static class ObserverScopedErasureAuthorityDescriptorCompiler
             maximum,
             Array.AsReadOnly(evidence.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray()));
 
+    public static void Validate(ObserverScopedErasureAuthorityDescriptor descriptor)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        if (!descriptor.FormatVersion.Equals(FormatVersion, StringComparison.Ordinal)
+            || string.IsNullOrWhiteSpace(descriptor.KeyId)
+            || descriptor.Revocations.Count == 0
+            || descriptor.VisibilityRegions.Count == 0
+            || descriptor.CanonicalSha256.Length != 64)
+        {
+            throw new InvalidDataException("OSEA authority descriptor has invalid required metadata.");
+        }
+
+        if (descriptor.Revocations.Select(item => item.ObserverId).Distinct(StringComparer.Ordinal).Count() != descriptor.Revocations.Count
+            || descriptor.PreservedTargetObservations.Select(item => item.ObserverId).Distinct(StringComparer.Ordinal).Count() != descriptor.PreservedTargetObservations.Count
+            || descriptor.Revocations.Any(revocation => descriptor.PreservedTargetObservations.Any(preserved => preserved.ObserverId == revocation.ObserverId))
+            || descriptor.VisibilityRegions.Any(region => region.HistoryId == Guid.Empty || region.MinimumBoundary > region.MaximumBoundary))
+        {
+            throw new InvalidDataException("OSEA authority descriptor contains an invalid or overlapping semantic scope.");
+        }
+
+        var expectedHash = ComputeHash(
+            descriptor.KeyId,
+            descriptor.Revocations,
+            descriptor.VisibilityRegions,
+            descriptor.QuiescenceObserverIds,
+            descriptor.CurrentDeleteHistoryIds,
+            descriptor.PreservedTargetObservations,
+            descriptor.RewriteRepresentationIds,
+            descriptor.ReclaimRepresentationIds);
+        if (!expectedHash.Equals(descriptor.CanonicalSha256, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("OSEA authority descriptor canonical hash does not match its contents.");
+        }
+    }
+
     private static ObserverScopedErasureRevocation ToRevocation(ObserverExactErasureWitness witness)
     {
         if (!witness.ReconstructsValue
