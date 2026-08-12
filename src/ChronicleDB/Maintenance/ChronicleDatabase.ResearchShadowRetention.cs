@@ -114,7 +114,8 @@ public sealed partial class ChronicleDatabase
                     var projectionStarted = Stopwatch.GetTimestamp();
                     var analysis = new ShadowAwareRetentionProjection(snapshot).Analyze();
                     var projectionAnalysisMilliseconds = Stopwatch.GetElapsedTime(projectionStarted).TotalMilliseconds;
-                    if (!analysis.CandidateIsSubsetOfBaseline
+                    if (!analysis.FlatExactBaselineVerified
+                        || !analysis.CandidateIsSubsetOfBaseline
                         || !analysis.ObserverEquivalenceVerified
                         || !analysis.ObserverMinimalityVerified)
                     {
