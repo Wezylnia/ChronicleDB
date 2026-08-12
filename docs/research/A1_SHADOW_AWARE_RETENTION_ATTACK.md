@@ -256,11 +256,11 @@ The current A1 research HEAD was revalidated after the independent flat-exact ba
 
 - solution build: **0 warnings / 0 errors**;
 - Architecture: **8 / 8 PASS**;
-- Unit: **187 / 187 PASS**;
+- Unit: **192 / 192 PASS**;
 - Persistence: **180 / 180 PASS**;
 - Correctness: **25 / 25 PASS**;
 - Recovery: **55 / 55 PASS**;
-- total xUnit: **455 / 455 PASS**;
+- total xUnit: **460 / 460 PASS**;
 - final logical pilot: 50 direct cases + 32 fanout + 10 nested + 12 mixed = **104 workloads PASS**;
 - candidate-subset failures: 0;
 - expected-release mismatches: 0;
