@@ -28,6 +28,7 @@ internal static class ResearchPilotRunner
             "P1B" => Task.FromResult(RunRetentionBaselinePilot(args[1..])),
             "P1S" => Task.FromResult(RunRetentionHotSetSweepPilot(args[1..])),
             "P1P" => Task.FromResult(RunRetentionPairedPhysicalPilot(args[1..])),
+            "P1T" => Task.FromResult(RunRetentionTriangulationPilot(args[1..])),
             "P2" => Task.FromResult(RunCrashPorPilot(args[1..])),
             "P2R" => Task.FromResult(RunRealTraceCrashPorPilot(args[1..])),
             "P2L" => Task.FromResult(RunRecoveryTopologyCrashPorPilot(args[1..])),
@@ -1490,6 +1491,175 @@ internal static class ResearchPilotRunner
         }
     }
 
+    private static int RunRetentionTriangulationPilot(string[] args)
+    {
+        if (args.Length < 6
+            || !int.TryParse(args[0], out var seed)
+            || !int.TryParse(args[1], out var baseKeyCount)
+            || !int.TryParse(args[2], out var valueBytes)
+            || !int.TryParse(args[3], out var churnRounds)
+            || !int.TryParse(args[4], out var hotKeyCount)
+            || !int.TryParse(args[5], out var privateBytes)
+            || baseKeyCount <= 0
+            || valueBytes <= 0
+            || churnRounds <= 0
+            || hotKeyCount <= 0
+            || hotKeyCount > baseKeyCount
+            || privateBytes <= 0)
+        {
+            Console.Error.WriteLine(
+                "Usage: pilot P1T <seed> <base-key-count> <value-bytes> <churn-rounds> <hot-key-count> <private-bytes> [output-directory]");
+            return 2;
+        }
+
+        var outputDirectory = args.Length >= 7
+            ? Path.GetFullPath(args[6])
+            : Path.Combine(
+                Environment.CurrentDirectory,
+                "artifacts",
+                "research-pilots",
+                $"p1t-{seed}-{baseKeyCount}-{hotKeyCount}-{churnRounds}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outputDirectory);
+        var sourceDirectory = Path.Combine(outputDirectory, "source");
+        var retainedDirectory = Path.Combine(outputDirectory, "retained");
+        var droppedDirectory = Path.Combine(outputDirectory, "dropped");
+
+        try
+        {
+            var random = new Random(seed);
+            long exactMarginalPayloadBytes;
+            long coarseRootPayloadBytes;
+            long branchPrivateLogicalBytes;
+            Guid branchId;
+            using (var database = ChronicleDatabase.Open(sourceDirectory))
+            {
+                for (var keyId = 0; keyId < baseKeyCount; keyId++)
+                {
+                    database.Put(Key(keyId), Payload(valueBytes, random, salt: keyId));
+                }
+
+                using var branch = database.CreateBranch("p1-triangulation-old-branch");
+                branchId = branch.BranchId;
+                branch.Put(Key(baseKeyCount + 1), Payload(privateBytes, random, salt: 0x771));
+
+                var hotKeys = Enumerable.Range(0, baseKeyCount)
+                    .OrderBy(_ => random.Next())
+                    .Take(hotKeyCount)
+                    .Order()
+                    .ToArray();
+                for (var round = 1; round <= churnRounds; round++)
+                {
+                    foreach (var keyId in hotKeys)
+                    {
+                        database.Put(
+                            Key(keyId),
+                            Payload(valueBytes, random, salt: checked(keyId + (round * 100_000))));
+                    }
+                }
+
+                var rawSnapshot = database.CaptureResearchRetentionSnapshot();
+                var evaluationSnapshot = rawSnapshot with
+                {
+                    Histories = rawSnapshot.Histories
+                        .Select(history => history with { RetentionFloor = history.CurrentSequence })
+                        .ToArray(),
+                };
+                var branchRoot = database.GetHistoryTopologyDiagnostics().RetentionRoots.Single(root =>
+                    root.Kind.Equals("BranchBase", StringComparison.Ordinal)
+                    && root.OwnerHistoryId == branch.HistoryId);
+                exactMarginalPayloadBytes = new RetentionInspector(evaluationSnapshot)
+                    .WhatIfDrop(branchRoot.RootId)
+                    .MarginalPayloadBytes;
+                coarseRootPayloadBytes = CoarseOldestRootRetentionAnalyzer.Analyze(evaluationSnapshot).RootInducedPayloadBytes;
+                branchPrivateLogicalBytes = rawSnapshot.GetHistory(branch.HistoryId)
+                    .Versions.Sum(version => version.LogicalPayloadBytes);
+
+                // Normalize the source image with the production exact collector before
+                // cloning. Both counterfactuals start from identical durable bytes.
+                _ = database.RunGarbageCollection(new GarbageCollectionOptions { RetainRecentCommits = 0 });
+            }
+
+            CopyDirectory(sourceDirectory, retainedDirectory);
+            CopyDirectory(sourceDirectory, droppedDirectory);
+
+            using (var retained = ChronicleDatabase.Open(retainedDirectory))
+            {
+                _ = retained.RunGarbageCollection(new GarbageCollectionOptions { RetainRecentCommits = 0 });
+                _ = retained.RunCompaction();
+            }
+
+            using (var dropped = ChronicleDatabase.Open(droppedDirectory))
+            {
+                dropped.DeleteBranch(branchId);
+                _ = dropped.RunGarbageCollection(new GarbageCollectionOptions { RetainRecentCommits = 0 });
+                _ = dropped.RunCompaction();
+            }
+
+            var retainedPhysical = PhysicalStorageProbe.Capture(retainedDirectory);
+            var droppedPhysical = PhysicalStorageProbe.Capture(droppedDirectory);
+            var branchToken = branchId.ToString("N");
+            var retainedBranchLocalAllocated = retainedPhysical.Files
+                .Where(file => file.RelativePath.Contains(branchToken, StringComparison.OrdinalIgnoreCase))
+                .Sum(file => file.AllocatedBytes);
+            var pairedAllocatedDifference = Math.Max(0, retainedPhysical.AllocatedBytes - droppedPhysical.AllocatedBytes);
+            var pairedSharedAllocatedDifference = Math.Max(0, pairedAllocatedDifference - retainedBranchLocalAllocated);
+            var expectedExact = checked((long)hotKeyCount * valueBytes);
+            var expectedCoarse = checked(expectedExact * churnRounds);
+            var coarseAmplification = exactMarginalPayloadBytes <= 0
+                ? 0d
+                : (double)coarseRootPayloadBytes / exactMarginalPayloadBytes;
+            var totalPhysicalToExact = exactMarginalPayloadBytes <= 0
+                ? 0d
+                : (double)pairedAllocatedDifference / exactMarginalPayloadBytes;
+            var sharedPhysicalToExact = exactMarginalPayloadBytes <= 0
+                ? 0d
+                : (double)pairedSharedAllocatedDifference / exactMarginalPayloadBytes;
+            var sharedPhysicalMinusExact = pairedSharedAllocatedDifference - exactMarginalPayloadBytes;
+            var result = new RetentionTriangulationPilotResult(
+                Pilot: "P1T",
+                Seed: seed,
+                BaseKeyCount: baseKeyCount,
+                ValueBytes: valueBytes,
+                ChurnRounds: churnRounds,
+                HotKeyCount: hotKeyCount,
+                HotKeyFraction: (double)hotKeyCount / baseKeyCount,
+                PrivateBytes: privateBytes,
+                BranchPrivateLogicalBytes: branchPrivateLogicalBytes,
+                ExactMarginalPayloadBytes: exactMarginalPayloadBytes,
+                CoarseRootInducedPayloadBytes: coarseRootPayloadBytes,
+                CoarseToExactAmplification: coarseAmplification,
+                ExpectedExactPayloadBytes: expectedExact,
+                ExpectedCoarsePayloadBytes: expectedCoarse,
+                PairedAllocatedByteDifference: pairedAllocatedDifference,
+                RetainedBranchLocalAllocatedBytes: retainedBranchLocalAllocated,
+                PairedSharedAllocatedByteDifference: pairedSharedAllocatedDifference,
+                TotalPhysicalToExactMarginalRatio: totalPhysicalToExact,
+                SharedPhysicalToExactMarginalRatio: sharedPhysicalToExact,
+                SharedPhysicalMinusExactBytes: sharedPhysicalMinusExact,
+                AllocationMeasurementExact: retainedPhysical.AllocationIsExact && droppedPhysical.AllocationIsExact);
+            File.WriteAllText(
+                Path.Combine(outputDirectory, "p1t-result.json"),
+                JsonSerializer.Serialize(result, JsonOptions));
+
+            var pass = exactMarginalPayloadBytes == expectedExact
+                && coarseRootPayloadBytes == expectedCoarse
+                && pairedSharedAllocatedDifference > 0
+                && result.AllocationMeasurementExact;
+            Console.WriteLine(
+                $"P1T {(pass ? "PASS" : "FAIL")} hot={hotKeyCount}/{baseKeyCount} rounds={churnRounds} " +
+                $"exact={exactMarginalPayloadBytes} coarse={coarseRootPayloadBytes} amp={coarseAmplification:F2} " +
+                $"paired-total={pairedAllocatedDifference} branch-local={retainedBranchLocalAllocated} " +
+                $"paired-shared={pairedSharedAllocatedDifference} shared/exact={sharedPhysicalToExact:F2} " +
+                $"shared-minus-exact={sharedPhysicalMinusExact} output={outputDirectory}");
+            return pass ? 0 : 1;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"P1T FAIL: {exception}");
+            return 1;
+        }
+    }
+
     private static int RunRetentionBaselinePilot(string[] args)
     {
         if (args.Length < 4
@@ -1830,6 +2000,7 @@ internal static class ResearchPilotRunner
         Console.Error.WriteLine("  pilot P1B <seed> <base-key-count> <value-bytes> <churn-rounds> [output-directory]");
         Console.Error.WriteLine("  pilot P1S <seed> <base-key-count> <value-bytes> <churn-rounds> <hot-key-count> [output-directory]");
         Console.Error.WriteLine("  pilot P1P <seed> <base-key-count> <value-bytes> <private-bytes> [output-directory]");
+        Console.Error.WriteLine("  pilot P1T <seed> <base-key-count> <value-bytes> <churn-rounds> <hot-key-count> <private-bytes> [output-directory]");
         Console.Error.WriteLine("  pilot P2 <history-count:2..4> [output-directory]");
         Console.Error.WriteLine("  pilot P2R <history-count:2..3> [siblings|chain] [output-directory]");
         Console.Error.WriteLine("  pilot P2L <history-count:2..4> [siblings|chain] [output-directory]");
@@ -1903,6 +2074,29 @@ internal static class ResearchPilotRunner
         long PairedAllocatedByteDifference,
         long PairedLogicalLengthDifference,
         double PhysicalToLogicalMarginalRatio,
+        bool AllocationMeasurementExact);
+
+    private sealed record RetentionTriangulationPilotResult(
+        string Pilot,
+        int Seed,
+        int BaseKeyCount,
+        int ValueBytes,
+        int ChurnRounds,
+        int HotKeyCount,
+        double HotKeyFraction,
+        int PrivateBytes,
+        long BranchPrivateLogicalBytes,
+        long ExactMarginalPayloadBytes,
+        long CoarseRootInducedPayloadBytes,
+        double CoarseToExactAmplification,
+        long ExpectedExactPayloadBytes,
+        long ExpectedCoarsePayloadBytes,
+        long PairedAllocatedByteDifference,
+        long RetainedBranchLocalAllocatedBytes,
+        long PairedSharedAllocatedByteDifference,
+        double TotalPhysicalToExactMarginalRatio,
+        double SharedPhysicalToExactMarginalRatio,
+        long SharedPhysicalMinusExactBytes,
         bool AllocationMeasurementExact);
 
     private sealed record RetentionBaselinePilotResult(
