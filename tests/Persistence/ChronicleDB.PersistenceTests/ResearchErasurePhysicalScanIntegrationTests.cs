@@ -73,4 +73,48 @@ public sealed class ResearchErasurePhysicalScanIntegrationTests
                     or ErasureRepresentationKind.PhysicalOverflowChunk),
             representation => Assert.Equal(branch.HistoryId, representation.OwnerHistoryId));
     }
+    [Fact]
+    public void PhysicalClosureIncludesDeletedBranchDirectoryUntilGcReclaimsIt()
+    {
+        using var directory = new StorageTestDirectory();
+        var key = new byte[] { 0x71, 0x72, 0x73 };
+        Guid branchId;
+        Guid historyId;
+
+        using var database = ChronicleDatabase.Open(directory.Path);
+        var branch = database.CreateBranch("erasure-deleted-branch");
+        branchId = branch.BranchId;
+        historyId = branch.HistoryId;
+        branch.Put(key, Enumerable.Repeat((byte)0xE5, 24 * 1024).ToArray());
+        branch.Dispose();
+
+        database.DeleteBranch(branchId);
+
+        var beforeGc = database.CaptureResearchErasureClosureInput(key);
+        var beforeAnalysis = ErasureClosureAnalyzer.Analyze(beforeGc, ErasureScope.Global);
+        Assert.True(beforeAnalysis.ClosureIsComplete);
+        Assert.Contains(beforeGc.Topology, node => node.HistoryId == historyId);
+        Assert.Contains(beforeGc.Representations, representation =>
+            representation.OwnerHistoryId == historyId
+            && representation.Kind == ErasureRepresentationKind.PhysicalDataRecord
+            && representation.Content == ErasureContentState.Value);
+        Assert.Contains(beforeGc.Representations, representation =>
+            representation.OwnerHistoryId == historyId
+            && representation.Kind == ErasureRepresentationKind.PhysicalOverflowChunk);
+
+        _ = database.RunGarbageCollection(new GarbageCollectionOptions
+        {
+            RetainRecentCommits = 0,
+            IncludeBranches = true,
+        });
+
+        var afterGc = database.CaptureResearchErasureClosureInput(key);
+        var afterAnalysis = ErasureClosureAnalyzer.Analyze(afterGc, ErasureScope.Global);
+        Assert.True(afterAnalysis.ClosureIsComplete);
+        Assert.DoesNotContain(afterGc.Representations, representation =>
+            representation.OwnerHistoryId == historyId
+            && representation.Kind is ErasureRepresentationKind.PhysicalDataRecord
+                or ErasureRepresentationKind.PhysicalOverflowChunk);
+    }
+
 }

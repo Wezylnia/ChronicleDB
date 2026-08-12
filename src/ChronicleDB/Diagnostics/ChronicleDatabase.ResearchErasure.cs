@@ -49,6 +49,23 @@ public sealed partial class ChronicleDatabase
                         runtime.Definition.HistoryId.Value,
                         runtime.Definition.ParentHistoryId.Value)));
 
+                // Deleted branches are no longer observer contracts, but their private
+                // directory may remain as physical cleanup debt until a later GC pass.
+                // Keep their ancestry in the closure graph so GLOBAL/SUBTREE scans do not
+                // incorrectly acknowledge erasure while those bytes are still engine-owned.
+                var deletedBranches = _branchStore.ListDeleted();
+                foreach (var deleted in deletedBranches
+                             .OrderBy(record => record.Depth)
+                             .ThenBy(record => record.HistoryId.Value))
+                {
+                    if (topology.All(node => node.HistoryId != deleted.HistoryId.Value))
+                    {
+                        topology.Add(new ErasureHistoryNode(
+                            deleted.HistoryId.Value,
+                            deleted.ParentHistoryId.Value));
+                    }
+                }
+
                 var origin = originHistoryId ?? _mainHistoryId.Value;
                 if (!topology.Any(node => node.HistoryId == origin))
                 {
@@ -170,6 +187,40 @@ public sealed partial class ChronicleDatabase
                         label);
                 }
 
+                var branchStorageOptions = BranchStorageLayout.CreateLocalStorageOptions(_storageOptions);
+                foreach (var deleted in deletedBranches.OrderBy(record => record.HistoryId.Value))
+                {
+                    var directory = BranchStorageLayout.GetDirectory(_databaseDirectory, deleted.BranchId);
+                    if (!Directory.Exists(directory))
+                    {
+                        continue;
+                    }
+
+                    var label = $"deleted-branch-{deleted.BranchId.Value:N}";
+                    var currentPath = Path.Combine(directory, PersistentKeyValueStore.DataFileName);
+                    if (File.Exists(currentPath))
+                    {
+                        physicalScanComplete &= AddPhysicalDataRepresentations(
+                            representations,
+                            unscanned,
+                            PhysicalDataFileScanner.ScanFile(currentPath, branchStorageOptions),
+                            deleted.HistoryId.Value,
+                            deleted.BranchId,
+                            keyBytes,
+                            label + "/current");
+                    }
+
+                    physicalScanComplete &= ScanAdditionalDataGenerations(
+                        representations,
+                        unscanned,
+                        directory,
+                        deleted.HistoryId.Value,
+                        deleted.BranchId,
+                        keyBytes,
+                        label,
+                        path => PhysicalDataFileScanner.ScanFile(path, branchStorageOptions));
+                }
+
                 return new ErasureClosureInput(
                     keyId,
                     origin,
@@ -194,6 +245,25 @@ public sealed partial class ChronicleDatabase
         BranchId? branchId,
         byte[] key,
         string sourcePrefix)
+        => ScanAdditionalDataGenerations(
+            target,
+            unscanned,
+            historyDirectory,
+            historyId,
+            branchId,
+            key,
+            sourcePrefix,
+            store.CapturePhysicalDataRecords);
+
+    private static bool ScanAdditionalDataGenerations(
+        List<ErasureRepresentation> target,
+        List<string> unscanned,
+        string historyDirectory,
+        Guid historyId,
+        BranchId? branchId,
+        byte[] key,
+        string sourcePrefix,
+        Func<string, PhysicalDataFileScanResult> scanFile)
     {
         var complete = true;
         var previous = Path.Combine(historyDirectory, PersistentKeyValueStore.DataFileName + ".previous");
@@ -202,7 +272,7 @@ public sealed partial class ChronicleDatabase
             complete &= AddPhysicalDataRepresentations(
                 target,
                 unscanned,
-                store.CapturePhysicalDataRecords(previous),
+                scanFile(previous),
                 historyId,
                 branchId,
                 key,
@@ -222,7 +292,7 @@ public sealed partial class ChronicleDatabase
             complete &= AddPhysicalDataRepresentations(
                 target,
                 unscanned,
-                store.CapturePhysicalDataRecords(dataPath),
+                scanFile(dataPath),
                 historyId,
                 branchId,
                 key,

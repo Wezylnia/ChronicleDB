@@ -12,6 +12,20 @@ namespace ChronicleDB.Storage.Files;
 /// </summary>
 internal static class PhysicalDataFileScanner
 {
+    internal static PhysicalDataFileScanResult ScanFile(string path, StorageOptions options)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(options);
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            bufferSize: 64 * 1024,
+            options: FileOptions.SequentialScan);
+        return Scan(stream, path, options);
+    }
+
     internal static PhysicalDataFileScanResult Scan(Stream stream, string sourceName, StorageOptions options)
     {
         ArgumentNullException.ThrowIfNull(stream);
