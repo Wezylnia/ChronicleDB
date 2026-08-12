@@ -247,6 +247,30 @@ public sealed class ShadowAwareRetentionProjectionTests
         }
     }
 
+    [Fact]
+    public void IndependentFlatExactBaselineMatchesRetentionInspectorAcrossRandomForests()
+    {
+        const int scenarioCount = 1_000;
+        for (var seed = 0; seed < scenarioCount; seed++)
+        {
+            var snapshot = RandomSnapshot(seed + 10_000);
+            var independent = new FlatExactRetentionProjectionBaseline(snapshot).Analyze();
+            var inspector = new RetentionInspector(snapshot).Context;
+            var inspectorIds = inspector.GloballyRequiredVersions
+                .Concat(inspector.Roots.SelectMany(root => root.RequiredVersions))
+                .Select(version => version.VersionId)
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+
+            Assert.Equal(inspectorIds, independent.RequiredVersionIds);
+
+            var candidate = new ShadowAwareRetentionProjection(snapshot).Analyze();
+            Assert.True(candidate.FlatExactBaselineVerified);
+            Assert.Empty(candidate.FlatExactBaselineMismatchVersionIds);
+        }
+    }
+
     private static ResearchRetentionSnapshot RandomSnapshot(int seed)
     {
         var random = new Random(seed);

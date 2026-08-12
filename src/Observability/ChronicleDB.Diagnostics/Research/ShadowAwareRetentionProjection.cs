@@ -130,9 +130,18 @@ public sealed class ShadowAwareRetentionProjection
             }
         }
 
-        var baseline = CollectBaselineVersions(new RetentionInspector(_snapshot).Context);
+        var inspectorBaseline = CollectBaselineVersions(new RetentionInspector(_snapshot).Context);
+        var flatBaseline = new FlatExactRetentionProjectionBaseline(_snapshot).Analyze();
+        var inspectorBaselineIds = inspectorBaseline.Keys.ToHashSet(StringComparer.Ordinal);
+        var flatBaselineIds = flatBaseline.RequiredVersionIds.ToHashSet(StringComparer.Ordinal);
+        var flatBaselineMismatches = inspectorBaselineIds
+            .Except(flatBaselineIds, StringComparer.Ordinal)
+            .Concat(flatBaselineIds.Except(inspectorBaselineIds, StringComparer.Ordinal))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        var baseline = inspectorBaseline;
         var candidateIds = required.Keys.ToHashSet(StringComparer.Ordinal);
-        var baselineIds = baseline.Keys.ToHashSet(StringComparer.Ordinal);
+        var baselineIds = inspectorBaselineIds;
         var candidateIsSubset = candidateIds.IsSubsetOf(baselineIds);
         var releasedIds = baselineIds.Except(candidateIds, StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
         var extraIds = candidateIds.Except(baselineIds, StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
@@ -159,6 +168,8 @@ public sealed class ShadowAwareRetentionProjection
                 ? (baselinePayload == 0 ? 1d : double.PositiveInfinity)
                 : (double)baselinePayload / candidatePayload,
             CandidateIsSubsetOfBaseline: candidateIsSubset,
+            FlatExactBaselineVerified: flatBaselineMismatches.Length == 0,
+            FlatExactBaselineMismatchVersionIds: Array.AsReadOnly(flatBaselineMismatches),
             ReleasedVersionIds: Array.AsReadOnly(releasedIds),
             ExtraVersionIds: Array.AsReadOnly(extraIds),
             RequiredVersionIds: Array.AsReadOnly(required.Keys.Order(StringComparer.Ordinal).ToArray()),
@@ -488,6 +499,8 @@ public sealed record ShadowAwareRetentionProjectionResult(
     long ShadowReleasedSerializedBytes,
     double ShadowAwareReclamationRatio,
     bool CandidateIsSubsetOfBaseline,
+    bool FlatExactBaselineVerified,
+    IReadOnlyList<string> FlatExactBaselineMismatchVersionIds,
     IReadOnlyList<string> ReleasedVersionIds,
     IReadOnlyList<string> ExtraVersionIds,
     IReadOnlyList<string> RequiredVersionIds,
