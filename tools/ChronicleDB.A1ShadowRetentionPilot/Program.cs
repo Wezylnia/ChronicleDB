@@ -392,13 +392,14 @@ static void ValidateProjectionScaleResult(
     var shadowKeyCount = keyCount * shadowPercent / 100;
     var expectedRelease = checked((long)branchCount * shadowKeyCount * 4096L);
     if (!result.CandidateIsSubsetOfBaseline
+        || !result.FlatExactBaselineVerified
         || !result.ObserverEquivalenceVerified
         || !result.ObserverMinimalityVerified
         || result.ShadowReleasedPayloadBytes != expectedRelease)
     {
         throw new InvalidOperationException(
             $"Projection scale invariant failed: release={result.ShadowReleasedPayloadBytes}, expected={expectedRelease}, " +
-            $"subset={result.CandidateIsSubsetOfBaseline}, equivalence={result.ObserverEquivalenceVerified}, " +
+            $"subset={result.CandidateIsSubsetOfBaseline}, flatExact={result.FlatExactBaselineVerified}, equivalence={result.ObserverEquivalenceVerified}, " +
             $"minimal={result.ObserverMinimalityVerified}.");
     }
 }
