@@ -285,4 +285,12 @@ The A1 tooling now exposes an immutable publication-plan artifact before any pub
 
 The preregistered family structure keeps three distinct regimes: a depth/refinement sensitivity family capped at ChronicleDB's legal depth 16, a wide/staggered mutation sensitivity family, and an explicit 0.1–10% low-shadow negative-control family. Shadow/tombstone fractions remain sensitivity axes rather than claimed production distributions. Pilot, Holdout-A and Holdout-B seed partitions are disjoint, and interpretation rules forbid retuning after opening Holdout-A or opening Holdout-B merely because A is weak.
 
-A deterministic CLI smoke sealed the default plan twice with the identical SHA-256 `5906da5feaed5ed85c3926ee38232a6aeb708a8aaf8d02f6e942bcb6a3e24302`. This demonstrates the preregistration mechanism; the smoke artifact itself is not publication evidence and does not mean Holdout-A has been opened.
+A deterministic CLI seal of the v3 plan produced SHA-256 `5906da5feaed5ed85c3926ee38232a6aeb708a8aaf8d02f6e942bcb6a3e24302`. The plan now freezes 9 repeated Pilot-A cases, 7 Holdout cases and 5 paired-physical cases in addition to the source-anchored family grids.
+
+`--pilot-a-smoke <sealed-plan-directory>` executes exactly three representative independent child processes (deep, low-shadow negative control, wide+tombstone) and is explicitly marked infrastructure-only. `--run-pilot-a <sealed-plan-directory>` executes the full canonical 293-run Pilot-A: 158 one-shot family-grid sensitivity cases plus 135 repeated-sentinel runs (9 selected cases × 5 Pilot seeds × 3 process repetitions). It writes the deterministic trial order before the first child starts and hashes each child result. Neither command opens Holdout-A or Holdout-B.
+
+### Executable v3 Pilot-A gate
+
+The v3 plan is executable without translating the preregistration by hand. Every canonical Pilot-A run is executed in a fresh child process through `--publication-case`; the parent verifies the sealed plan SHA-256, writes the complete deterministic trial order before reading any result, and records per-run result hashes. The controlled deep family reuses one deterministic shadow-key set across the chain so depth is the only changing topology variable and the nested closed-form effect model remains exact. Wide cases use seed-dependent deterministic key selection.
+
+The first infrastructure smoke on the sealed v3 plan passed 3/3 representative child processes: depth-8/25% shadow measured 1.6666667x SAR, the 8-branch/0.1% negative control measured 1.0008681x, and the 8-branch/50% full-tombstone case measured 1.8x. These are smoke values, not publication Pilot-A evidence.
