@@ -1,0 +1,118 @@
+using ChronicleDB.Diagnostics.Research;
+
+namespace ChronicleDB.UnitTests.Research;
+
+public sealed class ShadowRetentionHoldoutPlanTests
+{
+    private static readonly double[] ExpectedQuantiles = [0.05d, 0.50d, 0.95d];
+    private static readonly string[] ExpectedNegativeControls = ["holdout-neg-b08-s001"];
+
+    [Fact]
+    public void DefaultPlanSealsBothHoldoutPartitionsBeforeExecution()
+    {
+        var publication = ShadowRetentionPublicationPlan.CreateDefault();
+        var first = ShadowRetentionHoldoutExecutionPlan.Create(publication);
+        var second = ShadowRetentionHoldoutExecutionPlan.Create(publication);
+
+        Assert.Equal(210, first.HoldoutARunCount);
+        Assert.Equal(210, first.HoldoutBRunCount);
+        Assert.Equal(420, first.Runs.Count);
+        Assert.Equal(first.SerializeCanonical(), second.SerializeCanonical());
+        Assert.Equal(first.ComputeCanonicalSha256(), second.ComputeCanonicalSha256());
+
+        foreach (var partition in Enum.GetValues<ShadowRetentionHoldoutPartition>())
+        {
+            var runs = first.Runs.Where(run => run.Partition == partition).ToArray();
+            Assert.Equal(Enumerable.Range(0, 210), runs.Select(run => run.TrialOrder));
+            foreach (var group in runs.GroupBy(run => run.CaseId, StringComparer.Ordinal))
+            {
+                Assert.Equal(30, group.Count());
+            }
+        }
+
+        var aSeeds = first.Runs.Where(run => run.Partition == ShadowRetentionHoldoutPartition.HoldoutA)
+            .Select(run => run.Seed).Distinct().Order().ToArray();
+        var bSeeds = first.Runs.Where(run => run.Partition == ShadowRetentionHoldoutPartition.HoldoutB)
+            .Select(run => run.Seed).Distinct().Order().ToArray();
+        Assert.Equal(publication.HoldoutASeeds, aSeeds);
+        Assert.Equal(publication.HoldoutBSeeds, bSeeds);
+        Assert.Empty(aSeeds.Intersect(bSeeds));
+    }
+
+    [Fact]
+    public void HoldoutAnalysisPlanFreezesNegativeControlAndQuantiles()
+    {
+        var publication = ShadowRetentionPublicationPlan.CreateDefault();
+        var execution = ShadowRetentionHoldoutExecutionPlan.Create(publication);
+        var analysis = ShadowRetentionHoldoutAnalysisPlan.Create(publication, execution);
+
+        Assert.Equal(ShadowRetentionHoldoutPartition.HoldoutA, analysis.InitialPartition);
+        Assert.Equal(7, analysis.CasesPerPartition);
+        Assert.Equal(30, analysis.RunsPerCase);
+        Assert.Equal(ExpectedQuantiles, analysis.Quantiles);
+        Assert.Equal("linear-interpolation-index=(n-1)*p", analysis.QuantileMethod);
+        Assert.Equal(ExpectedNegativeControls, analysis.NegativeControlCaseIds);
+        Assert.Contains(analysis.ReportingRules, rule => rule.Contains("Exclude no successful", StringComparison.Ordinal));
+        Assert.Contains(analysis.ReportingRules, rule => rule.Contains("Do not read or execute Holdout-B", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void HoldoutArtifactsAreImmutable()
+    {
+        using var directory = new TemporaryDirectory();
+        var publication = ShadowRetentionPublicationPlan.CreateDefault();
+        var execution = ShadowRetentionHoldoutExecutionPlan.Create(publication);
+        var analysis = ShadowRetentionHoldoutAnalysisPlan.Create(publication, execution);
+
+        var firstExecution = ShadowRetentionHoldoutExecutionPlanWriter.Write(directory.Path, execution);
+        var repeatedExecution = ShadowRetentionHoldoutExecutionPlanWriter.Write(directory.Path, execution);
+        Assert.Equal(firstExecution.Sha256, repeatedExecution.Sha256);
+
+        var firstAnalysis = ShadowRetentionHoldoutAnalysisPlanWriter.Write(directory.Path, analysis);
+        var repeatedAnalysis = ShadowRetentionHoldoutAnalysisPlanWriter.Write(directory.Path, analysis);
+        Assert.Equal(firstAnalysis.Sha256, repeatedAnalysis.Sha256);
+
+        Assert.Throws<IOException>(() => ShadowRetentionHoldoutAnalysisPlanWriter.Write(
+            directory.Path,
+            analysis with { CandidateId = "changed" }));
+    }
+
+    [Fact]
+    public void HoldoutExecutionIdentityChangesWhenSeedPartitionChanges()
+    {
+        var publication = ShadowRetentionPublicationPlan.CreateDefault();
+        var changed = publication with
+        {
+            HoldoutASeeds = publication.HoldoutASeeds.Select(seed => checked(seed + 100)).ToArray(),
+        };
+
+        var first = ShadowRetentionHoldoutExecutionPlan.Create(publication);
+        var second = ShadowRetentionHoldoutExecutionPlan.Create(changed);
+
+        Assert.NotEqual(first.ComputeCanonicalSha256(), second.ComputeCanonicalSha256());
+    }
+
+    private sealed class TemporaryDirectory : IDisposable
+    {
+        public TemporaryDirectory()
+        {
+            Path = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(),
+                "chronicle-a1-holdout-plan-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path);
+        }
+
+        public string Path { get; }
+
+        public void Dispose()
+        {
+            try
+            {
+                Directory.Delete(Path, recursive: true);
+            }
+            catch (DirectoryNotFoundException)
+            {
+            }
+        }
+    }
+}

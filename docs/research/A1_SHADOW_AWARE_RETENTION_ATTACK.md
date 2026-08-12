@@ -305,3 +305,9 @@ A separate post-run integrity audit rehashed all 293 raw child artifacts against
 The low-shadow negative controls remain part of the evidence: the 8-branch / 0.1% repeated sentinel measures approximately `1.000868x` retained-payload SAR, while higher-shadow/deletion regimes show larger effects. The surviving claim remains explicitly conditional rather than universal.
 
 **Holdout-A and Holdout-B remain unopened.** Before Holdout-A, the exact current-main integration, source revision, toolchain/machine block, Holdout execution order, and Holdout analysis procedure must be sealed. Pilot-A results must not be used to retune the mechanism or frozen Holdout case set.
+
+### Presealed Holdout-A/B planning
+
+After the audited Pilot-A result, A1 now has a separate immutable Holdout execution and analysis layer that was derived without changing the v3 publication cases. The execution-plan SHA-256 is `c955c5808fddafcdf4bada4af0f36a7e6c8b4631ed40590a44b7d4654817aa61`: it seals **210 Holdout-A + 210 Holdout-B** identities (7 cases × 10 disjoint seeds × 3 process repetitions per partition). The analysis-plan SHA-256 is `7eb6376a481694be718feca93351ef1690fe5ae5fa56403d0ccd1477eaa3fb4e`; it freezes per-case P05/P50/P95 reporting using linear interpolation, mandatory low-shadow reporting, no successful-run exclusions, and fail-closed correctness/hash/effect-model gates.
+
+`--write-holdout-plans` writes both plans immutably and executes **zero** Holdout trials. Two independent plan writes were byte-for-byte identical. Holdout-A/B remain unopened pending exact current-main integration, full regression, and source/toolchain/machine-block registration.

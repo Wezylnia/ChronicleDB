@@ -149,6 +149,38 @@ internal static class A1PublicationPilot
         }
     }
 
+    public static int WriteHoldoutPlans(string[] args)
+    {
+        if (args.Length != 2)
+        {
+            Console.Error.WriteLine("Usage: --write-holdout-plans <sealed-plan-directory> <output-directory>");
+            return 2;
+        }
+
+        try
+        {
+            var planDirectory = Path.GetFullPath(args[0]);
+            var outputDirectory = Path.GetFullPath(args[1]);
+            var (publicationPlan, publicationHash) = ReadAndVerifyPlan(planDirectory);
+            var execution = ShadowRetentionHoldoutExecutionPlan.Create(publicationPlan);
+            var executionArtifact = ShadowRetentionHoldoutExecutionPlanWriter.Write(outputDirectory, execution);
+            var analysis = ShadowRetentionHoldoutAnalysisPlan.Create(publicationPlan, execution);
+            var analysisArtifact = ShadowRetentionHoldoutAnalysisPlanWriter.Write(outputDirectory, analysis);
+
+            Console.WriteLine(
+                $"A1-HOLDOUT-PLANS SEALED A={execution.HoldoutARunCount} B={execution.HoldoutBRunCount} " +
+                $"publication={publicationHash} execution={executionArtifact.Sha256} " +
+                $"analysis={analysisArtifact.Sha256} output={outputDirectory}");
+            Console.WriteLine("No Holdout-A or Holdout-B trial was executed by this command.");
+            return 0;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"A1-HOLDOUT-PLANS FAIL: {exception}");
+            return 1;
+        }
+    }
+
     public static int RunPilotA(string[] args, bool smoke)
     {
         if (args.Length is < 1 or > 2)
