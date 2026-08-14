@@ -17,7 +17,13 @@ if (mode == "matrixone")
         SqlCliOptions options = MatrixOneEnvironment.ReadOptions();
         BranchScenario scenario = await MatrixOneAutoIncrementAdapter.ExecuteAsync(options).ConfigureAwait(false);
         ScenarioReport report = BranchCheckRunner.Evaluate(scenario);
-        WriteJson(new { Mode = mode, Report = report });
+        WriteJson(new
+        {
+            Mode = mode,
+            Backend = scenario.Capabilities.BackendName,
+            Image = Environment.GetEnvironmentVariable("BRANCHCHECK_MATRIXONE_IMAGE"),
+            Report = report,
+        });
         return report.Relations.Any(static result => result.RelationId == "BC.continuation-state" && result.Status != RelationStatus.Inconclusive)
             ? 0
             : 1;
