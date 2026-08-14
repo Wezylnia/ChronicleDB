@@ -174,3 +174,33 @@ jobs:
         with:
           name: branchcheck-slatedb-exploratory
           path: .artifacts/branchcheck
+
+  dolt-exploratory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.301'
+      - name: Install pinned current Dolt 2.3.0
+        run: |
+          mkdir -p .artifacts/branchcheck /tmp/branchcheck-dolt
+          curl -L --fail --retry 3 \
+            https://github.com/dolthub/dolt/releases/download/v2.3.0/dolt-linux-amd64.tar.gz \
+            -o /tmp/branchcheck-dolt/dolt.tar.gz
+          echo 'f702aa9fc4246b076e6e255f5bb6eb6f0a120962ab8895dda9e77a0a77cfe10d  /tmp/branchcheck-dolt/dolt.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/branchcheck-dolt/dolt.tar.gz -C /tmp/branchcheck-dolt
+          DOLT_BIN="$(find /tmp/branchcheck-dolt -type f -name dolt -perm -u+x | head -n 1)"
+          test -n "$DOLT_BIN"
+          echo "BRANCHCHECK_DOLT=$DOLT_BIN" >> "$GITHUB_ENV"
+          "$DOLT_BIN" version | tee .artifacts/branchcheck/dolt-version.txt
+      - name: Run fair-budget Dolt history-import campaign
+        run: |
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-budget | tee .artifacts/branchcheck/dolt-trigger-budget.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: branchcheck-dolt-exploratory
+          path: .artifacts/branchcheck
