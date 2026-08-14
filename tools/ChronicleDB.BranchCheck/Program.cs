@@ -4,9 +4,9 @@ using System.Text.Json.Serialization;
 using ChronicleDB.BranchCheck;
 
 string mode = args.Length == 0 ? "all" : args[0].Trim().ToLowerInvariant();
-if (mode is not ("all" or "synthetic" or "historical" or "matrixone" or "matrixone-identity" or "matrixone-budget" or "slatedb"))
+if (mode is not ("all" or "synthetic" or "historical" or "matrixone" or "matrixone-identity" or "matrixone-budget" or "slatedb" or "slatedb-budget"))
 {
-    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|matrixone|matrixone-identity|matrixone-budget|slatedb]");
+    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|matrixone|matrixone-identity|matrixone-budget|slatedb|slatedb-budget]");
     return 2;
 }
 
@@ -23,6 +23,31 @@ if (mode == "matrixone-budget")
             Report = budgetReport,
         });
         return budgetReport.ExactlyOneViolationRecipe && budgetReport.GuidedRecipeIsViolation ? 0 : 1;
+    }
+    catch (ExternalAdapterException exception)
+    {
+        Console.Error.WriteLine(exception.Message);
+        return 3;
+    }
+}
+
+if (mode == "slatedb-budget")
+{
+    try
+    {
+        string executable = Environment.GetEnvironmentVariable("BRANCHCHECK_SLATEDB_PROBE")
+            ?? throw new ExternalAdapterException("BRANCHCHECK_SLATEDB_PROBE is required for slatedb-budget mode.");
+        SlateDbObserverObservation observation = await SlateDbObserverAdapter.ObserveAsync(
+            executable,
+            TimeSpan.FromSeconds(120)).ConfigureAwait(false);
+        SlateDbTriggerBudgetReport budgetReport = SlateDbTriggerBudgetCampaign.Evaluate(observation);
+        WriteJson(new
+        {
+            Mode = mode,
+            ExternalIdentity = executable,
+            Report = budgetReport,
+        });
+        return 0;
     }
     catch (ExternalAdapterException exception)
     {
