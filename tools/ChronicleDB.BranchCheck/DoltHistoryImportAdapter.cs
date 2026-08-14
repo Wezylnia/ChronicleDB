@@ -15,7 +15,8 @@ public enum DoltHistoryImportRecipe
 public sealed record DoltHistoryImportObservation(
     string Version,
     DoltHistoryImportRecipe Recipe,
-    bool PublishesImportedRowsToCurrentHistory,
+    bool ChangesCurrentVisibleRows,
+    bool ChangesGlobalSequenceInputs,
     int RowCountBeforeContinuation,
     long MaxPrimaryKeyBeforeContinuation,
     OutcomeClass ContinuationOutcome,
@@ -28,10 +29,16 @@ public sealed record DoltCliOptions(
 
 public static class DoltHistoryImportSemantics
 {
-    public static bool PublishesImportedRowsToCurrentHistory(DoltHistoryImportRecipe recipe)
+    public static bool ChangesCurrentVisibleRows(DoltHistoryImportRecipe recipe)
         => recipe is DoltHistoryImportRecipe.Pull
             or DoltHistoryImportRecipe.FetchMerge
             or DoltHistoryImportRecipe.FetchHardReset;
+
+    // Dolt's sequence tracker merges state across local branch heads and remote refs.
+    // Any recipe that refreshes/imports origin therefore changes the set/state the
+    // global allocator is required to account for, even if current rows stay unchanged.
+    public static bool ChangesGlobalSequenceInputs(DoltHistoryImportRecipe recipe)
+        => recipe is not DoltHistoryImportRecipe.NoOp;
 }
 
 public static class DoltHistoryImportAdapter
@@ -79,9 +86,11 @@ public static class DoltHistoryImportAdapter
             await ExecuteRecipeAsync(runner, candidate, recipe, cancellationToken).ConfigureAwait(false);
 
             (int rowCount, long maxPk) = await ReadStateAsync(runner, candidate, cancellationToken).ConfigureAwait(false);
-            bool publishes = DoltHistoryImportSemantics.PublishesImportedRowsToCurrentHistory(recipe);
-            int expectedRowsBefore = publishes ? 2 : 1;
-            long expectedMaxBefore = publishes ? 2 : 1;
+            bool changesRows = DoltHistoryImportSemantics.ChangesCurrentVisibleRows(recipe);
+            bool changesSequenceInputs = DoltHistoryImportSemantics.ChangesGlobalSequenceInputs(recipe);
+            int expectedRowsBefore = changesRows ? 2 : 1;
+            long expectedVisibleMaxBefore = changesRows ? 2 : 1;
+            long expectedGlobalSequenceHighWater = changesSequenceInputs ? 2 : 1;
 
             DoltCliResult insert = await runner.ExecuteAsync(
                 candidate,
@@ -99,13 +108,18 @@ public static class DoltHistoryImportAdapter
             var observation = new DoltHistoryImportObservation(
                 version,
                 recipe,
-                publishes,
+                changesRows,
+                changesSequenceInputs,
                 rowCount,
                 maxPk,
                 continuationOutcome,
                 maxAfter,
                 detail);
-            return CreateScenario(observation, expectedRowsBefore, expectedMaxBefore);
+            return CreateScenario(
+                observation,
+                expectedRowsBefore,
+                expectedVisibleMaxBefore,
+                expectedGlobalSequenceHighWater);
         }
         finally
         {
@@ -125,19 +139,24 @@ public static class DoltHistoryImportAdapter
     public static BranchScenario CreateScenario(
         DoltHistoryImportObservation observation,
         int expectedRowsBefore,
-        long expectedMaxBefore)
+        long expectedVisibleMaxBefore,
+        long expectedGlobalSequenceHighWater)
     {
         ArgumentNullException.ThrowIfNull(observation);
         CanonicalState observedBefore = State(
             observation.RowCountBeforeContinuation,
             observation.MaxPrimaryKeyBeforeContinuation,
             continuationToken: null);
-        CanonicalState expectedBefore = State(expectedRowsBefore, expectedMaxBefore, continuationToken: null);
+        CanonicalState expectedBefore = State(
+            expectedRowsBefore,
+            expectedVisibleMaxBefore,
+            continuationToken: null);
 
-        long expectedGeneratedId = expectedMaxBefore + 1;
+        long expectedGeneratedId = checked(expectedGlobalSequenceHighWater + 1);
+        long expectedVisibleMaxAfter = Math.Max(expectedVisibleMaxBefore, expectedGeneratedId);
         CanonicalState referenceAfter = State(
             expectedRowsBefore + 1,
-            expectedGeneratedId,
+            expectedVisibleMaxAfter,
             expectedGeneratedId.ToString(CultureInfo.InvariantCulture));
         CanonicalState? branchAfter = observation.MaxPrimaryKeyAfterContinuation is long actualMax
             ? State(
@@ -154,7 +173,10 @@ public static class DoltHistoryImportAdapter
         var continuationFrame = new TraceFrame(
             "continuation",
             new ObserverObservation(observation.ContinuationOutcome, branchAfter, observation.ContinuationDetail),
-            new ObserverObservation(OutcomeClass.Success, referenceAfter, "AUTO_INCREMENT continuation should follow visible imported history."),
+            new ObserverObservation(
+                OutcomeClass.Success,
+                referenceAfter,
+                $"Global AUTO_INCREMENT continuation must exceed sequence state imported through branch/remote refs; expected id={expectedGeneratedId}."),
             OperationClass: TraceOperationClass.GenericMutation);
 
         return new BranchScenario(
