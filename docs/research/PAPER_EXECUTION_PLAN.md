@@ -107,6 +107,9 @@ For every experiment report separately whether a supplied failing trace is detec
 | H. Capability-derived grammar | Implemented and unit-tested | `CapabilityCandidateGrammar` and 5 grammar tests |
 | E. Seed/budget protocol | Implemented locally | `CapabilityBudgetCampaign`; 4-profile calibration with 8 frozen seeds |
 | L. Unseeded campaign protocol | Implemented as local pilot | `BRANCHCHECK_UNSEEDED_LOCAL_CAMPAIGN.md`; 128 predeclared-seed runs, explicitly not external evidence |
+| N. False-positive / trigger-oracle analysis | Initial freeze | `BRANCHCHECK_FALSE_POSITIVE_ANALYSIS.md` |
+| Q. Evaluation tables | Local scaffold frozen | `BRANCHCHECK_EVALUATION_TABLES.md` and machine-readable artifacts |
+| Reproducibility gate | Local items complete; external items pending | `BRANCHCHECK_REPRODUCIBILITY_CHECKLIST.md` |
 | O. ChronicleDB controlled mutation study | Implemented locally | `BRANCHCHECK_CHRONICLEDB_MUTATION_STUDY.md`; 5 mutation cases pass |
 | O. Trace reduction | Implemented locally | `BranchScenarioReducer`; semantic-signature reduction tests pass |
 | I onward | Blocked on external backend provisioning | See `BRANCHCHECK_EXTERNAL_PROVISIONING.md`; Docker, Rust/Cargo, Go, and Dolt are absent on this host. Local reduction/mutation work continues independently. |
