@@ -9,7 +9,9 @@ public sealed record DoltCloneContinuationSmokeReport(
     string? GeneratedId,
     string Detail,
     RelationStatus ContinuationRelation,
-    string RelationEvidence);
+    string RelationEvidence,
+    BaselineStatus CloneGrammarBaseline,
+    string CloneGrammarEvidence);
 
 public static class DoltCloneContinuationSmokeProbe
 {
@@ -73,13 +75,16 @@ public static class DoltCloneContinuationSmokeProbe
             string detail = Normalize(insert.StandardError.Length == 0 ? insert.StandardOutput : insert.StandardError);
             BranchScenario scenario = CreateScenario(version, outcome, generatedId, detail);
             RelationResult relation = new ContinuationStateRelation().Evaluate(scenario);
+            BaselineResult cloneGrammar = AdversarialBaselineSuite.EvaluateBranchGrammar(scenario);
             return new DoltCloneContinuationSmokeReport(
                 version,
                 outcome,
                 generatedId,
                 detail,
                 relation.Status,
-                relation.Evidence);
+                relation.Evidence,
+                cloneGrammar.Status,
+                cloneGrammar.Evidence);
         }
         finally
         {
@@ -126,6 +131,11 @@ public static class DoltCloneContinuationSmokeProbe
             creation,
             creation,
             [
+                new TraceFrame(
+                    "clone",
+                    new ObserverObservation(OutcomeClass.Success, creation, "DOLT_CLONE returned success and the empty cloned table is addressable."),
+                    new ObserverObservation(OutcomeClass.Success, creation, "Reference clone/materialization is complete."),
+                    OperationClass: TraceOperationClass.BranchSpecificHistory),
                 new TraceFrame(
                     "continuation",
                     new ObserverObservation(outcome, branchAfter, detail),
