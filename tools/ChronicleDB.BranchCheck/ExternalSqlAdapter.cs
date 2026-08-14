@@ -110,6 +110,7 @@ public sealed class SqlCliProcessRunner
 }
 
 public sealed record MatrixOneAutoIncrementObservation(
+    string ServerVersion,
     string CloneRowsAtCreation,
     string ReferenceRowsAtCreation,
     string CloneNextAtCreation,
@@ -126,10 +127,10 @@ public static class MatrixOneAutoIncrementOutputParser
         ArgumentNullException.ThrowIfNull(output);
         string[] lines = output
             .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (lines.Length != 8)
+        if (lines.Length != 9)
         {
             throw new ExternalAdapterException(
-                $"MatrixOne continuation probe expected 8 scalar output lines but received {lines.Length}. Output: {output}");
+                $"MatrixOne continuation probe expected 9 scalar output lines but received {lines.Length}. Output: {output}");
         }
 
         return new MatrixOneAutoIncrementObservation(
@@ -140,7 +141,8 @@ public static class MatrixOneAutoIncrementOutputParser
             lines[4],
             lines[5],
             lines[6],
-            lines[7]);
+            lines[7],
+            lines[8]);
     }
 }
 
@@ -181,7 +183,7 @@ public static class MatrixOneAutoIncrementAdapter
 
         return new BranchScenario(
             "matrixone-live-auto-increment-continuation",
-            BranchCapabilityProfile.Create("MatrixOne"),
+            BranchCapabilityProfile.Create("MatrixOne " + observation.ServerVersion),
             boundary,
             branchCreation,
             referenceCreation,
@@ -197,6 +199,7 @@ public static class MatrixOneAutoIncrementAdapter
 
     private static string BuildSql(string database)
         => $"""
+           SELECT version();
            DROP DATABASE IF EXISTS {database};
            CREATE DATABASE {database};
            CREATE TABLE {database}.src (id BIGINT AUTO_INCREMENT PRIMARY KEY, v INT);
