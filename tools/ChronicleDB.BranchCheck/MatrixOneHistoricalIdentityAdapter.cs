@@ -41,14 +41,25 @@ public static class MatrixOneHistoricalIdentityAdapter
         string database = "bc_identity_" + suffix;
         string snapshot = "bc_identity_sp_" + suffix;
         var runner = new SqlCliProcessRunner(options);
-        SqlCliResult result = await runner.ExecuteAsync(BuildSql(database, snapshot), cancellationToken).ConfigureAwait(false);
-        if (result.ExitCode != 0)
+
+        SqlCliResult setup = await runner.ExecuteAsync(BuildSetupSql(database, snapshot), cancellationToken).ConfigureAwait(false);
+        if (setup.ExitCode != 0)
         {
             throw new ExternalAdapterException(
-                $"MatrixOne historical identity probe failed with exit code {result.ExitCode}. stderr: {result.StandardError}");
+                $"MatrixOne historical identity setup failed with exit code {setup.ExitCode}. stderr: {setup.StandardError}");
         }
 
-        MatrixOneHistoricalIdentityObservation observation = MatrixOneHistoricalIdentityOutputParser.Parse(result.StandardOutput);
+        MatrixOneHistoricalIdentityObservation observation = MatrixOneHistoricalIdentityOutputParser.Parse(setup.StandardOutput);
+        SqlCliResult diff;
+        try
+        {
+            diff = await runner.ExecuteAsync(BuildDiffSql(database), cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            await runner.ExecuteAsync(BuildCleanupSql(database, snapshot), cancellationToken).ConfigureAwait(false);
+        }
+
         var declared = Boundary(observation.SnapshotParentId);
         var current = Boundary(observation.CurrentParentId);
         var metadataBoundary = Boundary(observation.BranchParentId);
@@ -65,6 +76,10 @@ public static class MatrixOneHistoricalIdentityAdapter
         };
         CanonicalState branchCreation = State(observation.ChildRow, branchBoundaries);
         CanonicalState referenceCreation = State("1:snapshot-row", componentBoundaries: null);
+        var diffObservation = new ObserverObservation(
+            diff.ExitCode == 0 ? OutcomeClass.Success : OutcomeClass.Rejected,
+            null,
+            diff.ExitCode == 0 ? null : diff.StandardError.Trim());
 
         return new BranchScenario(
             "matrixone-live-historical-identity",
@@ -81,11 +96,16 @@ public static class MatrixOneHistoricalIdentityAdapter
                     Success(branchCreation),
                     Success(referenceCreation),
                     OperationClass: TraceOperationClass.GenericRead),
+                new TraceFrame(
+                    "data-branch-diff",
+                    diffObservation,
+                    new ObserverObservation(OutcomeClass.Success, null),
+                    OperationClass: TraceOperationClass.BranchSpecificHistory),
             ],
             CreationEvidence: CreationEvidenceKind.Values | CreationEvidenceKind.Schema);
     }
 
-    private static string BuildSql(string database, string snapshot)
+    private static string BuildSetupSql(string database, string snapshot)
         => $$"""
            SELECT version();
            DROP SNAPSHOT IF EXISTS {{snapshot}};
@@ -111,9 +131,13 @@ public static class MatrixOneHistoricalIdentityAdapter
            SELECT obj_id FROM mo_catalog.mo_snapshots
              WHERE kind = 'branch' AND database_name = '{{database}}' AND table_name = 'parent_t'
              ORDER BY ts DESC LIMIT 1;
-           DROP SNAPSHOT IF EXISTS {{snapshot}};
-           DROP DATABASE {{database}};
            """;
+
+    private static string BuildDiffSql(string database)
+        => $"DATA BRANCH DIFF `{database}`.`child_t` AGAINST `{database}`.`parent_t`;";
+
+    private static string BuildCleanupSql(string database, string snapshot)
+        => $"DROP SNAPSHOT IF EXISTS {snapshot}; DROP DATABASE IF EXISTS `{database}`;";
 
     private static BranchBoundary Boundary(string objectId)
         => new("object:" + objectId, 0);
