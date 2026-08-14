@@ -112,12 +112,13 @@ jobs:
           cargo generate-lockfile --manifest-path tools/BranchCheck.External/SlateDbProbe/Cargo.toml
           cp tools/BranchCheck.External/SlateDbProbe/Cargo.lock .artifacts/branchcheck/slatedb-0.14.1-Cargo.lock
           cargo build --locked --manifest-path tools/BranchCheck.External/SlateDbProbe/Cargo.toml
-      - name: Run published SlateDB 0.14.1 observer relation
-        env:
+      - name: Run published SlateDB 0.14.1 observer relation and budget
+        env: &slatedb-buggy-env
           BRANCHCHECK_SLATEDB_PROBE: ${{ github.workspace }}/tools/BranchCheck.External/SlateDbProbe/target/debug/branchcheck-slatedb-probe
           SLATEDB_PROBE_TARGET: crate-0.14.1
         run: |
           dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- slatedb | tee .artifacts/branchcheck/slatedb-buggy.json
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- slatedb-budget | tee .artifacts/branchcheck/slatedb-buggy-budget.json
       - name: Retarget probe to merged SlateDB fix
         run: |
           python3 - <<'PY'
@@ -133,19 +134,22 @@ jobs:
           cargo generate-lockfile --manifest-path tools/BranchCheck.External/SlateDbProbe/Cargo.toml
           cp tools/BranchCheck.External/SlateDbProbe/Cargo.lock .artifacts/branchcheck/slatedb-fix-6a131a9e-Cargo.lock
           cargo build --locked --manifest-path tools/BranchCheck.External/SlateDbProbe/Cargo.toml
-      - name: Run merged SlateDB fix observer relation
+      - name: Run merged SlateDB fix observer relation and budget
         env:
           BRANCHCHECK_SLATEDB_PROBE: ${{ github.workspace }}/tools/BranchCheck.External/SlateDbProbe/target/debug/branchcheck-slatedb-probe
           SLATEDB_PROBE_TARGET: fix-6a131a9e
         run: |
           dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- slatedb | tee .artifacts/branchcheck/slatedb-fixed.json
-      - name: Assert buggy/fixed relation polarity
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- slatedb-budget | tee .artifacts/branchcheck/slatedb-fixed-budget.json
+      - name: Assert buggy/fixed relation and budget polarity
         run: |
           python3 - <<'PY'
           import json
           from pathlib import Path
           buggy = json.loads(Path('.artifacts/branchcheck/slatedb-buggy.json').read_text())
           fixed = json.loads(Path('.artifacts/branchcheck/slatedb-fixed.json').read_text())
+          buggy_budget = json.loads(Path('.artifacts/branchcheck/slatedb-buggy-budget.json').read_text())['Report']
+          fixed_budget = json.loads(Path('.artifacts/branchcheck/slatedb-fixed-budget.json').read_text())['Report']
           def relation(doc):
               return next(r for r in doc['Report']['Relations'] if r['RelationId'] == 'BC.observer-dependency')['Status']
           def smoke(doc):
@@ -153,9 +157,17 @@ jobs:
           assert relation(buggy) == 'Fail', relation(buggy)
           assert smoke(buggy) == 'Detected', smoke(buggy)
           assert buggy['StrictBranchCheckOnly'] is False, buggy['StrictBranchCheckOnly']
+          assert buggy_budget['ViolationCandidateCount'] == 1, buggy_budget['ViolationCandidateCount']
+          assert buggy_budget['GuidedCandidateIsViolation'] is True
+          assert [round(point['GenericDetectionRate'], 6) for point in buggy_budget['BudgetCurve']] == [0.333333, 0.666667, 1.0]
+          assert all(point['RelationGuidedDetectionRate'] == 1.0 for point in buggy_budget['BudgetCurve'])
           assert relation(fixed) == 'Pass', relation(fixed)
           assert smoke(fixed) == 'Pass', smoke(fixed)
           assert fixed['Report']['BranchCheckDetected'] is False, fixed['Report']['BranchCheckDetected']
+          assert fixed_budget['ViolationCandidateCount'] == 0, fixed_budget['ViolationCandidateCount']
+          assert fixed_budget['GuidedCandidateIsViolation'] is False
+          assert all(point['GenericDetectionRate'] == 0.0 for point in fixed_budget['BudgetCurve'])
+          assert all(point['RelationGuidedDetectionRate'] == 0.0 for point in fixed_budget['BudgetCurve'])
           PY
       - uses: actions/upload-artifact@v4
         if: always()
