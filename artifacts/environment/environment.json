@@ -1,0 +1,50 @@
+{
+  "captured_utc": "2026-08-14T17:26:00Z",
+  "repository": {
+    "commit": "f9ca2c33e451fdaaa5d0aa04a7e44eb0cdbaf586",
+    "remote": "https://github.com/Wezylnia/ChronicleDB.git",
+    "branch": "main",
+    "working_tree_note": "output/ is untracked and intentionally excluded from research artifacts"
+  },
+  "host": {
+    "os": "Microsoft Windows 11 Home Single Language",
+    "os_version": "10.0.26200",
+    "build": "26200",
+    "architecture": "x64",
+    "kernel": "Windows NT 10.0.26200",
+    "cpu": "13th Gen Intel(R) Core(TM) i5-13500H",
+    "cpu_cores": 12,
+    "cpu_logical_processors": 16,
+    "ram_bytes": 16802775040,
+    "ram_gib": 15.66
+  },
+  "toolchains": {
+    "dotnet_sdk": "10.0.301",
+    "dotnet_sdk_commit": "96856fd726",
+    "dotnet_host": "10.0.9",
+    "msbuild": "18.6.4+96856fd72",
+    "docker": null,
+    "rust": null,
+    "cargo": null,
+    "go": null
+  },
+  "external_backends": {
+    "matrixone": {
+      "image": null,
+      "status": "not available on this Windows host; Docker command not found"
+    },
+    "dolt": {
+      "versions": [],
+      "status": "not available on PATH; release campaigns require an explicitly provisioned binary"
+    },
+    "slatedb": {
+      "versions": [],
+      "status": "Rust/Cargo not available on PATH; probe campaign requires an explicitly provisioned toolchain"
+    }
+  },
+  "capture_policy": {
+    "exact_backend_versions_required": true,
+    "latest_or_unpinned_images_allowed": false,
+    "missing_backend_runs_are_recorded_as_unavailable": true
+  }
+}
