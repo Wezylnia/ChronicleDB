@@ -81,12 +81,56 @@ public sealed class ExternalSqlAdapterTests
     public void SlateDbObserverParserPreservesObserverCountsAndFailureEvidence()
     {
         SlateDbObserverObservation observation = SlateDbObserverOutputParser.Parse(
-            "version=0.14.1\ntotal=128\ndb=128\nreader=0\nreader_error=external SST not found\n");
+            "version=0.14.1\ntotal=128\nparent_reader=128\ndb=128\nreader=0\nreader_error=external SST not found\n");
 
         Assert.Equal("0.14.1", observation.Version);
         Assert.Equal(128, observation.TotalKeys);
+        Assert.Equal(128, observation.ParentReaderReadableKeys);
         Assert.Equal(128, observation.DbReadableKeys);
         Assert.Equal(0, observation.DbReaderReadableKeys);
         Assert.Equal("external SST not found", observation.ReaderError);
+    }
+
+    [Fact]
+    public void SlateDbBudgetUsesThreeBalancedObservationCandidates()
+    {
+        var observation = new SlateDbObserverObservation(
+            "0.14.1",
+            128,
+            128,
+            128,
+            0,
+            null,
+            "external SST not found");
+
+        SlateDbTriggerBudgetReport report = SlateDbTriggerBudgetCampaign.Evaluate(observation);
+
+        Assert.Equal(1, report.ViolationCandidateCount);
+        Assert.True(report.GuidedCandidateIsViolation);
+        Assert.Equal([1.0 / 3.0, 2.0 / 3.0, 1.0], report.BudgetCurve.Select(static point => point.GenericDetectionRate).ToArray());
+        Assert.All(report.BudgetCurve, static point => Assert.Equal(1.0, point.RelationGuidedDetectionRate));
+    }
+
+    [Fact]
+    public void SlateDbFixedObservationHasNoGuidedOrGenericViolation()
+    {
+        var observation = new SlateDbObserverObservation(
+            "fix-6a131a9e",
+            128,
+            128,
+            128,
+            128,
+            null,
+            null);
+
+        SlateDbTriggerBudgetReport report = SlateDbTriggerBudgetCampaign.Evaluate(observation);
+
+        Assert.Equal(0, report.ViolationCandidateCount);
+        Assert.False(report.GuidedCandidateIsViolation);
+        Assert.All(report.BudgetCurve, static point =>
+        {
+            Assert.Equal(0.0, point.GenericDetectionRate);
+            Assert.Equal(0.0, point.RelationGuidedDetectionRate);
+        });
     }
 }
