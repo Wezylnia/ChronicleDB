@@ -46,7 +46,7 @@ public sealed class GenericBranchGrammarBaseline : IBranchBaseline
 
 public static class AdversarialBaselineSuite
 {
-    private static readonly IBranchBaseline BranchGrammar = new GenericBranchGrammarBaseline();
+    private static readonly GenericBranchGrammarBaseline BranchGrammar = new();
 
     public static BaselineResult EvaluateBranchGrammar(BranchScenario scenario)
         => BranchGrammar.Evaluate(scenario);
