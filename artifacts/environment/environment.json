@@ -1,7 +1,8 @@
 {
-  "captured_utc": "2026-08-14T17:26:00Z",
+  "captured_utc": "2026-08-14T17:34:18Z",
   "repository": {
-    "commit": "f9ca2c33e451fdaaa5d0aa04a7e44eb0cdbaf586",
+    "commit": "bee93789829256a439668cbfce4dec39f8769f8b",
+    "baseline_replay_commit": "f9ca2c33e451fdaaa5d0aa04a7e44eb0cdbaf586",
     "remote": "https://github.com/Wezylnia/ChronicleDB.git",
     "branch": "main",
     "working_tree_note": "output/ is untracked and intentionally excluded from research artifacts"

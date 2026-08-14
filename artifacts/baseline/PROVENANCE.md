@@ -1,6 +1,6 @@
 # BranchCheck v0.4 Local Baseline
 
-Captured on 2026-08-14 from ChronicleDB commit `f9ca2c33e451fdaaa5d0aa04a7e44eb0cdbaf586`.
+Captured on 2026-08-14. The original v0.4 campaign JSON was replayed at commit `f9ca2c33e451fdaaa5d0aa04a7e44eb0cdbaf586`; the final build/test logs include the capability-grammar commit `bee93789829256a439668cbfce4dec39f8769f8b`.
 
 The machine and toolchain identity is in [`../environment/environment.json`](../environment/environment.json). Raw command output is kept beside this file. External-backend rows are recorded as unavailable rather than silently omitted.
 
