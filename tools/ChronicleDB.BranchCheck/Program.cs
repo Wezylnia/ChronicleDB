@@ -19,12 +19,17 @@ if (mode is "matrixone" or "matrixone-identity")
             ? await MatrixOneAutoIncrementAdapter.ExecuteAsync(options).ConfigureAwait(false)
             : await MatrixOneHistoricalIdentityAdapter.ExecuteAsync(options).ConfigureAwait(false);
         ScenarioReport report = BranchCheckRunner.Evaluate(scenario);
+        BaselineResult branchGrammar = AdversarialBaselineSuite.EvaluateBranchGrammar(scenario);
         WriteJson(new
         {
             Mode = mode,
             Backend = scenario.Capabilities.BackendName,
             Image = Environment.GetEnvironmentVariable("BRANCHCHECK_MATRIXONE_IMAGE"),
             Report = report,
+            BranchGrammarBaseline = branchGrammar,
+            AnyGenericBaselineDetected = AdversarialBaselineSuite.AnyGenericBaselineDetected(report, branchGrammar),
+            StrictBranchCheckOnly = report.BranchCheckDetected
+                && !AdversarialBaselineSuite.AnyGenericBaselineDetected(report, branchGrammar),
         });
         string requiredRelation = mode == "matrixone" ? "BC.continuation-state" : "BC.temporal-boundary";
         return report.Relations.Any(result =>
@@ -53,19 +58,29 @@ var syntheticReports = syntheticScenarios
         Scenario = scenario.Name,
         scenario.ExpectedFailingRelationId,
         Report = BranchCheckRunner.Evaluate(scenario),
+        BranchGrammarBaseline = AdversarialBaselineSuite.EvaluateBranchGrammar(scenario),
     })
     .ToArray();
 
 var historicalReports = historicalCases
-    .Select(issue => new
+    .Select(issue =>
     {
-        issue.System,
-        issue.IssueNumber,
-        issue.Title,
-        issue.SourceUrl,
-        issue.Disposition,
-        issue.EvidenceNote,
-        Report = BranchCheckRunner.Evaluate(issue.Scenario),
+        ScenarioReport report = BranchCheckRunner.Evaluate(issue.Scenario);
+        BaselineResult branchGrammar = AdversarialBaselineSuite.EvaluateBranchGrammar(issue.Scenario);
+        bool genericDetected = AdversarialBaselineSuite.AnyGenericBaselineDetected(report, branchGrammar);
+        return new
+        {
+            issue.System,
+            issue.IssueNumber,
+            issue.Title,
+            issue.SourceUrl,
+            issue.Disposition,
+            issue.EvidenceNote,
+            Report = report,
+            BranchGrammarBaseline = branchGrammar,
+            AnyGenericBaselineDetected = genericDetected,
+            StrictBranchCheckOnly = report.BranchCheckDetected && !genericDetected,
+        };
     })
     .ToArray();
 
@@ -79,12 +94,13 @@ var output = new
         Cases = historicalReports.Length,
         Systems = historicalReports.Select(static report => report.System).Distinct(StringComparer.Ordinal).Count(),
         BranchCheckDetected = historicalReports.Count(static report => report.Report.BranchCheckDetected),
-        GenericBaselineDetected = historicalReports.Count(static report => report.Report.GenericBaselineDetected),
-        BranchCheckOnly = historicalReports.Count(static report => report.Report.BranchCheckOnly),
+        GenericBaselineDetected = historicalReports.Count(static report => report.AnyGenericBaselineDetected),
+        StrictBranchCheckOnly = historicalReports.Count(static report => report.StrictBranchCheckOnly),
         B0Detected = CountBaselineDetections(historicalReports.Select(static report => report.Report), "B0.creation-values"),
         B1Detected = CountBaselineDetections(historicalReports.Select(static report => report.Report), "B1.creation-visible-state"),
         B2Detected = CountBaselineDetections(historicalReports.Select(static report => report.Report), "B2.generic-state-differential"),
         B3Detected = CountBaselineDetections(historicalReports.Select(static report => report.Report), "B3.generic-recovery"),
+        B4Detected = historicalReports.Count(static report => report.BranchGrammarBaseline.Detected),
     },
 };
 
