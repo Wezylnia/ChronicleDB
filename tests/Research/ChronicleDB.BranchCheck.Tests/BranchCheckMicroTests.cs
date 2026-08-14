@@ -4,29 +4,14 @@ namespace ChronicleDB.BranchCheck.Tests;
 
 public sealed class BranchCheckMicroTests
 {
-    private static readonly IBranchBaseline[] Baselines =
-    [
-        new CreationValuesBaseline(),
-        new CreationVisibleStateBaseline(),
-    ];
-
-    private static readonly IBranchRelation[] Relations =
-    [
-        new ContinuationStateRelation(),
-        new TemporalBoundaryRelation(),
-        new LifecycleRelation(),
-        new ObserverDependencyRelation(),
-    ];
-
     [Fact]
-    public void MutationScenariosPassCreationBaselinesButFailExpectedBranchRelation()
+    public void MutationScenariosFailTheirExpectedBranchRelation()
     {
         foreach (BranchScenario scenario in SyntheticCampaign.Create().Where(static scenario => scenario.ExpectedFailingRelationId is not null))
         {
-            Assert.All(Baselines, baseline => Assert.True(baseline.Evaluate(scenario).Passed, $"{scenario.Name}: {baseline.Id} unexpectedly failed."));
-
+            ScenarioReport report = BranchCheckRunner.Evaluate(scenario);
             RelationResult expected = Assert.Single(
-                Relations.Select(relation => relation.Evaluate(scenario)),
+                report.Relations,
                 result => string.Equals(result.RelationId, scenario.ExpectedFailingRelationId, StringComparison.Ordinal));
 
             Assert.Equal(RelationStatus.Fail, expected.Status);
@@ -37,36 +22,104 @@ public sealed class BranchCheckMicroTests
     public void CleanControlPassesAllApplicableRelations()
     {
         BranchScenario scenario = Assert.Single(SyntheticCampaign.Create(), static scenario => scenario.Name == "clean-control");
+        ScenarioReport report = BranchCheckRunner.Evaluate(scenario);
 
-        Assert.All(Baselines, baseline => Assert.True(baseline.Evaluate(scenario).Passed));
+        Assert.False(report.BranchCheckDetected);
         Assert.All(
-            Relations,
-            relation => Assert.NotEqual(RelationStatus.Fail, relation.Evaluate(scenario).Status));
+            report.Relations,
+            static result => Assert.NotEqual(RelationStatus.Fail, result.Status));
     }
 
     [Fact]
-    public void TemporalBoundaryIsNotApplicableWhenBackendDoesNotAdvertiseHistoricalFork()
+    public void TemporalBoundaryUsesCapabilityDeclaredComponentsInsteadOfUniversalComponentSet()
     {
-        BranchScenario source = Assert.Single(SyntheticCampaign.Create(), static scenario => scenario.Name == "mutation-temporal-boundary");
-        BranchScenario scenario = source with
-        {
-            Capabilities = BranchCapabilityProfile.Create("synthetic", supportsHistoricalFork: false),
-        };
+        var declared = new BranchBoundary("main", 10);
+        var state = CanonicalState.Create(
+            [new KeyValuePair<string, string>("k", "v")],
+            "schema",
+            "metadata",
+            componentBoundaries: new Dictionary<string, BranchBoundary>(StringComparer.Ordinal)
+            {
+                ["data"] = declared,
+                ["metadata"] = declared,
+                ["continuation"] = new BranchBoundary("child", 0),
+            });
+        var scenario = new BranchScenario(
+            "capability-boundary",
+            BranchCapabilityProfile.Create(
+                "ChronicleDB-like",
+                supportsHistoricalFork: true,
+                sourceBoundaryComponents: ["data", "metadata"]),
+            declared,
+            state,
+            state,
+            []);
 
         RelationResult result = new TemporalBoundaryRelation().Evaluate(scenario);
-        Assert.Equal(RelationStatus.NotApplicable, result.Status);
+        Assert.Equal(RelationStatus.Pass, result.Status);
     }
 
     [Fact]
-    public void ObserverRelationIsNotApplicableWithoutDeclaredEquivalentObservers()
+    public void GenericStateBaselineDoesNotInspectSpecializedObserverPaths()
     {
-        BranchScenario source = Assert.Single(SyntheticCampaign.Create(), static scenario => scenario.Name == "mutation-observer-dependency");
-        BranchScenario scenario = source with
-        {
-            Capabilities = BranchCapabilityProfile.Create("synthetic"),
-        };
+        HistoricalIssueCase issue = Assert.Single(
+            HistoricalIssueCampaign.Create(),
+            static issue => issue.System == "SlateDB" && issue.IssueNumber == 1902);
 
-        RelationResult result = new ObserverDependencyRelation().Evaluate(scenario);
-        Assert.Equal(RelationStatus.NotApplicable, result.Status);
+        ScenarioReport report = BranchCheckRunner.Evaluate(issue.Scenario);
+        BaselineResult generic = Assert.Single(
+            report.Baselines,
+            static result => result.BaselineId == "B2.generic-state-differential");
+        RelationResult observer = Assert.Single(
+            report.Relations,
+            static result => result.RelationId == "BC.observer-dependency");
+
+        Assert.Equal(BaselineStatus.Pass, generic.Status);
+        Assert.Equal(RelationStatus.Fail, observer.Status);
+    }
+
+    [Fact]
+    public void RecoveryBaselineActsAsNegativeControlForRestartFailures()
+    {
+        HistoricalIssueCase issue = Assert.Single(
+            HistoricalIssueCampaign.Create(),
+            static issue => issue.System == "YugabyteDB" && issue.IssueNumber == 32057);
+
+        ScenarioReport report = BranchCheckRunner.Evaluate(issue.Scenario);
+        BaselineResult recovery = Assert.Single(
+            report.Baselines,
+            static result => result.BaselineId == "B3.generic-recovery");
+        RelationResult relation = Assert.Single(
+            report.Relations,
+            static result => result.RelationId == "BC.recovery");
+
+        Assert.Equal(BaselineStatus.Detected, recovery.Status);
+        Assert.Equal(RelationStatus.Fail, relation.Status);
+    }
+
+    [Fact]
+    public void HistoricalCampaignSpansIndependentSystemsAndContainsBranchCheckOnlyCases()
+    {
+        HistoricalIssueCase[] cases = HistoricalIssueCampaign.Create().ToArray();
+        ScenarioReport[] reports = cases.Select(static issue => BranchCheckRunner.Evaluate(issue.Scenario)).ToArray();
+
+        Assert.Equal(7, cases.Length);
+        Assert.True(cases.Select(static issue => issue.System).Distinct(StringComparer.Ordinal).Count() >= 5);
+        Assert.True(reports.Count(static report => report.BranchCheckOnly) >= 3);
+        Assert.All(reports, static report => Assert.True(report.BranchCheckDetected));
+    }
+
+    [Fact]
+    public void IncompleteHistoricalCreationEvidenceIsNotSilentlyPromotedToBaselinePass()
+    {
+        HistoricalIssueCase issue = Assert.Single(
+            HistoricalIssueCampaign.Create(),
+            static issue => issue.System == "MatrixOne" && issue.IssueNumber == 27092);
+
+        BaselineResult b1 = Assert.Single(
+            BranchCheckRunner.Evaluate(issue.Scenario).Baselines,
+            static result => result.BaselineId == "B1.creation-visible-state");
+
+        Assert.Equal(BaselineStatus.Inconclusive, b1.Status);
     }
 }
