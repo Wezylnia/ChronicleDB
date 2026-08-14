@@ -1,0 +1,81 @@
+name: BranchCheck Dolt repetition
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/branchcheck-dolt-repeat.yml'
+      - 'tools/ChronicleDB.BranchCheck/**'
+  workflow_dispatch:
+
+jobs:
+  repeat-release-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.301'
+      - name: Install pinned Dolt releases
+        run: |
+          mkdir -p /tmp/branchcheck-dolt/v2.2.3 /tmp/branchcheck-dolt/v2.3.0 .artifacts/branchcheck/dolt-repeat
+          curl -L --fail --retry 3 \
+            https://github.com/dolthub/dolt/releases/download/v2.2.3/dolt-linux-amd64.tar.gz \
+            -o /tmp/branchcheck-dolt/dolt-2.2.3.tar.gz
+          echo 'ffafa7cc172cada5f77ca3fb96306545ddac44a111625f75f870306c7f197301  /tmp/branchcheck-dolt/dolt-2.2.3.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/branchcheck-dolt/dolt-2.2.3.tar.gz -C /tmp/branchcheck-dolt/v2.2.3
+          DOLT_223="$(find /tmp/branchcheck-dolt/v2.2.3 -type f -name dolt -perm -u+x | head -n 1)"
+          test -n "$DOLT_223"
+          echo "DOLT_223=$DOLT_223" >> "$GITHUB_ENV"
+          "$DOLT_223" version | tee .artifacts/branchcheck/dolt-repeat/dolt-2.2.3-version.txt
+
+          curl -L --fail --retry 3 \
+            https://github.com/dolthub/dolt/releases/download/v2.3.0/dolt-linux-amd64.tar.gz \
+            -o /tmp/branchcheck-dolt/dolt-2.3.0.tar.gz
+          echo 'f702aa9fc4246b076e6e255f5bb6eb6f0a120962ab8895dda9e77a0a77cfe10d  /tmp/branchcheck-dolt/dolt-2.3.0.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/branchcheck-dolt/dolt-2.3.0.tar.gz -C /tmp/branchcheck-dolt/v2.3.0
+          DOLT_230="$(find /tmp/branchcheck-dolt/v2.3.0 -type f -name dolt -perm -u+x | head -n 1)"
+          test -n "$DOLT_230"
+          echo "DOLT_230=$DOLT_230" >> "$GITHUB_ENV"
+          "$DOLT_230" version | tee .artifacts/branchcheck/dolt-repeat/dolt-2.3.0-version.txt
+      - name: Build BranchCheck once
+        run: dotnet build -c Release tools/ChronicleDB.BranchCheck/ChronicleDB.BranchCheck.csproj
+      - name: Run ten fresh-clone repetitions per release
+        run: |
+          set -o pipefail
+          for version in 223 230; do
+            var="DOLT_${version}"
+            bin="${!var}"
+            for i in $(seq 1 10); do
+              BRANCHCHECK_DOLT="$bin" \
+                dotnet run -c Release --no-build --project tools/ChronicleDB.BranchCheck -- dolt-clone-smoke \
+                > ".artifacts/branchcheck/dolt-repeat/${version}-${i}.json"
+            done
+          done
+      - name: Aggregate repetition outcomes without predeclared polarity
+        run: |
+          python3 - <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          root = Path('.artifacts/branchcheck/dolt-repeat')
+          summary = {}
+          for version in ('223', '230'):
+              reports = [json.loads((root / f'{version}-{i}.json').read_text())['Report'] for i in range(1, 11)]
+              summary[version] = {
+                  'runs': len(reports),
+                  'relation_status': dict(Counter(r['ContinuationRelation'] for r in reports)),
+                  'outcomes': dict(Counter(r['ContinuationOutcome'] for r in reports)),
+                  'generated_ids': dict(Counter(str(r['GeneratedId']) for r in reports)),
+                  'details': dict(Counter(r['Detail'] for r in reports)),
+              }
+          (root / 'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True))
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: branchcheck-dolt-repeat
+          path: .artifacts/branchcheck/dolt-repeat
