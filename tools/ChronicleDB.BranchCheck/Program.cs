@@ -4,18 +4,20 @@ using System.Globalization;
 using ChronicleDB.BranchCheck;
 
 string mode = args.Length == 0 ? "all" : args[0].Trim().ToLowerInvariant();
-if (mode is not ("all" or "synthetic" or "historical" or "matrixone"))
+if (mode is not ("all" or "synthetic" or "historical" or "matrixone" or "matrixone-identity"))
 {
-    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|matrixone]");
+    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|matrixone|matrixone-identity]");
     return 2;
 }
 
-if (mode == "matrixone")
+if (mode is "matrixone" or "matrixone-identity")
 {
     try
     {
         SqlCliOptions options = MatrixOneEnvironment.ReadOptions();
-        BranchScenario scenario = await MatrixOneAutoIncrementAdapter.ExecuteAsync(options).ConfigureAwait(false);
+        BranchScenario scenario = mode == "matrixone"
+            ? await MatrixOneAutoIncrementAdapter.ExecuteAsync(options).ConfigureAwait(false)
+            : await MatrixOneHistoricalIdentityAdapter.ExecuteAsync(options).ConfigureAwait(false);
         ScenarioReport report = BranchCheckRunner.Evaluate(scenario);
         WriteJson(new
         {
@@ -24,7 +26,10 @@ if (mode == "matrixone")
             Image = Environment.GetEnvironmentVariable("BRANCHCHECK_MATRIXONE_IMAGE"),
             Report = report,
         });
-        return report.Relations.Any(static result => result.RelationId == "BC.continuation-state" && result.Status != RelationStatus.Inconclusive)
+        string requiredRelation = mode == "matrixone" ? "BC.continuation-state" : "BC.temporal-boundary";
+        return report.Relations.Any(result =>
+            string.Equals(result.RelationId, requiredRelation, StringComparison.Ordinal)
+            && result.Status != RelationStatus.Inconclusive)
             ? 0
             : 1;
     }
