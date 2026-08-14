@@ -17,12 +17,14 @@ on:
 jobs:
   branchcheck:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.301'
+      - name: Build full solution
+        run: dotnet build ChronicleDB.slnx -c Release
       - name: Restore BranchCheck gate
         run: dotnet restore tests/Research/ChronicleDB.BranchCheck.Tests/ChronicleDB.BranchCheck.Tests.csproj
       - name: Build BranchCheck gate
