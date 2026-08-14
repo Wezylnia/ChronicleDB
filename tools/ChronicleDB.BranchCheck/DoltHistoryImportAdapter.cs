@@ -66,9 +66,10 @@ public static class DoltHistoryImportAdapter
             await RequireAsync(runner, source, ["add", "."], cancellationToken).ConfigureAwait(false);
             await RequireAsync(runner, source, ["commit", "-m", "initial"], cancellationToken).ConfigureAwait(false);
 
-            await RequireAsync(runner, root, ["clone", FileUrl(source), remote], cancellationToken).ConfigureAwait(false);
+            Directory.CreateDirectory(remote);
             await RequireAsync(runner, source, ["remote", "add", "origin", FileUrl(remote)], cancellationToken).ConfigureAwait(false);
-            await RequireAsync(runner, root, ["clone", FileUrl(remote), candidate], cancellationToken).ConfigureAwait(false);
+            await RequireAsync(runner, source, ["push", "--set-upstream", "origin", "main"], cancellationToken).ConfigureAwait(false);
+            await RequireAsync(runner, root, ["clone", FileUrl(remote), "candidate"], cancellationToken).ConfigureAwait(false);
 
             await RequireSqlAsync(runner, source, "INSERT INTO test(v) VALUES (20);", cancellationToken).ConfigureAwait(false);
             await RequireAsync(runner, source, ["add", "."], cancellationToken).ConfigureAwait(false);
