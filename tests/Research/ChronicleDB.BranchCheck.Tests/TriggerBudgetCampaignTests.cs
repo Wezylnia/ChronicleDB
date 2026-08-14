@@ -34,41 +34,42 @@ public sealed class TriggerBudgetCampaignTests
     }
 
     [Fact]
-    public void DoltGuidedSchedulesPrioritizeRiskClassWithoutPickingOneExactRecipe()
+    public void DoltGuidedSchedulesPrioritizeSequenceRelevantClassWithoutPickingOneExactRecipe()
     {
         DoltTriggerRecipeEvidence[] evidence = CreateDoltEvidence(DoltHistoryImportRecipe.Pull);
         IReadOnlyList<DoltHistoryImportRecipe[]> guided =
             DoltTriggerBudgetCampaign.GenerateRiskPrioritizedOrderings(evidence);
 
-        Assert.Equal(12, guided.Count);
-        Assert.Equal(12, guided.Select(static ordering => string.Join(',', ordering)).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(24, guided.Count);
+        Assert.Equal(24, guided.Select(static ordering => string.Join(',', ordering)).Distinct(StringComparer.Ordinal).Count());
         foreach (DoltHistoryImportRecipe[] ordering in guided)
         {
-            Assert.All(ordering.Take(3), recipe => Assert.True(DoltHistoryImportSemantics.PublishesImportedRowsToCurrentHistory(recipe)));
-            Assert.All(ordering.Skip(3), recipe => Assert.False(DoltHistoryImportSemantics.PublishesImportedRowsToCurrentHistory(recipe)));
+            Assert.All(ordering.Take(4), recipe => Assert.True(DoltHistoryImportSemantics.ChangesGlobalSequenceInputs(recipe)));
+            Assert.Equal(DoltHistoryImportRecipe.NoOp, ordering[4]);
         }
 
-        Assert.Equal(4, guided.Count(ordering => ordering[0] == DoltHistoryImportRecipe.Pull));
-        Assert.Equal(4, guided.Count(ordering => ordering[1] == DoltHistoryImportRecipe.Pull));
-        Assert.Equal(4, guided.Count(ordering => ordering[2] == DoltHistoryImportRecipe.Pull));
+        for (int position = 0; position < 4; position++)
+        {
+            Assert.Equal(6, guided.Count(ordering => ordering[position] == DoltHistoryImportRecipe.Pull));
+        }
     }
 
     [Fact]
-    public void DoltSyntheticSingleHighRiskViolationProducesFairExpectedBudgetCurve()
+    public void DoltSyntheticSingleSequenceRelevantViolationProducesFairExpectedBudgetCurve()
     {
         DoltTriggerBudgetReport report = DoltTriggerBudgetCampaign.EvaluateEvidence(
             "Dolt synthetic",
             CreateDoltEvidence(DoltHistoryImportRecipe.Pull));
 
         Assert.Equal(1, report.ViolationRecipeCount);
-        Assert.Equal(3, report.HighRiskRecipeCount);
-        Assert.True(report.AllViolationsInsideHighRiskClass);
+        Assert.Equal(4, report.SequenceRelevantRecipeCount);
+        Assert.True(report.AllViolationsInsideSequenceRelevantClass);
         Assert.True(report.GuidedHasStrictAdvantageAtAnyBudget);
         Assert.Equal(
             [0.2, 0.4, 0.6, 0.8, 1.0],
             report.BudgetCurve.Select(static point => Math.Round(point.GenericDetectionRate, 6)).ToArray());
         Assert.Equal(
-            [0.333333, 0.666667, 1.0, 1.0, 1.0],
+            [0.25, 0.5, 0.75, 1.0, 1.0],
             report.BudgetCurve.Select(static point => Math.Round(point.GuidedDetectionRate, 6)).ToArray());
     }
 
@@ -76,7 +77,7 @@ public sealed class TriggerBudgetCampaignTests
         => Enum.GetValues<DoltHistoryImportRecipe>()
             .Select(recipe => new DoltTriggerRecipeEvidence(
                 recipe,
-                DoltHistoryImportSemantics.PublishesImportedRowsToCurrentHistory(recipe),
+                DoltHistoryImportSemantics.ChangesGlobalSequenceInputs(recipe),
                 recipe == violatingRecipe ? RelationStatus.Fail : RelationStatus.Pass,
                 recipe == violatingRecipe ? BaselineStatus.Detected : BaselineStatus.Pass,
                 BaselineStatus.Pass,
