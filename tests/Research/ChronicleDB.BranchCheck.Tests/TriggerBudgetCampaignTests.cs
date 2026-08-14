@@ -34,47 +34,61 @@ public sealed class TriggerBudgetCampaignTests
     }
 
     [Fact]
-    public void DoltGuidedSchedulesPrioritizeSequenceRelevantClassWithoutPickingOneExactRecipe()
+    public void DoltPortableGuidedSchedulesPrioritizeSequenceRelevantClassWithoutPickingOneExactRecipe()
     {
-        DoltTriggerRecipeEvidence[] evidence = CreateDoltEvidence(DoltHistoryImportRecipe.Pull);
+        DoltTriggerRecipeEvidence[] evidence = CreatePortableDoltEvidence(DoltHistoryImportRecipe.Pull);
         IReadOnlyList<DoltHistoryImportRecipe[]> guided =
             DoltTriggerBudgetCampaign.GenerateRiskPrioritizedOrderings(evidence);
 
-        Assert.Equal(24, guided.Count);
-        Assert.Equal(24, guided.Select(static ordering => string.Join(',', ordering)).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(6, guided.Count);
+        Assert.Equal(6, guided.Select(static ordering => string.Join(',', ordering)).Distinct(StringComparer.Ordinal).Count());
         foreach (DoltHistoryImportRecipe[] ordering in guided)
         {
-            Assert.All(ordering.Take(4), recipe => Assert.True(DoltHistoryImportSemantics.ChangesGlobalSequenceInputs(recipe)));
-            Assert.Equal(DoltHistoryImportRecipe.NoOp, ordering[4]);
+            Assert.All(ordering.Take(3), recipe => Assert.True(DoltHistoryImportSemantics.ChangesGlobalSequenceInputs(recipe)));
+            Assert.Equal(DoltHistoryImportRecipe.NoOp, ordering[3]);
         }
 
-        for (int position = 0; position < 4; position++)
+        for (int position = 0; position < 3; position++)
         {
-            Assert.Equal(6, guided.Count(ordering => ordering[position] == DoltHistoryImportRecipe.Pull));
+            Assert.Equal(2, guided.Count(ordering => ordering[position] == DoltHistoryImportRecipe.Pull));
         }
     }
 
     [Fact]
-    public void DoltSyntheticSingleSequenceRelevantViolationProducesFairExpectedBudgetCurve()
+    public void DoltPortableSyntheticSingleSequenceRelevantViolationProducesFairExpectedBudgetCurve()
     {
         DoltTriggerBudgetReport report = DoltTriggerBudgetCampaign.EvaluateEvidence(
             "Dolt synthetic",
-            CreateDoltEvidence(DoltHistoryImportRecipe.Pull));
+            CreatePortableDoltEvidence(DoltHistoryImportRecipe.Pull));
 
         Assert.Equal(1, report.ViolationRecipeCount);
-        Assert.Equal(4, report.SequenceRelevantRecipeCount);
+        Assert.Equal(3, report.SequenceRelevantRecipeCount);
         Assert.True(report.AllViolationsInsideSequenceRelevantClass);
         Assert.True(report.GuidedHasStrictAdvantageAtAnyBudget);
         Assert.Equal(
-            [0.2, 0.4, 0.6, 0.8, 1.0],
+            [0.25, 0.5, 0.75, 1.0],
             report.BudgetCurve.Select(static point => Math.Round(point.GenericDetectionRate, 6)).ToArray());
         Assert.Equal(
-            [0.25, 0.5, 0.75, 1.0, 1.0],
+            [0.333333, 0.666667, 1.0, 1.0],
             report.BudgetCurve.Select(static point => Math.Round(point.GuidedDetectionRate, 6)).ToArray());
     }
 
-    private static DoltTriggerRecipeEvidence[] CreateDoltEvidence(DoltHistoryImportRecipe violatingRecipe)
-        => Enum.GetValues<DoltHistoryImportRecipe>()
+    [Fact]
+    public void DoltPortableCandidateSetExplicitlyExcludesHardResetPortabilityOutlier()
+    {
+        Assert.Equal(
+            [
+                DoltHistoryImportRecipe.NoOp,
+                DoltHistoryImportRecipe.FetchOnly,
+                DoltHistoryImportRecipe.Pull,
+                DoltHistoryImportRecipe.FetchMerge,
+            ],
+            DoltTriggerBudgetCampaign.PortableRecipes);
+        Assert.DoesNotContain(DoltHistoryImportRecipe.FetchHardReset, DoltTriggerBudgetCampaign.PortableRecipes);
+    }
+
+    private static DoltTriggerRecipeEvidence[] CreatePortableDoltEvidence(DoltHistoryImportRecipe violatingRecipe)
+        => DoltTriggerBudgetCampaign.PortableRecipes
             .Select(recipe => new DoltTriggerRecipeEvidence(
                 recipe,
                 DoltHistoryImportSemantics.ChangesGlobalSequenceInputs(recipe),
