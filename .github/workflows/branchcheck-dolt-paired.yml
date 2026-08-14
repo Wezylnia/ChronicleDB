@@ -9,9 +9,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  dolt-paired:
+  dolt-budget-223:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -19,49 +19,80 @@ jobs:
         with:
           dotnet-version: '10.0.301'
       - name: Prepare artifact directory
-        run: mkdir -p .artifacts/branchcheck /tmp/branchcheck-dolt
+        run: mkdir -p .artifacts/branchcheck /tmp/branchcheck-dolt/v2.2.3
       - name: Install pinned Dolt 2.2.3 pre-issue release
         run: |
           curl -L --fail --retry 3 \
             https://github.com/dolthub/dolt/releases/download/v2.2.3/dolt-linux-amd64.tar.gz \
             -o /tmp/branchcheck-dolt/dolt-2.2.3.tar.gz
           echo 'ffafa7cc172cada5f77ca3fb96306545ddac44a111625f75f870306c7f197301  /tmp/branchcheck-dolt/dolt-2.2.3.tar.gz' | sha256sum -c -
-          mkdir -p /tmp/branchcheck-dolt/v2.2.3
           tar -xzf /tmp/branchcheck-dolt/dolt-2.2.3.tar.gz -C /tmp/branchcheck-dolt/v2.2.3
-          DOLT_223="$(find /tmp/branchcheck-dolt/v2.2.3 -type f -name dolt -perm -u+x | head -n 1)"
-          test -n "$DOLT_223"
-          echo "DOLT_223=$DOLT_223" >> "$GITHUB_ENV"
-          "$DOLT_223" version | tee .artifacts/branchcheck/dolt-2.2.3-version.txt
-      - name: Run pre-issue Dolt 2.2.3 fair-budget campaign
+          DOLT_BIN="$(find /tmp/branchcheck-dolt/v2.2.3 -type f -name dolt -perm -u+x | head -n 1)"
+          test -n "$DOLT_BIN"
+          echo "BRANCHCHECK_DOLT=$DOLT_BIN" >> "$GITHUB_ENV"
+          "$DOLT_BIN" version | tee .artifacts/branchcheck/dolt-2.2.3-version.txt
+      - name: Run Dolt 2.2.3 fair-budget campaign
         run: |
           set -o pipefail
-          BRANCHCHECK_DOLT="$DOLT_223" \
-            dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-budget \
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-budget \
             | tee .artifacts/branchcheck/dolt-2.2.3-budget.json
-      - name: Install pinned current Dolt 2.3.0 release
+      - name: Assert frozen 2.2.3 fair-budget shape
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('.artifacts/branchcheck/dolt-2.2.3-budget.json').read_text())['Report']
+          by_recipe = {row['Recipe']: row for row in report['Recipes']}
+          assert by_recipe['NoOp']['ContinuationRelation'] == 'Pass', by_recipe['NoOp']
+          for recipe in ('FetchOnly', 'Pull', 'FetchMerge'):
+              assert by_recipe[recipe]['ContinuationRelation'] == 'Fail', by_recipe[recipe]
+              assert by_recipe[recipe]['SequenceStateRelevant'] is True, by_recipe[recipe]
+              assert by_recipe[recipe]['BranchGrammarBaseline'] == 'Pass', by_recipe[recipe]
+          assert report['ViolationRecipeCount'] == 3, report['ViolationRecipeCount']
+          assert report['SequenceRelevantRecipeCount'] == 3, report['SequenceRelevantRecipeCount']
+          curve = report['BudgetCurve']
+          assert curve[0]['GenericDetectionRate'] == 0.75, curve[0]
+          assert curve[0]['GuidedDetectionRate'] == 1.0, curve[0]
+          assert all(point['GenericDetectionRate'] == 1.0 for point in curve[1:]), curve
+          assert all(point['GuidedDetectionRate'] == 1.0 for point in curve), curve
+          PY
+      - uses: actions/upload-artifact@v4
         if: always()
+        with:
+          name: branchcheck-dolt-budget-2.2.3
+          path: .artifacts/branchcheck
+
+  dolt-budget-230:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.301'
+      - name: Prepare artifact directory
+        run: mkdir -p .artifacts/branchcheck /tmp/branchcheck-dolt/v2.3.0
+      - name: Install pinned Dolt 2.3.0 release
         run: |
           curl -L --fail --retry 3 \
             https://github.com/dolthub/dolt/releases/download/v2.3.0/dolt-linux-amd64.tar.gz \
             -o /tmp/branchcheck-dolt/dolt-2.3.0.tar.gz
           echo 'f702aa9fc4246b076e6e255f5bb6eb6f0a120962ab8895dda9e77a0a77cfe10d  /tmp/branchcheck-dolt/dolt-2.3.0.tar.gz' | sha256sum -c -
-          mkdir -p /tmp/branchcheck-dolt/v2.3.0
           tar -xzf /tmp/branchcheck-dolt/dolt-2.3.0.tar.gz -C /tmp/branchcheck-dolt/v2.3.0
-          DOLT_230="$(find /tmp/branchcheck-dolt/v2.3.0 -type f -name dolt -perm -u+x | head -n 1)"
-          test -n "$DOLT_230"
-          echo "DOLT_230=$DOLT_230" >> "$GITHUB_ENV"
-          "$DOLT_230" version | tee .artifacts/branchcheck/dolt-2.3.0-version.txt
-      - name: Run current Dolt 2.3.0 fair-budget campaign
-        if: always()
+          DOLT_BIN="$(find /tmp/branchcheck-dolt/v2.3.0 -type f -name dolt -perm -u+x | head -n 1)"
+          test -n "$DOLT_BIN"
+          echo "BRANCHCHECK_DOLT=$DOLT_BIN" >> "$GITHUB_ENV"
+          "$DOLT_BIN" version | tee .artifacts/branchcheck/dolt-2.3.0-version.txt
+      - name: Run Dolt 2.3.0 fair-budget campaign independently
         run: |
           set -o pipefail
-          BRANCHCHECK_DOLT="$DOLT_230" \
-            dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-budget \
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-budget \
             | tee .artifacts/branchcheck/dolt-2.3.0-budget.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: branchcheck-dolt-paired
+          name: branchcheck-dolt-budget-2.3.0
           path: .artifacts/branchcheck
 
   dolt-main-smoke:
