@@ -100,17 +100,53 @@ jobs:
           dotnet-version: '10.0.301'
       - name: Record Rust toolchain
         run: cargo --version && rustc --version
-      - name: Lock and build SlateDB observer probe
-        run: |
-          cargo generate-lockfile --manifest-path tools/BranchCheck.External/SlateDbProbe/Cargo.toml
-          cargo build --release --locked --manifest-path tools/BranchCheck.External/SlateDbProbe/Cargo.toml
-      - name: Run executable SlateDB observer relation
-        env:
-          BRANCHCHECK_SLATEDB_PROBE: ${{ github.workspace }}/tools/BranchCheck.External/SlateDbProbe/target/release/branchcheck-slatedb-probe
+      - name: Build published SlateDB 0.14.1 observer probe
         run: |
           mkdir -p .artifacts/branchcheck
-          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- slatedb | tee .artifacts/branchcheck/slatedb.json
-          cp tools/BranchCheck.External/SlateDbProbe/Cargo.lock .artifacts/branchcheck/slatedb-Cargo.lock
+          cargo generate-lockfile --manifest-path tools/BranchCheck.External/SlateDbProbe/Cargo.toml
+          cp tools/BranchCheck.External/SlateDbProbe/Cargo.lock .artifacts/branchcheck/slatedb-0.14.1-Cargo.lock
+          cargo build --locked --manifest-path tools/BranchCheck.External/SlateDbProbe/Cargo.toml
+      - name: Run published SlateDB 0.14.1 observer relation
+        env:
+          BRANCHCHECK_SLATEDB_PROBE: ${{ github.workspace }}/tools/BranchCheck.External/SlateDbProbe/target/debug/branchcheck-slatedb-probe
+          SLATEDB_PROBE_TARGET: crate-0.14.1
+        run: |
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- slatedb | tee .artifacts/branchcheck/slatedb-buggy.json
+      - name: Retarget probe to merged SlateDB fix
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tools/BranchCheck.External/SlateDbProbe/Cargo.toml')
+          text = path.read_text()
+          text = text.replace(
+              'slatedb = "=0.14.1"',
+              'slatedb = { git = "https://github.com/slatedb/slatedb", rev = "6a131a9ebfd121ca553cb80a08b7b8f2bd142092" }')
+          path.write_text(text)
+          PY
+          rm -f tools/BranchCheck.External/SlateDbProbe/Cargo.lock
+          cargo generate-lockfile --manifest-path tools/BranchCheck.External/SlateDbProbe/Cargo.toml
+          cp tools/BranchCheck.External/SlateDbProbe/Cargo.lock .artifacts/branchcheck/slatedb-fix-6a131a9e-Cargo.lock
+          cargo build --locked --manifest-path tools/BranchCheck.External/SlateDbProbe/Cargo.toml
+      - name: Run merged SlateDB fix observer relation
+        env:
+          BRANCHCHECK_SLATEDB_PROBE: ${{ github.workspace }}/tools/BranchCheck.External/SlateDbProbe/target/debug/branchcheck-slatedb-probe
+          SLATEDB_PROBE_TARGET: fix-6a131a9e
+        run: |
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- slatedb | tee .artifacts/branchcheck/slatedb-fixed.json
+      - name: Assert buggy/fixed relation polarity
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          buggy = json.loads(Path('.artifacts/branchcheck/slatedb-buggy.json').read_text())
+          fixed = json.loads(Path('.artifacts/branchcheck/slatedb-fixed.json').read_text())
+          def relation(doc):
+              return next(r for r in doc['Report']['Relations'] if r['RelationId'] == 'BC.observer-dependency')['Status']
+          assert relation(buggy) == 'Fail', relation(buggy)
+          assert buggy['StrictBranchCheckOnly'] is True, buggy['StrictBranchCheckOnly']
+          assert relation(fixed) == 'Pass', relation(fixed)
+          assert fixed['Report']['BranchCheckDetected'] is False, fixed['Report']['BranchCheckDetected']
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
