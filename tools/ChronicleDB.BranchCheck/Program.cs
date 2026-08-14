@@ -4,9 +4,9 @@ using System.Text.Json.Serialization;
 using ChronicleDB.BranchCheck;
 
 string mode = args.Length == 0 ? "all" : args[0].Trim().ToLowerInvariant();
-if (mode is not ("all" or "synthetic" or "historical" or "matrixone" or "matrixone-identity" or "matrixone-budget" or "slatedb" or "slatedb-budget" or "dolt-budget"))
+if (mode is not ("all" or "synthetic" or "historical" or "matrixone" or "matrixone-identity" or "matrixone-budget" or "slatedb" or "slatedb-budget" or "dolt-budget" or "dolt-clone-smoke"))
 {
-    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|matrixone|matrixone-identity|matrixone-budget|slatedb|slatedb-budget|dolt-budget]");
+    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|matrixone|matrixone-identity|matrixone-budget|slatedb|slatedb-budget|dolt-budget|dolt-clone-smoke]");
     return 2;
 }
 
@@ -31,13 +31,25 @@ if (mode == "matrixone-budget")
     }
 }
 
-if (mode == "dolt-budget")
+if (mode is "dolt-budget" or "dolt-clone-smoke")
 {
     try
     {
         var options = new DoltCliOptions(
             Environment.GetEnvironmentVariable("BRANCHCHECK_DOLT") ?? "dolt",
             TimeSpan.FromSeconds(90));
+        if (mode == "dolt-clone-smoke")
+        {
+            DoltCloneContinuationSmokeReport smoke = await DoltCloneContinuationSmokeProbe.ExecuteAsync(options).ConfigureAwait(false);
+            WriteJson(new
+            {
+                Mode = mode,
+                Executable = options.Executable,
+                Report = smoke,
+            });
+            return 0;
+        }
+
         DoltTriggerBudgetReport budgetReport = await DoltTriggerBudgetCampaign.ExecuteAsync(options).ConfigureAwait(false);
         WriteJson(new
         {
