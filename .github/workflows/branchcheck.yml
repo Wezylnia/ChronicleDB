@@ -50,6 +50,7 @@ jobs:
         run: |
           docker run -d --name matrixone -p 6001:6001 matrixorigin/matrixone:latest
           docker inspect --format='image={{.Image}}' matrixone
+          echo "BRANCHCHECK_MATRIXONE_IMAGE=$(docker inspect --format='{{.Image}}' matrixone)" >> "$GITHUB_ENV"
       - name: Wait for MatrixOne
         env:
           MYSQL_PWD: '111'
