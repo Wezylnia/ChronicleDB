@@ -4,6 +4,14 @@ public sealed record DoltTriggerRecipeEvidence(
     DoltHistoryImportRecipe Recipe,
     bool SequenceStateRelevant,
     RelationStatus ContinuationRelation,
+    string ContinuationRelationEvidence,
+    OutcomeClass BranchContinuationOutcome,
+    OutcomeClass ReferenceContinuationOutcome,
+    string? ActualContinuationToken,
+    string? ExpectedContinuationToken,
+    string BranchContinuationState,
+    string ReferenceContinuationState,
+    string? ContinuationDetail,
     BaselineStatus GenericStateBaseline,
     BaselineStatus BranchGrammarBaseline,
     bool TriggeredViolation);
@@ -59,10 +67,20 @@ public static class DoltTriggerBudgetCampaign
             RelationResult continuation = report.Relations.Single(static result => result.RelationId == "BC.continuation-state");
             BaselineResult genericState = report.Baselines.Single(static result => result.BaselineId == "B2.generic-state-differential");
             BaselineResult branchGrammar = AdversarialBaselineSuite.EvaluateBranchGrammar(scenario);
+            TraceFrame continuationFrame = scenario.Frames.Single(static frame =>
+                string.Equals(frame.Operation, "continuation", StringComparison.Ordinal));
             evidence.Add(new DoltTriggerRecipeEvidence(
                 recipe,
                 DoltHistoryImportSemantics.ChangesGlobalSequenceInputs(recipe),
                 continuation.Status,
+                continuation.Evidence,
+                continuationFrame.Branch.Outcome,
+                continuationFrame.Reference.Outcome,
+                continuationFrame.Branch.State?.ContinuationToken,
+                continuationFrame.Reference.State?.ContinuationToken,
+                DescribeState(continuationFrame.Branch.State),
+                DescribeState(continuationFrame.Reference.State),
+                continuationFrame.Branch.Detail,
                 genericState.Status,
                 branchGrammar.Status,
                 continuation.Status == RelationStatus.Fail));
@@ -157,6 +175,20 @@ public static class DoltTriggerBudgetCampaign
         var output = new List<DoltHistoryImportRecipe[]>();
         Permute(working, 0, output);
         return output;
+    }
+
+    private static string DescribeState(CanonicalState? state)
+    {
+        if (state is null)
+        {
+            return "<null>";
+        }
+
+        string values = string.Join(
+            ";",
+            state.Values.OrderBy(static pair => pair.Key, StringComparer.Ordinal)
+                .Select(static pair => pair.Key + "=" + pair.Value));
+        return values + ";continuation=" + (state.ContinuationToken ?? "<null>");
     }
 
     private static int CountDetected(
