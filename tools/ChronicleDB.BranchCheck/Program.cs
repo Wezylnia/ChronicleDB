@@ -46,6 +46,15 @@ if (mode is "matrixone" or "matrixone-identity" or "slatedb")
             Mode = mode,
             Backend = scenario.Capabilities.BackendName,
             ExternalIdentity = externalIdentity,
+            TraceEvidence = scenario.Frames.Select(static frame => new
+            {
+                frame.Operation,
+                frame.OperationClass,
+                BranchOutcome = frame.Branch.Outcome,
+                BranchDetail = frame.Branch.Detail,
+                ReferenceOutcome = frame.Reference.Outcome,
+                ReferenceDetail = frame.Reference.Detail,
+            }).ToArray(),
             Report = report,
             BranchGrammarBaseline = branchGrammar,
             ObserverSmokeBaseline = observerSmoke,
