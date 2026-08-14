@@ -1,17 +1,36 @@
 namespace ChronicleDB.BranchCheck;
 
+[Flags]
+public enum CreationEvidenceKind
+{
+    None = 0,
+    Values = 1,
+    Schema = 2,
+    VisibleMetadata = 4,
+    All = Values | Schema | VisibleMetadata,
+}
+
 public enum RelationFamily
 {
     ContinuationState,
     TemporalBoundary,
     Lifecycle,
     ObserverDependency,
+    Recovery,
 }
 
 public enum RelationStatus
 {
     Pass,
     Fail,
+    NotApplicable,
+    Inconclusive,
+}
+
+public enum BaselineStatus
+{
+    Pass,
+    Detected,
     NotApplicable,
     Inconclusive,
 }
@@ -25,6 +44,18 @@ public enum OutcomeClass
     Crash,
 }
 
+public enum TraceOperationClass
+{
+    Other,
+    GenericRead,
+    GenericMutation,
+    ContinuationProbe,
+    BranchSpecificLifecycle,
+    BranchSpecificHistory,
+    ObserverRead,
+    Restart,
+}
+
 public readonly record struct BranchBoundary(string HistoryId, long Sequence)
 {
     public override string ToString() => $"{HistoryId}@{Sequence}";
@@ -35,20 +66,23 @@ public sealed record BranchCapabilityProfile(
     bool SupportsHistoricalFork,
     bool SupportsRestart,
     bool SupportsDelete,
-    IReadOnlySet<string> EquivalentObservers)
+    IReadOnlySet<string> EquivalentObservers,
+    IReadOnlySet<string> SourceBoundaryComponents)
 {
     public static BranchCapabilityProfile Create(
         string backendName,
         bool supportsHistoricalFork = false,
         bool supportsRestart = false,
         bool supportsDelete = false,
-        params string[] equivalentObservers)
+        string[]? equivalentObservers = null,
+        string[]? sourceBoundaryComponents = null)
         => new(
             backendName,
             supportsHistoricalFork,
             supportsRestart,
             supportsDelete,
-            new HashSet<string>(equivalentObservers, StringComparer.Ordinal));
+            new HashSet<string>(equivalentObservers ?? [], StringComparer.Ordinal),
+            new HashSet<string>(sourceBoundaryComponents ?? [], StringComparer.Ordinal));
 }
 
 public sealed record CanonicalState(
@@ -65,7 +99,9 @@ public sealed record CanonicalState(
         string? continuationToken = null,
         IReadOnlyDictionary<string, BranchBoundary>? componentBoundaries = null)
         => new(
-            new SortedDictionary<string, string>(values.ToDictionary(static pair => pair.Key, static pair => pair.Value, StringComparer.Ordinal), StringComparer.Ordinal),
+            new SortedDictionary<string, string>(
+                values.ToDictionary(static pair => pair.Key, static pair => pair.Value, StringComparer.Ordinal),
+                StringComparer.Ordinal),
             schemaFingerprint,
             visibleMetadataFingerprint,
             continuationToken,
@@ -82,7 +118,8 @@ public sealed record TraceFrame(
     ObserverObservation Branch,
     ObserverObservation Reference,
     IReadOnlyDictionary<string, ObserverObservation>? BranchObservers = null,
-    IReadOnlyDictionary<string, ObserverObservation>? ReferenceObservers = null);
+    IReadOnlyDictionary<string, ObserverObservation>? ReferenceObservers = null,
+    TraceOperationClass OperationClass = TraceOperationClass.Other);
 
 public sealed record BranchScenario(
     string Name,
@@ -91,13 +128,17 @@ public sealed record BranchScenario(
     CanonicalState BranchAtCreation,
     CanonicalState ReferenceAtCreation,
     IReadOnlyList<TraceFrame> Frames,
-    string? ExpectedFailingRelationId = null);
+    string? ExpectedFailingRelationId = null,
+    CreationEvidenceKind CreationEvidence = CreationEvidenceKind.All);
 
 public sealed record RelationResult(
     string RelationId,
     RelationFamily Family,
     RelationStatus Status,
-    string Evidence);
+    string Evidence)
+{
+    public bool Detected => Status == RelationStatus.Fail;
+}
 
 public interface IBranchRelation
 {
@@ -129,24 +170,30 @@ internal static class Comparison
         return true;
     }
 
-    public static bool CreationVisibleStateEqual(CanonicalState left, CanonicalState right)
-        => VisibleValuesEqual(left, right)
-            && string.Equals(left.SchemaFingerprint, right.SchemaFingerprint, StringComparison.Ordinal)
-            && string.Equals(left.VisibleMetadataFingerprint, right.VisibleMetadataFingerprint, StringComparison.Ordinal);
-
-    public static bool CanonicalStateEqual(CanonicalState? left, CanonicalState? right)
+    public static bool OrdinaryVisibleStateEqual(CanonicalState? left, CanonicalState? right)
     {
         if (left is null || right is null)
         {
             return left is null && right is null;
         }
 
-        return CreationVisibleStateEqual(left, right)
-            && string.Equals(left.ContinuationToken, right.ContinuationToken, StringComparison.Ordinal);
+        return VisibleValuesEqual(left, right)
+            && string.Equals(left.SchemaFingerprint, right.SchemaFingerprint, StringComparison.Ordinal)
+            && string.Equals(left.VisibleMetadataFingerprint, right.VisibleMetadataFingerprint, StringComparison.Ordinal);
     }
+
+    public static bool CanonicalStateEqual(CanonicalState? left, CanonicalState? right)
+        => OrdinaryVisibleStateEqual(left, right)
+            && (left is null
+                || string.Equals(left.ContinuationToken, right!.ContinuationToken, StringComparison.Ordinal));
 }
 
-public sealed record BaselineResult(string BaselineId, bool Passed, string Evidence);
+public sealed record BaselineResult(string BaselineId, BaselineStatus Status, string Evidence)
+{
+    public bool Passed => Status is BaselineStatus.Pass or BaselineStatus.NotApplicable or BaselineStatus.Inconclusive;
+
+    public bool Detected => Status == BaselineStatus.Detected;
+}
 
 public interface IBranchBaseline
 {
@@ -161,13 +208,16 @@ public sealed class CreationValuesBaseline : IBranchBaseline
 
     public BaselineResult Evaluate(BranchScenario scenario)
     {
-        bool passed = Comparison.VisibleValuesEqual(scenario.BranchAtCreation, scenario.ReferenceAtCreation);
+        if (!scenario.CreationEvidence.HasFlag(CreationEvidenceKind.Values))
+        {
+            return new BaselineResult(Id, BaselineStatus.Inconclusive, "Historical evidence does not report complete creation-time values.");
+        }
+
+        bool equal = Comparison.VisibleValuesEqual(scenario.BranchAtCreation, scenario.ReferenceAtCreation);
         return new BaselineResult(
             Id,
-            passed,
-            passed
-                ? "Visible values are equal at branch creation."
-                : "Visible values differ at branch creation.");
+            equal ? BaselineStatus.Pass : BaselineStatus.Detected,
+            equal ? "Visible values are equal at branch creation." : "Visible values differ at branch creation.");
     }
 }
 
@@ -177,13 +227,97 @@ public sealed class CreationVisibleStateBaseline : IBranchBaseline
 
     public BaselineResult Evaluate(BranchScenario scenario)
     {
-        bool passed = Comparison.CreationVisibleStateEqual(scenario.BranchAtCreation, scenario.ReferenceAtCreation);
+        if ((scenario.CreationEvidence & CreationEvidenceKind.All) != CreationEvidenceKind.All)
+        {
+            return new BaselineResult(
+                Id,
+                BaselineStatus.Inconclusive,
+                "Historical evidence does not report complete values + schema + visible metadata at creation.");
+        }
+
+        bool equal = Comparison.OrdinaryVisibleStateEqual(scenario.BranchAtCreation, scenario.ReferenceAtCreation);
         return new BaselineResult(
             Id,
-            passed,
-            passed
+            equal ? BaselineStatus.Pass : BaselineStatus.Detected,
+            equal
                 ? "Values, schema fingerprint, and visible metadata are equal at branch creation."
                 : "Creation-time values/schema/visible metadata differ.");
+    }
+}
+
+public sealed class GenericStateDifferentialBaseline : IBranchBaseline
+{
+    public string Id => "B2.generic-state-differential";
+
+    public BaselineResult Evaluate(BranchScenario scenario)
+    {
+        TraceFrame[] eligible = scenario.Frames
+            .Where(static frame => frame.OperationClass is TraceOperationClass.GenericRead or TraceOperationClass.GenericMutation)
+            .ToArray();
+
+        if (eligible.Length == 0)
+        {
+            return new BaselineResult(Id, BaselineStatus.NotApplicable, "No generic read/mutation witness occurs in this recorded trace.");
+        }
+
+        foreach (TraceFrame frame in eligible)
+        {
+            if (frame.Branch.Outcome != frame.Reference.Outcome)
+            {
+                return new BaselineResult(
+                    Id,
+                    BaselineStatus.Detected,
+                    $"Generic operation '{frame.Operation}' diverged in outcome: branch={frame.Branch.Outcome}, reference={frame.Reference.Outcome}.");
+            }
+
+            if (!Comparison.OrdinaryVisibleStateEqual(frame.Branch.State, frame.Reference.State))
+            {
+                return new BaselineResult(
+                    Id,
+                    BaselineStatus.Detected,
+                    $"Generic operation '{frame.Operation}' diverged in ordinary visible state.");
+            }
+        }
+
+        return new BaselineResult(Id, BaselineStatus.Pass, $"All {eligible.Length} generic read/mutation witnesses match in ordinary visible state.");
+    }
+}
+
+public sealed class GenericRecoveryBaseline : IBranchBaseline
+{
+    public string Id => "B3.generic-recovery";
+
+    public BaselineResult Evaluate(BranchScenario scenario)
+    {
+        TraceFrame[] restartFrames = scenario.Frames
+            .Where(static frame => frame.OperationClass == TraceOperationClass.Restart)
+            .ToArray();
+
+        if (restartFrames.Length == 0)
+        {
+            return new BaselineResult(Id, BaselineStatus.NotApplicable, "No restart/recovery witness occurs in this recorded trace.");
+        }
+
+        foreach (TraceFrame frame in restartFrames)
+        {
+            if (frame.Branch.Outcome != frame.Reference.Outcome)
+            {
+                return new BaselineResult(
+                    Id,
+                    BaselineStatus.Detected,
+                    $"Restart operation '{frame.Operation}' diverged in outcome: branch={frame.Branch.Outcome}, reference={frame.Reference.Outcome}.");
+            }
+
+            if (!Comparison.OrdinaryVisibleStateEqual(frame.Branch.State, frame.Reference.State))
+            {
+                return new BaselineResult(
+                    Id,
+                    BaselineStatus.Detected,
+                    $"Restart operation '{frame.Operation}' diverged in ordinary visible state.");
+            }
+        }
+
+        return new BaselineResult(Id, BaselineStatus.Pass, "Restart/recovery observations match in ordinary visible state.");
     }
 }
 
@@ -233,8 +367,6 @@ public sealed class ContinuationStateRelation : IBranchRelation
 
 public sealed class TemporalBoundaryRelation : IBranchRelation
 {
-    private static readonly string[] RequiredComponents = ["data", "metadata", "dependencies", "continuation"];
-
     public string Id => "BC.temporal-boundary";
 
     public RelationFamily Family => RelationFamily.TemporalBoundary;
@@ -246,13 +378,18 @@ public sealed class TemporalBoundaryRelation : IBranchRelation
             return Result(RelationStatus.NotApplicable, "Backend does not advertise historical fork capability.");
         }
 
+        if (scenario.Capabilities.SourceBoundaryComponents.Count == 0)
+        {
+            return Result(RelationStatus.Inconclusive, "Capability profile declares no component that must preserve the source boundary.");
+        }
+
         IReadOnlyDictionary<string, BranchBoundary>? boundaries = scenario.BranchAtCreation.ComponentBoundaries;
         if (boundaries is null)
         {
             return Result(RelationStatus.Inconclusive, "Adapter did not expose component-boundary evidence.");
         }
 
-        foreach (string component in RequiredComponents)
+        foreach (string component in scenario.Capabilities.SourceBoundaryComponents.Order(StringComparer.Ordinal))
         {
             if (!boundaries.TryGetValue(component, out BranchBoundary observed))
             {
@@ -267,7 +404,9 @@ public sealed class TemporalBoundaryRelation : IBranchRelation
             }
         }
 
-        return Result(RelationStatus.Pass, $"All required components resolve to {scenario.DeclaredBoundary}.");
+        return Result(
+            RelationStatus.Pass,
+            $"All profile-declared source-boundary components resolve to {scenario.DeclaredBoundary}.");
     }
 
     private RelationResult Result(RelationStatus status, string evidence)
@@ -354,134 +493,78 @@ public sealed class ObserverDependencyRelation : IBranchRelation
         => new(Id, Family, status, evidence);
 }
 
-public static class SyntheticCampaign
+public sealed class RecoveryClosureRelation : IBranchRelation
 {
-    private static readonly BranchBoundary Boundary = new("main", 100);
+    public string Id => "BC.recovery";
 
-    public static IReadOnlyList<BranchScenario> Create()
-        =>
-        [
-            CreateCleanScenario(),
-            CreateContinuationMutation(),
-            CreateBoundaryMutation(),
-            CreateLifecycleMutation(),
-            CreateObserverMutation(),
-        ];
+    public RelationFamily Family => RelationFamily.Recovery;
 
-    private static BranchScenario CreateCleanScenario()
+    public RelationResult Evaluate(BranchScenario scenario)
     {
-        CanonicalState creation = CreationState(AllBoundaries(Boundary));
-        return new BranchScenario(
-            "clean-control",
-            BranchCapabilityProfile.Create("synthetic", true, true, true, "primary", "secondary"),
-            Boundary,
-            creation,
-            creation,
-            [
-                new TraceFrame(
-                    "continuation",
-                    Success(StateWithToken("4")),
-                    Success(StateWithToken("4"))),
-                new TraceFrame("delete-branch", Success(null), Success(null)),
-                ObserverFrame(secondaryFails: false),
-            ]);
-    }
-
-    private static BranchScenario CreateContinuationMutation()
-    {
-        CanonicalState creation = CreationState(AllBoundaries(Boundary));
-        return new BranchScenario(
-            "mutation-continuation",
-            BranchCapabilityProfile.Create("synthetic", supportsDelete: true),
-            Boundary,
-            creation,
-            creation,
-            [new TraceFrame("continuation", Success(StateWithToken("10001")), Success(StateWithToken("4")))],
-            "BC.continuation-state");
-    }
-
-    private static BranchScenario CreateBoundaryMutation()
-    {
-        Dictionary<string, BranchBoundary> boundaries = AllBoundaries(Boundary);
-        boundaries["metadata"] = new BranchBoundary("main", 101);
-        return new BranchScenario(
-            "mutation-temporal-boundary",
-            BranchCapabilityProfile.Create("synthetic", supportsHistoricalFork: true),
-            Boundary,
-            CreationState(boundaries),
-            CreationState(AllBoundaries(Boundary)),
-            [],
-            "BC.temporal-boundary");
-    }
-
-    private static BranchScenario CreateLifecycleMutation()
-    {
-        CanonicalState creation = CreationState(AllBoundaries(Boundary));
-        return new BranchScenario(
-            "mutation-lifecycle",
-            BranchCapabilityProfile.Create("synthetic", supportsDelete: true),
-            Boundary,
-            creation,
-            creation,
-            [new TraceFrame("delete-branch", new ObserverObservation(OutcomeClass.Rejected, null, "branch cannot be deleted"), Success(null))],
-            "BC.lifecycle");
-    }
-
-    private static BranchScenario CreateObserverMutation()
-    {
-        CanonicalState creation = CreationState(AllBoundaries(Boundary));
-        return new BranchScenario(
-            "mutation-observer-dependency",
-            BranchCapabilityProfile.Create("synthetic", equivalentObservers: ["primary", "secondary"]),
-            Boundary,
-            creation,
-            creation,
-            [ObserverFrame(secondaryFails: true)],
-            "BC.observer-dependency");
-    }
-
-    private static TraceFrame ObserverFrame(bool secondaryFails)
-    {
-        CanonicalState state = CreationState(AllBoundaries(Boundary));
-        Dictionary<string, ObserverObservation> branchObservers = new(StringComparer.Ordinal)
+        if (!scenario.Capabilities.SupportsRestart)
         {
-            ["primary"] = Success(state),
-            ["secondary"] = secondaryFails
-                ? new ObserverObservation(OutcomeClass.NotFound, null, "parent dependency was not resolved")
-                : Success(state),
-        };
-        Dictionary<string, ObserverObservation> referenceObservers = new(StringComparer.Ordinal)
+            return Result(RelationStatus.NotApplicable, "Backend does not advertise restart/recovery capability.");
+        }
+
+        TraceFrame? frame = scenario.Frames.FirstOrDefault(static frame => frame.OperationClass == TraceOperationClass.Restart);
+        if (frame is null)
         {
-            ["primary"] = Success(state),
-            ["secondary"] = Success(state),
-        };
-        return new TraceFrame("observe", Success(state), Success(state), branchObservers, referenceObservers);
+            return Result(RelationStatus.Inconclusive, "No restart/recovery witness frame was supplied.");
+        }
+
+        if (frame.Branch.Outcome != frame.Reference.Outcome)
+        {
+            return Result(
+                RelationStatus.Fail,
+                $"Recovery outcome diverged: branch={frame.Branch.Outcome}, reference={frame.Reference.Outcome}.");
+        }
+
+        bool equal = Comparison.CanonicalStateEqual(frame.Branch.State, frame.Reference.State);
+        return Result(
+            equal ? RelationStatus.Pass : RelationStatus.Fail,
+            equal ? "Recovered branch observation matches the reference world." : "Recovered branch state diverged from the reference world.");
     }
 
-    private static CanonicalState CreationState(IReadOnlyDictionary<string, BranchBoundary> boundaries)
-        => CanonicalState.Create(
-            [new KeyValuePair<string, string>("account:42", "500")],
-            "schema-v1",
-            "metadata-v1",
-            componentBoundaries: boundaries);
+    private RelationResult Result(RelationStatus status, string evidence)
+        => new(Id, Family, status, evidence);
+}
 
-    private static CanonicalState StateWithToken(string token)
-        => CanonicalState.Create(
-            [new KeyValuePair<string, string>("account:42", "500")],
-            "schema-v1",
-            "metadata-v1",
-            continuationToken: token,
-            componentBoundaries: AllBoundaries(Boundary));
+public sealed record ScenarioReport(
+    string Name,
+    IReadOnlyList<BaselineResult> Baselines,
+    IReadOnlyList<RelationResult> Relations)
+{
+    public bool BranchCheckDetected => Relations.Any(static result => result.Detected);
 
-    private static Dictionary<string, BranchBoundary> AllBoundaries(BranchBoundary boundary)
-        => new(StringComparer.Ordinal)
-        {
-            ["data"] = boundary,
-            ["metadata"] = boundary,
-            ["dependencies"] = boundary,
-            ["continuation"] = boundary,
-        };
+    public bool GenericBaselineDetected => Baselines.Any(static result =>
+        result.BaselineId is "B2.generic-state-differential" or "B3.generic-recovery"
+        && result.Detected);
 
-    private static ObserverObservation Success(CanonicalState? state)
-        => new(OutcomeClass.Success, state);
+    public bool BranchCheckOnly => BranchCheckDetected && !GenericBaselineDetected;
+}
+
+public static class BranchCheckRunner
+{
+    public static IReadOnlyList<IBranchBaseline> DefaultBaselines { get; } =
+    [
+        new CreationValuesBaseline(),
+        new CreationVisibleStateBaseline(),
+        new GenericStateDifferentialBaseline(),
+        new GenericRecoveryBaseline(),
+    ];
+
+    public static IReadOnlyList<IBranchRelation> DefaultRelations { get; } =
+    [
+        new ContinuationStateRelation(),
+        new TemporalBoundaryRelation(),
+        new LifecycleRelation(),
+        new ObserverDependencyRelation(),
+        new RecoveryClosureRelation(),
+    ];
+
+    public static ScenarioReport Evaluate(BranchScenario scenario)
+        => new(
+            scenario.Name,
+            DefaultBaselines.Select(baseline => baseline.Evaluate(scenario)).ToArray(),
+            DefaultRelations.Select(relation => relation.Evaluate(scenario)).ToArray());
 }
