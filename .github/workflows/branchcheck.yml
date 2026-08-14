@@ -32,3 +32,53 @@ jobs:
         run: dotnet run -c Release --project tools/ChronicleDB.BranchCheck --no-build -- historical
       - name: Architecture tests
         run: dotnet test tests/Architecture/ChronicleDB.ArchitectureTests/ChronicleDB.ArchitectureTests.csproj -c Release
+
+  matrixone-exploratory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.301'
+      - name: Install SQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mariadb-client
+      - name: Start MatrixOne
+        run: |
+          docker run -d --name matrixone -p 6001:6001 matrixorigin/matrixone:latest
+          docker inspect --format='image={{.Image}}' matrixone
+      - name: Wait for MatrixOne
+        env:
+          MYSQL_PWD: '111'
+        run: |
+          for attempt in $(seq 1 60); do
+            if mysql --protocol=tcp --host=127.0.0.1 --port=6001 --user=root --batch --skip-column-names -e 'SELECT 1' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs matrixone
+          exit 1
+      - name: Run executable MatrixOne continuation probe
+        env:
+          BRANCHCHECK_SQL_CLIENT: mysql
+          BRANCHCHECK_MATRIXONE_HOST: 127.0.0.1
+          BRANCHCHECK_MATRIXONE_PORT: '6001'
+          BRANCHCHECK_MATRIXONE_USER: root
+          BRANCHCHECK_MATRIXONE_PASSWORD: '111'
+        run: |
+          mkdir -p .artifacts/branchcheck
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- matrixone | tee .artifacts/branchcheck/matrixone.json
+      - name: Capture MatrixOne logs
+        if: always()
+        run: |
+          mkdir -p .artifacts/branchcheck
+          docker logs matrixone > .artifacts/branchcheck/matrixone.log 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: branchcheck-matrixone-exploratory
+          path: .artifacts/branchcheck
