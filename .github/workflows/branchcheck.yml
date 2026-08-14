@@ -36,7 +36,7 @@ jobs:
 
   matrixone-exploratory:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -78,6 +78,10 @@ jobs:
         env: *matrixone-env
         run: |
           dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- matrixone-identity | tee .artifacts/branchcheck/matrixone-identity.json
+      - name: Run fair-budget MatrixOne identity trigger campaign
+        env: *matrixone-env
+        run: |
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- matrixone-budget | tee .artifacts/branchcheck/matrixone-trigger-budget.json
       - name: Capture MatrixOne logs
         if: always()
         run: |
