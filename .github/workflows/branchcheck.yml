@@ -64,7 +64,7 @@ jobs:
           docker logs matrixone
           exit 1
       - name: Run executable MatrixOne continuation probe
-        env:
+        env: &matrixone-env
           BRANCHCHECK_SQL_CLIENT: mysql
           BRANCHCHECK_MATRIXONE_HOST: 127.0.0.1
           BRANCHCHECK_MATRIXONE_PORT: '6001'
@@ -72,7 +72,11 @@ jobs:
           BRANCHCHECK_MATRIXONE_PASSWORD: '111'
         run: |
           mkdir -p .artifacts/branchcheck
-          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- matrixone | tee .artifacts/branchcheck/matrixone.json
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- matrixone | tee .artifacts/branchcheck/matrixone-continuation.json
+      - name: Run executable MatrixOne historical identity probe
+        env: *matrixone-env
+        run: |
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- matrixone-identity | tee .artifacts/branchcheck/matrixone-identity.json
       - name: Capture MatrixOne logs
         if: always()
         run: |
