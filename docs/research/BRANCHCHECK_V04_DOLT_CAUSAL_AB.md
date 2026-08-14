@@ -68,6 +68,33 @@ The same source tree was rebuilt and the same fresh-server / fresh-clone witness
 
 The workflow's race-aware polarity assertion passed.
 
+## Independent release repetition and ordinary-read control
+
+A later independent ten-run release sample added one extra diagnostic **after** the continuation attempt: ordinary `COUNT(*)` / `MAX(pk)` reads of the clone. The read is deliberately performed only after the INSERT attempt so it cannot give asynchronous sequence initialization extra time before the race trigger.
+
+Dolt 2.2.3 again produced:
+
+- **10/10 Pass**;
+- **10/10 Success**;
+- generated id `1` in all runs.
+
+Dolt 2.3.0 produced a different stochastic split than the earlier 10-run sample:
+
+- **4/10 Pass**;
+- **6/10 Fail**;
+- all six failures were `context canceled`.
+
+The earlier independent 2.3.0 sample was 6 Pass / 4 Fail. The change from 4/10 failures to 6/10 failures reinforces that these small samples should **not** be interpreted as a stable failure probability.
+
+Crucially, after every one of the six rejected generated inserts in the later sample:
+
+- the clone remained ordinarily readable;
+- `COUNT(*) = 0`;
+- `MAX(pk) = NULL`;
+- the explicit B4 clone-operation grammar baseline remained **Pass**.
+
+Therefore the observed failure is not generic clone unusability. The branch operation has succeeded and ordinary data access still works; the broken path is the later generated-value continuation authority.
+
 ## Causal interpretation
 
 The A/B result substantially strengthens the source-level hypothesis:
@@ -89,7 +116,7 @@ This result is stronger evidence for **continuation closure** than for oracle no
 
 The clone operation succeeds. A generic branch-operation baseline can therefore pass the clone terminal. A generic state differential baseline can detect the bug once the exact generated-value continuation is supplied. BranchCheck's proposed value is to derive that continuation from the branch capability contract: generated-identifier / sequence authority is latent state that must be usable after the fork request has completed.
 
-The finding is especially useful because the defect is not merely a wrong copied value. It is a hidden **lifetime dependency** introduced at branch creation whose invalid state is exposed only by a later legal operation.
+The post-failure read control sharpens the distinction: an ordinary observer can still read the valid empty clone after the generated insert is rejected. The failure is therefore not simply a broken database handle or failed clone transaction. It is a hidden **lifetime dependency in continuation state** introduced at branch creation and exposed by a later legal operation.
 
 ## Confidence effect
 
@@ -100,6 +127,7 @@ Given:
 - older-release control;
 - current-release/current-main reproduction;
 - repeated stochastic characterization;
+- ordinary-read-after-failure specificity;
 - source-history localization; and
 - 20×/20× causal A/B rescue,
 
