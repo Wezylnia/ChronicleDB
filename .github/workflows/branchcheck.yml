@@ -142,9 +142,13 @@ jobs:
           fixed = json.loads(Path('.artifacts/branchcheck/slatedb-fixed.json').read_text())
           def relation(doc):
               return next(r for r in doc['Report']['Relations'] if r['RelationId'] == 'BC.observer-dependency')['Status']
+          def smoke(doc):
+              return doc['ObserverSmokeBaseline']['Status']
           assert relation(buggy) == 'Fail', relation(buggy)
-          assert buggy['StrictBranchCheckOnly'] is True, buggy['StrictBranchCheckOnly']
+          assert smoke(buggy) == 'Detected', smoke(buggy)
+          assert buggy['StrictBranchCheckOnly'] is False, buggy['StrictBranchCheckOnly']
           assert relation(fixed) == 'Pass', relation(fixed)
+          assert smoke(fixed) == 'Pass', smoke(fixed)
           assert fixed['Report']['BranchCheckDetected'] is False, fixed['Report']['BranchCheckDetected']
           PY
       - uses: actions/upload-artifact@v4
