@@ -8,6 +8,8 @@ public sealed record DoltCloneContinuationSmokeReport(
     OutcomeClass ContinuationOutcome,
     string? GeneratedId,
     string Detail,
+    int PostAttemptReadableRowCount,
+    string? PostAttemptReadableMaxPrimaryKey,
     RelationStatus ContinuationRelation,
     string RelationEvidence,
     BaselineStatus CloneGrammarBaseline,
@@ -64,15 +66,19 @@ public static class DoltCloneContinuationSmokeProbe
                 cancellationToken).ConfigureAwait(false);
 
             OutcomeClass outcome = insert.ExitCode == 0 ? OutcomeClass.Success : OutcomeClass.Rejected;
-            string? generatedId = null;
-            if (insert.ExitCode == 0)
-            {
-                (_, long? maxPk) = await client.ReadStateAsync("other", cancellationToken).ConfigureAwait(false);
-                generatedId = maxPk?.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            }
+            string detail = Normalize(insert.StandardError.Length == 0 ? insert.StandardOutput : insert.StandardError);
+
+            // Do this only after the continuation attempt so the ordinary read does not
+            // give asynchronous sequence initialization extra time before the race trigger.
+            // A successful read after a rejected AUTO_INCREMENT write shows the destination
+            // database itself is still addressable and narrows the failure to latent
+            // continuation authority rather than generic clone unusability.
+            (int readableRows, long? readableMaxPk) = await client.ReadStateAsync("other", cancellationToken).ConfigureAwait(false);
+            string? generatedId = insert.ExitCode == 0
+                ? readableMaxPk?.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                : null;
 
             string version = (await RequireCliAsync(cli, root, ["version"], cancellationToken).ConfigureAwait(false)).StandardOutput.Trim();
-            string detail = Normalize(insert.StandardError.Length == 0 ? insert.StandardOutput : insert.StandardError);
             BranchScenario scenario = CreateScenario(version, outcome, generatedId, detail);
             RelationResult relation = new ContinuationStateRelation().Evaluate(scenario);
             BaselineResult cloneGrammar = AdversarialBaselineSuite.EvaluateBranchGrammar(scenario);
@@ -81,6 +87,8 @@ public static class DoltCloneContinuationSmokeProbe
                 outcome,
                 generatedId,
                 detail,
+                readableRows,
+                readableMaxPk?.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 relation.Status,
                 relation.Evidence,
                 cloneGrammar.Status,
