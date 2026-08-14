@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'tools/ChronicleDB.BranchCheck/**'
+      - 'tools/BranchCheck.External/**'
       - 'tests/Research/ChronicleDB.BranchCheck.Tests/**'
       - 'docs/research/BRANCHCHECK_*.md'
       - 'src/**'
@@ -86,4 +87,32 @@ jobs:
         if: always()
         with:
           name: branchcheck-matrixone-exploratory
+          path: .artifacts/branchcheck
+
+  slatedb-exploratory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.301'
+      - name: Record Rust toolchain
+        run: cargo --version && rustc --version
+      - name: Lock and build SlateDB observer probe
+        run: |
+          cargo generate-lockfile --manifest-path tools/BranchCheck.External/SlateDbProbe/Cargo.toml
+          cargo build --release --locked --manifest-path tools/BranchCheck.External/SlateDbProbe/Cargo.toml
+      - name: Run executable SlateDB observer relation
+        env:
+          BRANCHCHECK_SLATEDB_PROBE: ${{ github.workspace }}/tools/BranchCheck.External/SlateDbProbe/target/release/branchcheck-slatedb-probe
+        run: |
+          mkdir -p .artifacts/branchcheck
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- slatedb | tee .artifacts/branchcheck/slatedb.json
+          cp tools/BranchCheck.External/SlateDbProbe/Cargo.lock .artifacts/branchcheck/slatedb-Cargo.lock
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: branchcheck-slatedb-exploratory
           path: .artifacts/branchcheck
