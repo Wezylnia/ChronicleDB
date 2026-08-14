@@ -42,6 +42,9 @@
   <Folder Name="/tests/Recovery/">
     <Project Path="tests/Recovery/ChronicleDB.RecoveryTests/ChronicleDB.RecoveryTests.csproj" />
   </Folder>
+  <Folder Name="/tests/Research/">
+    <Project Path="tests/Research/ChronicleDB.BranchCheck.Tests/ChronicleDB.BranchCheck.Tests.csproj" />
+  </Folder>
   <Folder Name="/tests/Unit/">
     <Project Path="tests/Unit/ChronicleDB.UnitTests/ChronicleDB.UnitTests.csproj" />
   </Folder>
@@ -49,6 +52,7 @@
     <Project Path="tools/ChronicleDB.A1ShadowRetentionPilot/ChronicleDB.A1ShadowRetentionPilot.csproj" />
     <Project Path="tools/ChronicleDB.CrashHarness/ChronicleDB.CrashHarness.csproj" />
     <Project Path="tools/ChronicleDB.A8ErasurePilot/ChronicleDB.A8ErasurePilot.csproj" />
+    <Project Path="tools/ChronicleDB.BranchCheck/ChronicleDB.BranchCheck.csproj" />
     <Project Path="tools/ChronicleDB.Inspector/ChronicleDB.Inspector.csproj" />
     <Project Path="tools/ChronicleDB.ResearchWorkloadRunner/ChronicleDB.ResearchWorkloadRunner.csproj" />
     <Project Path="tools/ChronicleDB.WorkloadRunner/ChronicleDB.WorkloadRunner.csproj" />
