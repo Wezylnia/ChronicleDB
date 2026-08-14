@@ -60,7 +60,7 @@ public sealed class BranchCheckMicroTests
     }
 
     [Fact]
-    public void GenericStateBaselineDoesNotInspectSpecializedObserverPaths()
+    public void ObserverSmokeBaselineCatchesEasyAlternateObserverFailures()
     {
         HistoricalIssueCase issue = Assert.Single(
             HistoricalIssueCampaign.Create(),
@@ -71,12 +71,14 @@ public sealed class BranchCheckMicroTests
             report.Baselines,
             static result => result.BaselineId == "B2.generic-state-differential");
         BaselineResult branchGrammar = AdversarialBaselineSuite.EvaluateBranchGrammar(issue.Scenario);
+        BaselineResult observerSmoke = AdversarialBaselineSuite.EvaluateObserverSmoke(issue.Scenario);
         RelationResult observer = Assert.Single(
             report.Relations,
             static result => result.RelationId == "BC.observer-dependency");
 
         Assert.Equal(BaselineStatus.Pass, generic.Status);
         Assert.Equal(BaselineStatus.NotApplicable, branchGrammar.Status);
+        Assert.Equal(BaselineStatus.Detected, observerSmoke.Status);
         Assert.Equal(RelationStatus.Fail, observer.Status);
     }
 
@@ -114,7 +116,7 @@ public sealed class BranchCheckMicroTests
     }
 
     [Fact]
-    public void HistoricalCampaignStillContainsAtLeastOneStrictRelationSpecificCaseAfterB4Attack()
+    public void CuratedHistoricalSetHasNoStrictUniqueCaseAfterB4AndB5Attack()
     {
         HistoricalIssueCase[] cases = HistoricalIssueCampaign.Create().ToArray();
         int strictUnique = 0;
@@ -122,7 +124,8 @@ public sealed class BranchCheckMicroTests
         {
             ScenarioReport report = BranchCheckRunner.Evaluate(issue.Scenario);
             BaselineResult b4 = AdversarialBaselineSuite.EvaluateBranchGrammar(issue.Scenario);
-            if (report.BranchCheckDetected && !AdversarialBaselineSuite.AnyGenericBaselineDetected(report, b4))
+            BaselineResult b5 = AdversarialBaselineSuite.EvaluateObserverSmoke(issue.Scenario);
+            if (report.BranchCheckDetected && !AdversarialBaselineSuite.AnyGenericBaselineDetected(report, b4, b5))
             {
                 strictUnique++;
             }
@@ -130,7 +133,7 @@ public sealed class BranchCheckMicroTests
 
         Assert.Equal(7, cases.Length);
         Assert.True(cases.Select(static issue => issue.System).Distinct(StringComparer.Ordinal).Count() >= 5);
-        Assert.True(strictUnique >= 1);
+        Assert.Equal(0, strictUnique);
     }
 
     [Fact]
