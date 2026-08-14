@@ -74,15 +74,18 @@ jobs:
           BRANCHCHECK_MATRIXONE_USER: root
           BRANCHCHECK_MATRIXONE_PASSWORD: '111'
         run: |
+          set -o pipefail
           mkdir -p .artifacts/branchcheck
           dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- matrixone | tee .artifacts/branchcheck/matrixone-continuation.json
       - name: Run executable MatrixOne historical identity probe
         env: *matrixone-env
         run: |
+          set -o pipefail
           dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- matrixone-identity | tee .artifacts/branchcheck/matrixone-identity.json
       - name: Run fair-budget MatrixOne identity trigger campaign
         env: *matrixone-env
         run: |
+          set -o pipefail
           dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- matrixone-budget | tee .artifacts/branchcheck/matrixone-trigger-budget.json
       - name: Capture MatrixOne logs
         if: always()
@@ -117,6 +120,7 @@ jobs:
           BRANCHCHECK_SLATEDB_PROBE: ${{ github.workspace }}/tools/BranchCheck.External/SlateDbProbe/target/debug/branchcheck-slatedb-probe
           SLATEDB_PROBE_TARGET: crate-0.14.1
         run: |
+          set -o pipefail
           dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- slatedb | tee .artifacts/branchcheck/slatedb-buggy.json
           dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- slatedb-budget | tee .artifacts/branchcheck/slatedb-buggy-budget.json
       - name: Retarget probe to merged SlateDB fix
@@ -139,6 +143,7 @@ jobs:
           BRANCHCHECK_SLATEDB_PROBE: ${{ github.workspace }}/tools/BranchCheck.External/SlateDbProbe/target/debug/branchcheck-slatedb-probe
           SLATEDB_PROBE_TARGET: fix-6a131a9e
         run: |
+          set -o pipefail
           dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- slatedb | tee .artifacts/branchcheck/slatedb-fixed.json
           dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- slatedb-budget | tee .artifacts/branchcheck/slatedb-fixed-budget.json
       - name: Assert buggy/fixed relation and budget polarity
@@ -198,6 +203,7 @@ jobs:
           "$DOLT_BIN" version | tee .artifacts/branchcheck/dolt-version.txt
       - name: Run fair-budget Dolt history-import campaign
         run: |
+          set -o pipefail
           dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-budget | tee .artifacts/branchcheck/dolt-trigger-budget.json
       - uses: actions/upload-artifact@v4
         if: always()
