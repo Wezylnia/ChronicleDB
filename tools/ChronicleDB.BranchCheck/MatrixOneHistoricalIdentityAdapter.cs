@@ -1,5 +1,14 @@
 namespace ChronicleDB.BranchCheck;
 
+public enum MatrixOneIdentityMutationRecipe
+{
+    NoOp,
+    UpdateSourceRow,
+    CreateUnrelatedObject,
+    RecreateUnrelatedObject,
+    RecreateSourceSameName,
+}
+
 public sealed record MatrixOneHistoricalIdentityObservation(
     string ServerVersion,
     string SnapshotParentId,
@@ -33,8 +42,14 @@ public static class MatrixOneHistoricalIdentityOutputParser
 
 public static class MatrixOneHistoricalIdentityAdapter
 {
+    public static Task<BranchScenario> ExecuteAsync(
+        SqlCliOptions options,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(options, MatrixOneIdentityMutationRecipe.RecreateSourceSameName, cancellationToken);
+
     public static async Task<BranchScenario> ExecuteAsync(
         SqlCliOptions options,
+        MatrixOneIdentityMutationRecipe recipe,
         CancellationToken cancellationToken = default)
     {
         string suffix = Guid.NewGuid().ToString("N")[..10];
@@ -42,11 +57,11 @@ public static class MatrixOneHistoricalIdentityAdapter
         string snapshot = "bc_identity_sp_" + suffix;
         var runner = new SqlCliProcessRunner(options);
 
-        SqlCliResult setup = await runner.ExecuteAsync(BuildSetupSql(database, snapshot), cancellationToken).ConfigureAwait(false);
+        SqlCliResult setup = await runner.ExecuteAsync(BuildSetupSql(database, snapshot, recipe), cancellationToken).ConfigureAwait(false);
         if (setup.ExitCode != 0)
         {
             throw new ExternalAdapterException(
-                $"MatrixOne historical identity setup failed with exit code {setup.ExitCode}. stderr: {setup.StandardError}");
+                $"MatrixOne historical identity setup ({recipe}) failed with exit code {setup.ExitCode}. stderr: {setup.StandardError}");
         }
 
         MatrixOneHistoricalIdentityObservation observation = MatrixOneHistoricalIdentityOutputParser.Parse(setup.StandardOutput);
@@ -83,7 +98,7 @@ public static class MatrixOneHistoricalIdentityAdapter
             diffDetail);
 
         return new BranchScenario(
-            "matrixone-live-historical-identity",
+            $"matrixone-live-historical-identity-{recipe}",
             BranchCapabilityProfile.Create(
                 "MatrixOne " + observation.ServerVersion,
                 supportsHistoricalFork: true,
@@ -106,33 +121,52 @@ public static class MatrixOneHistoricalIdentityAdapter
             CreationEvidence: CreationEvidenceKind.Values | CreationEvidenceKind.Schema);
     }
 
-    private static string BuildSetupSql(string database, string snapshot)
-        => $$"""
-           SELECT version();
-           DROP SNAPSHOT IF EXISTS {{snapshot}};
-           DROP DATABASE IF EXISTS {{database}};
-           CREATE DATABASE {{database}};
-           CREATE TABLE {{database}}.parent_t (id INT PRIMARY KEY, val VARCHAR(20));
-           INSERT INTO {{database}}.parent_t VALUES (1, 'snapshot-row');
-           CREATE SNAPSHOT {{snapshot}} FOR TABLE {{database}} parent_t;
-           SELECT rel_id FROM mo_catalog.mo_tables {snapshot='{{snapshot}}'}
-             WHERE account_id = 0 AND reldatabase = '{{database}}' AND relname = 'parent_t';
-           DROP TABLE {{database}}.parent_t;
-           CREATE TABLE {{database}}.parent_t (id INT PRIMARY KEY, val VARCHAR(20));
-           INSERT INTO {{database}}.parent_t VALUES (2, 'current-row');
-           SELECT rel_id FROM mo_catalog.mo_tables
-             WHERE account_id = 0 AND reldatabase = '{{database}}' AND relname = 'parent_t';
-           DATA BRANCH CREATE TABLE {{database}}.child_t
-             FROM {{database}}.parent_t{snapshot='{{snapshot}}'};
-           SELECT CONCAT(id, ':', val) FROM {{database}}.child_t ORDER BY id;
-           SELECT bm.p_table_id
-             FROM mo_catalog.mo_branch_metadata bm
-             JOIN mo_catalog.mo_tables mt ON mt.rel_id = bm.table_id
-             WHERE mt.reldatabase = '{{database}}' AND mt.relname = 'child_t';
-           SELECT obj_id FROM mo_catalog.mo_snapshots
-             WHERE kind = 'branch' AND database_name = '{{database}}' AND table_name = 'parent_t'
-             ORDER BY ts DESC LIMIT 1;
-           """;
+    private static string BuildSetupSql(
+        string database,
+        string snapshot,
+        MatrixOneIdentityMutationRecipe recipe)
+    {
+        string mutationSql = BuildMutationSql(database, recipe);
+        return $$"""
+                 SELECT version();
+                 DROP SNAPSHOT IF EXISTS {{snapshot}};
+                 DROP DATABASE IF EXISTS {{database}};
+                 CREATE DATABASE {{database}};
+                 CREATE TABLE {{database}}.parent_t (id INT PRIMARY KEY, val VARCHAR(20));
+                 INSERT INTO {{database}}.parent_t VALUES (1, 'snapshot-row');
+                 CREATE SNAPSHOT {{snapshot}} FOR TABLE {{database}} parent_t;
+                 SELECT rel_id FROM mo_catalog.mo_tables {snapshot='{{snapshot}}'}
+                   WHERE account_id = 0 AND reldatabase = '{{database}}' AND relname = 'parent_t';
+                 {{mutationSql}}
+                 SELECT rel_id FROM mo_catalog.mo_tables
+                   WHERE account_id = 0 AND reldatabase = '{{database}}' AND relname = 'parent_t';
+                 DATA BRANCH CREATE TABLE {{database}}.child_t
+                   FROM {{database}}.parent_t{snapshot='{{snapshot}}'};
+                 SELECT CONCAT(id, ':', val) FROM {{database}}.child_t ORDER BY id;
+                 SELECT bm.p_table_id
+                   FROM mo_catalog.mo_branch_metadata bm
+                   JOIN mo_catalog.mo_tables mt ON mt.rel_id = bm.table_id
+                   WHERE mt.reldatabase = '{{database}}' AND mt.relname = 'child_t';
+                 SELECT obj_id FROM mo_catalog.mo_snapshots
+                   WHERE kind = 'branch' AND database_name = '{{database}}' AND table_name = 'parent_t'
+                   ORDER BY ts DESC LIMIT 1;
+                 """;
+    }
+
+    private static string BuildMutationSql(string database, MatrixOneIdentityMutationRecipe recipe)
+        => recipe switch
+        {
+            MatrixOneIdentityMutationRecipe.NoOp => "SET @branchcheck_noop = 1;",
+            MatrixOneIdentityMutationRecipe.UpdateSourceRow =>
+                $"UPDATE {database}.parent_t SET val = 'current-row' WHERE id = 1;",
+            MatrixOneIdentityMutationRecipe.CreateUnrelatedObject =>
+                $"CREATE TABLE {database}.unrelated_t (id INT PRIMARY KEY);",
+            MatrixOneIdentityMutationRecipe.RecreateUnrelatedObject =>
+                $"CREATE TABLE {database}.unrelated_t (id INT PRIMARY KEY); DROP TABLE {database}.unrelated_t; CREATE TABLE {database}.unrelated_t (id INT PRIMARY KEY);",
+            MatrixOneIdentityMutationRecipe.RecreateSourceSameName =>
+                $"DROP TABLE {database}.parent_t; CREATE TABLE {database}.parent_t (id INT PRIMARY KEY, val VARCHAR(20)); INSERT INTO {database}.parent_t VALUES (2, 'current-row');",
+            _ => throw new ArgumentOutOfRangeException(nameof(recipe), recipe, "Unknown MatrixOne identity mutation recipe."),
+        };
 
     private static string BuildDiffSql(string database)
         => $"DATA BRANCH DIFF `{database}`.`child_t` AGAINST `{database}`.`parent_t`;";
