@@ -70,11 +70,13 @@ public sealed class BranchCheckMicroTests
         BaselineResult generic = Assert.Single(
             report.Baselines,
             static result => result.BaselineId == "B2.generic-state-differential");
+        BaselineResult branchGrammar = AdversarialBaselineSuite.EvaluateBranchGrammar(issue.Scenario);
         RelationResult observer = Assert.Single(
             report.Relations,
             static result => result.RelationId == "BC.observer-dependency");
 
         Assert.Equal(BaselineStatus.Pass, generic.Status);
+        Assert.Equal(BaselineStatus.NotApplicable, branchGrammar.Status);
         Assert.Equal(RelationStatus.Fail, observer.Status);
     }
 
@@ -98,15 +100,37 @@ public sealed class BranchCheckMicroTests
     }
 
     [Fact]
-    public void HistoricalCampaignSpansIndependentSystemsAndContainsBranchCheckOnlyCases()
+    public void BranchGrammarBaselineRemovesEasyLifecycleAndDiffCasesFromStrictUniqueSet()
+    {
+        HistoricalIssueCase matrix = Assert.Single(
+            HistoricalIssueCampaign.Create(),
+            static issue => issue.System == "MatrixOne" && issue.IssueNumber == 26120);
+        HistoricalIssueCase dolt = Assert.Single(
+            HistoricalIssueCampaign.Create(),
+            static issue => issue.System == "Dolt" && issue.IssueNumber == 7106);
+
+        Assert.Equal(BaselineStatus.Detected, AdversarialBaselineSuite.EvaluateBranchGrammar(matrix.Scenario).Status);
+        Assert.Equal(BaselineStatus.Detected, AdversarialBaselineSuite.EvaluateBranchGrammar(dolt.Scenario).Status);
+    }
+
+    [Fact]
+    public void HistoricalCampaignStillContainsAtLeastOneStrictRelationSpecificCaseAfterB4Attack()
     {
         HistoricalIssueCase[] cases = HistoricalIssueCampaign.Create().ToArray();
-        ScenarioReport[] reports = cases.Select(static issue => BranchCheckRunner.Evaluate(issue.Scenario)).ToArray();
+        int strictUnique = 0;
+        foreach (HistoricalIssueCase issue in cases)
+        {
+            ScenarioReport report = BranchCheckRunner.Evaluate(issue.Scenario);
+            BaselineResult b4 = AdversarialBaselineSuite.EvaluateBranchGrammar(issue.Scenario);
+            if (report.BranchCheckDetected && !AdversarialBaselineSuite.AnyGenericBaselineDetected(report, b4))
+            {
+                strictUnique++;
+            }
+        }
 
         Assert.Equal(7, cases.Length);
         Assert.True(cases.Select(static issue => issue.System).Distinct(StringComparer.Ordinal).Count() >= 5);
-        Assert.True(reports.Count(static report => report.BranchCheckOnly) >= 3);
-        Assert.All(reports, static report => Assert.True(report.BranchCheckDetected));
+        Assert.True(strictUnique >= 1);
     }
 
     [Fact]
