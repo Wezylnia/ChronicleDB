@@ -24,15 +24,28 @@ public sealed record DoltTriggerBudgetReport(
     int ViolationRecipeCount,
     int SequenceRelevantRecipeCount,
     bool AllViolationsInsideSequenceRelevantClass,
-    bool GuidedHasStrictAdvantageAtAnyBudget);
+    bool GuidedHasStrictAdvantageAtAnyBudget,
+    string PortabilityNote);
 
 public static class DoltTriggerBudgetCampaign
 {
+    // Cross-version common denominator for the paired 2.2.3/2.3.0 provider experiment.
+    // FetchHardReset remains a valid diagnostic recipe, but Dolt 2.3.0 cancels the
+    // calling SQL context during DOLT_RESET --hard. It is therefore excluded from
+    // the paired budget rather than being misclassified as a semantic violation.
+    public static IReadOnlyList<DoltHistoryImportRecipe> PortableRecipes { get; } =
+    [
+        DoltHistoryImportRecipe.NoOp,
+        DoltHistoryImportRecipe.FetchOnly,
+        DoltHistoryImportRecipe.Pull,
+        DoltHistoryImportRecipe.FetchMerge,
+    ];
+
     public static async Task<DoltTriggerBudgetReport> ExecuteAsync(
         DoltCliOptions options,
         CancellationToken cancellationToken = default)
     {
-        DoltHistoryImportRecipe[] recipes = Enum.GetValues<DoltHistoryImportRecipe>();
+        DoltHistoryImportRecipe[] recipes = PortableRecipes.ToArray();
         var evidence = new List<DoltTriggerRecipeEvidence>(recipes.Length);
         string backendVersion = "unknown";
         foreach (DoltHistoryImportRecipe recipe in recipes)
@@ -100,7 +113,8 @@ public static class DoltTriggerBudgetCampaign
             violationCount,
             relevantCount,
             allViolationsInsideRelevant,
-            strictAdvantage);
+            strictAdvantage,
+            "Portable paired budget excludes FetchHardReset because Dolt 2.3.0 cancels the SQL caller context during DOLT_RESET --hard; that recipe is not counted as a failure or success in the paired curve.");
     }
 
     public static IReadOnlyList<DoltHistoryImportRecipe[]> GenerateRiskPrioritizedOrderings(
