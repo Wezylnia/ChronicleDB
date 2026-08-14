@@ -5,7 +5,6 @@ use slatedb::object_store::ObjectStore;
 use slatedb::{Db, DbReader};
 use std::sync::Arc;
 
-const VERSION: &str = "0.14.1";
 const NUM_KEYS: u32 = 128;
 
 fn key(i: u32) -> Vec<u8> {
@@ -85,6 +84,7 @@ async fn read_with_db(clone_path: &str, object_store: Arc<dyn ObjectStore>) -> (
 
 #[tokio::main]
 async fn main() {
+    let target = std::env::var("SLATEDB_PROBE_TARGET").unwrap_or_else(|_| "unknown".to_owned());
     let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
     let parent_path = "branchcheck-parent";
     let clone_path = "branchcheck-clone";
@@ -123,7 +123,7 @@ async fn main() {
     let (reader_count, reader_error) = read_with_db_reader(clone_path, Arc::clone(&object_store)).await;
     let (db_count, db_error) = read_with_db(clone_path, Arc::clone(&object_store)).await;
 
-    println!("version={VERSION}");
+    println!("version={target}");
     println!("total={NUM_KEYS}");
     println!("db={db_count}");
     println!("reader={reader_count}");
