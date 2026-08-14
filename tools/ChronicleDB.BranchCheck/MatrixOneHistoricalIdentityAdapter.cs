@@ -86,33 +86,33 @@ public static class MatrixOneHistoricalIdentityAdapter
     }
 
     private static string BuildSql(string database, string snapshot)
-        => $"""
+        => $$"""
            SELECT version();
-           DROP SNAPSHOT IF EXISTS {snapshot};
-           DROP DATABASE IF EXISTS {database};
-           CREATE DATABASE {database};
-           CREATE TABLE {database}.parent_t (id INT PRIMARY KEY, val VARCHAR(20));
-           INSERT INTO {database}.parent_t VALUES (1, 'snapshot-row');
-           CREATE SNAPSHOT {snapshot} FOR TABLE {database} parent_t;
-           SELECT rel_id FROM mo_catalog.mo_tables {{snapshot='{snapshot}'}}
-             WHERE account_id = 0 AND reldatabase = '{database}' AND relname = 'parent_t';
-           DROP TABLE {database}.parent_t;
-           CREATE TABLE {database}.parent_t (id INT PRIMARY KEY, val VARCHAR(20));
-           INSERT INTO {database}.parent_t VALUES (2, 'current-row');
+           DROP SNAPSHOT IF EXISTS {{snapshot}};
+           DROP DATABASE IF EXISTS {{database}};
+           CREATE DATABASE {{database}};
+           CREATE TABLE {{database}}.parent_t (id INT PRIMARY KEY, val VARCHAR(20));
+           INSERT INTO {{database}}.parent_t VALUES (1, 'snapshot-row');
+           CREATE SNAPSHOT {{snapshot}} FOR TABLE {{database}} parent_t;
+           SELECT rel_id FROM mo_catalog.mo_tables {snapshot='{{snapshot}}'}
+             WHERE account_id = 0 AND reldatabase = '{{database}}' AND relname = 'parent_t';
+           DROP TABLE {{database}}.parent_t;
+           CREATE TABLE {{database}}.parent_t (id INT PRIMARY KEY, val VARCHAR(20));
+           INSERT INTO {{database}}.parent_t VALUES (2, 'current-row');
            SELECT rel_id FROM mo_catalog.mo_tables
-             WHERE account_id = 0 AND reldatabase = '{database}' AND relname = 'parent_t';
-           DATA BRANCH CREATE TABLE {database}.child_t
-             FROM {database}.parent_t{{snapshot='{snapshot}'}};
-           SELECT CONCAT(id, ':', val) FROM {database}.child_t ORDER BY id;
+             WHERE account_id = 0 AND reldatabase = '{{database}}' AND relname = 'parent_t';
+           DATA BRANCH CREATE TABLE {{database}}.child_t
+             FROM {{database}}.parent_t{snapshot='{{snapshot}}'};
+           SELECT CONCAT(id, ':', val) FROM {{database}}.child_t ORDER BY id;
            SELECT bm.p_table_id
              FROM mo_catalog.mo_branch_metadata bm
              JOIN mo_catalog.mo_tables mt ON mt.rel_id = bm.table_id
-             WHERE mt.reldatabase = '{database}' AND mt.relname = 'child_t';
+             WHERE mt.reldatabase = '{{database}}' AND mt.relname = 'child_t';
            SELECT obj_id FROM mo_catalog.mo_snapshots
-             WHERE kind = 'branch' AND database_name = '{database}' AND table_name = 'parent_t'
+             WHERE kind = 'branch' AND database_name = '{{database}}' AND table_name = 'parent_t'
              ORDER BY ts DESC LIMIT 1;
-           DROP SNAPSHOT IF EXISTS {snapshot};
-           DROP DATABASE {database};
+           DROP SNAPSHOT IF EXISTS {{snapshot}};
+           DROP DATABASE {{database}};
            """;
 
     private static BranchBoundary Boundary(string objectId)
