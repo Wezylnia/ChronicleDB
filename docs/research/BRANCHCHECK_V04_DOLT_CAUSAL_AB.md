@@ -4,15 +4,15 @@
 
 This note records the completed repeated causal control for the dynamic-clone continuation regression candidate described in `BRANCHCHECK_V04_DOLT_LIVE_DISCOVERY.md`.
 
-This is **source-causal-reproduced current regression evidence**, not upstream maintainer confirmation.
+Classification: **source-causal-reproduced current regression candidate**, not upstream maintainer confirmation.
 
-## Pinned source
+## Pinned source and witness
 
 Dolt current main was pinned and built from:
 
 `c3b5ce3c67f8677ca08a0a58d8c03cdc95bff8b7`
 
-The BranchCheck witness used a fresh server, repository, file remote, and dynamic clone per repetition.
+Each repetition used a fresh server, repository, file remote, and dynamic clone.
 
 Minimal semantic trace:
 
@@ -36,13 +36,9 @@ Twenty independent fresh repetitions:
 - continuation `Rejected`: **8/20**
 - generated id `1`: **12/20**
 - no generated id: **8/20**
-- every rejected terminal had the same error signature:
+- every rejected terminal: `Error 1105 (HY000): context canceled`
 
-```text
-Error 1105 (HY000): context canceled
-```
-
-This is a stochastic request-lifetime race. The observed **8/20** rate belongs only to this CI sample and must not be reported as a universal failure probability.
+This is a stochastic request-lifetime race. The observed 8/20 split belongs only to this CI sample and is not a universal failure-rate estimate.
 
 ## Causal control
 
@@ -54,11 +50,9 @@ The same pinned source tree was modified by restoring only the pre-regression co
  if gcSafepointController != nil {
 ```
 
-The patch is a causality control, not a proposed production fix.
+The same source tree was rebuilt and the same fresh-server/fresh-clone witness was executed twenty more times.
 
-The same source tree was rebuilt and the same fresh-server / fresh-clone witness was executed twenty more times.
-
-## Patched distribution
+Patched distribution:
 
 - `ContinuationRelation = Pass`: **20/20**
 - continuation `Success`: **20/20**
@@ -68,74 +62,75 @@ The same source tree was rebuilt and the same fresh-server / fresh-clone witness
 
 The workflow's race-aware polarity assertion passed.
 
-## Independent release repetition and ordinary-read control
+The one-line change is a **causality control, not a production-fix proposal**. A production solution should preserve required context values while separating database/global-state initialization lifetime from SQL request cancellation.
 
-A later independent ten-run release sample added one extra diagnostic **after** the continuation attempt: ordinary `COUNT(*)` / `MAX(pk)` reads of the clone. The read is deliberately performed only after the INSERT attempt so it cannot give asynchronous sequence initialization extra time before the race trigger.
+## Independent release repetitions
 
-Dolt 2.2.3 again produced:
+The release-level smoke uses fresh server + fresh repository + fresh clone on every repetition and aggregates results without a predeclared 2.3.0 failure rate.
 
-- **10/10 Pass**;
-- **10/10 Success**;
-- generated id `1` in all runs.
+Three independent ten-run samples were collected during the investigation.
 
-Dolt 2.3.0 produced a different stochastic split than the earlier 10-run sample:
+### Dolt 2.2.3
 
-- **4/10 Pass**;
-- **6/10 Fail**;
-- all six failures were `context canceled`.
+- sample A: **10/10 Pass**
+- sample B: **10/10 Pass**
+- sample C: **10/10 Pass**
+- successful continuation generated id `1` in every run
 
-The earlier independent 2.3.0 sample was 6 Pass / 4 Fail. The change from 4/10 failures to 6/10 failures reinforces that these small samples should **not** be interpreted as a stable failure probability.
+### Dolt 2.3.0
 
-Crucially, after every one of the six rejected generated inserts in the later sample:
+- sample A: **6 Pass / 4 Fail**
+- sample B: **4 Pass / 6 Fail**
+- sample C: **8 Pass / 2 Fail**
+- every observed failure used the same `context canceled` terminal
 
-- the clone remained ordinarily readable;
+The changing split reinforces that these samples must be reported as repeated stochastic evidence, not as a stable failure probability.
+
+## Ordinary-read-after-failure control
+
+One independent ten-run sample added an ordinary clone read **after** the continuation attempt, deliberately avoiding any pre-INSERT delay that could make the race easier to win.
+
+For every rejected generated insert in that sample:
+
+- the clone remained readable;
 - `COUNT(*) = 0`;
 - `MAX(pk) = NULL`;
-- the explicit B4 clone-operation grammar baseline remained **Pass**.
+- B4 clone-operation grammar remained **Pass**.
 
-Therefore the observed failure is not generic clone unusability. The branch operation has succeeded and ordinary data access still works; the broken path is the later generated-value continuation authority.
+This rules out the simple explanation that the clone operation failed silently or left an unusable database handle. The broken path is the later generated-value continuation authority.
 
 ## Causal interpretation
 
-The A/B result substantially strengthens the source-level hypothesis:
+The evidence supports this chain:
 
-1. dynamic clone registration constructs destination database global state from the SQL request context;
+1. dynamic clone registration constructs destination global state from the SQL request context;
 2. sequence tracker initialization runs asynchronously;
-3. the current tracker implementation requires that initialization context to outlive initialization;
-4. the 2026-08-03 generic sequence-tracker refactor removed the previous request-cancellation detachment;
-5. a short `DOLT_CLONE` request can finish before asynchronous sequence initialization completes;
+3. the tracker requires initialization context to outlive initialization;
+4. the 2026-08-03 generic SequenceTracker refactor removed the previous cancellation detachment;
+5. a short `DOLT_CLONE` request can finish before async initialization completes;
 6. cancellation becomes the tracker's terminal initialization error;
-7. a later generated-value continuation surfaces the hidden error;
-8. restoring the old cancellation-detached lifetime removes the observed race in 20/20 sampled controls.
+7. a later generated-value continuation surfaces that hidden error;
+8. restoring the old detached lifetime removes the observed failure in the 20/20 sampled causal controls.
 
-The experiment does **not** establish that `context.Background()` is the correct production fix. A production change should preserve any context values needed by GC / sequence state while tying initialization to database lifetime rather than request cancellation.
+The experiment does **not** establish that `context.Background()` is the correct production implementation. It establishes that request-cancellation lifetime is causal in the observed failure.
 
 ## Paper interpretation
 
-This result is stronger evidence for **continuation closure** than for oracle novelty.
+This is stronger evidence for **continuation closure** than for oracle novelty.
 
-The clone operation succeeds. A generic branch-operation baseline can therefore pass the clone terminal. A generic state differential baseline can detect the bug once the exact generated-value continuation is supplied. BranchCheck's proposed value is to derive that continuation from the branch capability contract: generated-identifier / sequence authority is latent state that must be usable after the fork request has completed.
+The clone operation succeeds. A generic B4 branch-operation checker therefore passes the creation terminal. A generic state differential baseline can detect the bug once the exact generated-value continuation is supplied. BranchCheck's proposed value is to derive that continuation from the fork contract: generated-identifier / sequence authority is latent state that must remain usable after fork creation completes.
 
-The post-failure read control sharpens the distinction: an ordinary observer can still read the valid empty clone after the generated insert is rejected. The failure is therefore not simply a broken database handle or failed clone transaction. It is a hidden **lifetime dependency in continuation state** introduced at branch creation and exposed by a later legal operation.
+The post-failure read control sharpens the claim: ordinary reads can remain correct while one future semantic capability is already poisoned.
 
-## Confidence effect
+## Confidence effect and remaining gate
 
-Given:
+Together with the MatrixOne temporal-identity experiment and the frozen Dolt 2.2.3 fair-budget gate, this supports the current **93/100 conditional** assessment.
 
-- second-backend fair-budget evidence on Dolt history-import state;
-- an unexpected current-main dynamic-clone continuation regression candidate;
-- older-release control;
-- current-release/current-main reproduction;
-- repeated stochastic characterization;
-- ordinary-read-after-failure specificity;
-- source-history localization; and
-- 20×/20× causal A/B rescue,
+Remaining conditions:
 
-the BranchCheck research direction is reasonably assessed at approximately **93/100 conditional**.
+- no upstream maintainer confirmation;
+- the discovery arose during allocator/clone investigation rather than a fully blind campaign;
+- fair search grammars remain small;
+- broader held-out identity, dependency/ownership, lifecycle, and recovery campaigns remain future work.
 
-The remaining conditions are material:
-
-- no upstream maintainer confirmation yet;
-- the new finding emerged from allocator/clone investigation rather than a fully blind campaign;
-- broader unseeded search across identity, ownership/dependency, observer, and lifecycle state is still needed;
-- the final paper must compare directed witness construction against strong generic stateful exploration under equal budgets, not only curated candidate sets.
+The v0.4 prototype is now under **engineering freeze**: no additional framework plumbing should be added unless it advances one of those preregistered research gates.
