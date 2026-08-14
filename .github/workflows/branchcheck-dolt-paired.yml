@@ -1,0 +1,67 @@
+name: BranchCheck Dolt paired gate
+
+on:
+  pull_request:
+    paths:
+      - 'tools/ChronicleDB.BranchCheck/**'
+      - 'tests/Research/ChronicleDB.BranchCheck.Tests/**'
+      - '.github/workflows/branchcheck-dolt-paired.yml'
+  workflow_dispatch:
+
+jobs:
+  dolt-paired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.301'
+      - name: Prepare artifact directory
+        run: mkdir -p .artifacts/branchcheck /tmp/branchcheck-dolt
+      - name: Install pinned Dolt 2.2.3 pre-issue release
+        run: |
+          curl -L --fail --retry 3 \
+            https://github.com/dolthub/dolt/releases/download/v2.2.3/dolt-linux-amd64.tar.gz \
+            -o /tmp/branchcheck-dolt/dolt-2.2.3.tar.gz
+          echo 'ffafa7cc172cada5f77ca3fb96306545ddac44a111625f75f870306c7f197301  /tmp/branchcheck-dolt/dolt-2.2.3.tar.gz' | sha256sum -c -
+          mkdir -p /tmp/branchcheck-dolt/v2.2.3
+          tar -xzf /tmp/branchcheck-dolt/dolt-2.2.3.tar.gz -C /tmp/branchcheck-dolt/v2.2.3
+          DOLT_223="$(find /tmp/branchcheck-dolt/v2.2.3 -type f -name dolt -perm -u+x | head -n 1)"
+          test -n "$DOLT_223"
+          echo "DOLT_223=$DOLT_223" >> "$GITHUB_ENV"
+          "$DOLT_223" version | tee .artifacts/branchcheck/dolt-2.2.3-version.txt
+      - name: Run pre-issue Dolt 2.2.3 campaign
+        env:
+          BRANCHCHECK_DOLT: ${{ env.DOLT_223 }}
+        run: |
+          set -o pipefail
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-budget \
+            | tee .artifacts/branchcheck/dolt-2.2.3-budget.json
+      - name: Install pinned current Dolt 2.3.0 release
+        if: always()
+        run: |
+          curl -L --fail --retry 3 \
+            https://github.com/dolthub/dolt/releases/download/v2.3.0/dolt-linux-amd64.tar.gz \
+            -o /tmp/branchcheck-dolt/dolt-2.3.0.tar.gz
+          echo 'f702aa9fc4246b076e6e255f5bb6eb6f0a120962ab8895dda9e77a0a77cfe10d  /tmp/branchcheck-dolt/dolt-2.3.0.tar.gz' | sha256sum -c -
+          mkdir -p /tmp/branchcheck-dolt/v2.3.0
+          tar -xzf /tmp/branchcheck-dolt/dolt-2.3.0.tar.gz -C /tmp/branchcheck-dolt/v2.3.0
+          DOLT_230="$(find /tmp/branchcheck-dolt/v2.3.0 -type f -name dolt -perm -u+x | head -n 1)"
+          test -n "$DOLT_230"
+          echo "DOLT_230=$DOLT_230" >> "$GITHUB_ENV"
+          "$DOLT_230" version | tee .artifacts/branchcheck/dolt-2.3.0-version.txt
+      - name: Run current Dolt 2.3.0 campaign
+        if: always()
+        env:
+          BRANCHCHECK_DOLT: ${{ env.DOLT_230 }}
+        run: |
+          set -o pipefail
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-budget \
+            | tee .artifacts/branchcheck/dolt-2.3.0-budget.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: branchcheck-dolt-paired
+          path: .artifacts/branchcheck
