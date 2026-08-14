@@ -76,4 +76,17 @@ public sealed class ExternalSqlAdapterTests
         Assert.Equal(BaselineStatus.Pass, b2.Status);
         Assert.Equal(RelationStatus.Fail, boundary.Status);
     }
+
+    [Fact]
+    public void SlateDbObserverParserPreservesObserverCountsAndFailureEvidence()
+    {
+        SlateDbObserverObservation observation = SlateDbObserverOutputParser.Parse(
+            "version=0.14.1\ntotal=128\ndb=128\nreader=0\nreader_error=external SST not found\n");
+
+        Assert.Equal("0.14.1", observation.Version);
+        Assert.Equal(128, observation.TotalKeys);
+        Assert.Equal(128, observation.DbReadableKeys);
+        Assert.Equal(0, observation.DbReaderReadableKeys);
+        Assert.Equal("external SST not found", observation.ReaderError);
+    }
 }
