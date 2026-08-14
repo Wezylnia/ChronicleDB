@@ -1,0 +1,53 @@
+name: BranchCheck patch export
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/branchcheck-export-patch.yml'
+  workflow_dispatch:
+
+jobs:
+  export-patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Export patch against frozen main
+        env:
+          BASE_SHA: b72b62a1aea7daf299534028ecc3e097c925cbd4
+          EXPORT_WORKFLOW: .github/workflows/branchcheck-export-patch.yml
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(git rev-parse HEAD)"
+          git cat-file -e "${BASE_SHA}^{commit}"
+          mkdir -p .artifacts/patch
+          git diff --binary --full-index "$BASE_SHA" "$HEAD_SHA" -- . ":(exclude)$EXPORT_WORKFLOW" > .artifacts/patch/branchcheck-main-to-v04.patch
+          test -s .artifacts/patch/branchcheck-main-to-v04.patch
+
+          git worktree add --detach /tmp/branchcheck-patch-check "$BASE_SHA"
+          git -C /tmp/branchcheck-patch-check apply --check "$GITHUB_WORKSPACE/.artifacts/patch/branchcheck-main-to-v04.patch"
+
+          FILES_CHANGED="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- . ":(exclude)$EXPORT_WORKFLOW" | wc -l | tr -d ' ')"
+          PATCH_BYTES="$(wc -c < .artifacts/patch/branchcheck-main-to-v04.patch | tr -d ' ')"
+          PATCH_SHA256="$(sha256sum .artifacts/patch/branchcheck-main-to-v04.patch | awk '{print $1}')"
+          cat > .artifacts/patch/manifest.txt <<EOF
+          repository=Wezylnia/ChronicleDB
+          base_ref=main
+          base_sha=$BASE_SHA
+          source_head_sha=$HEAD_SHA
+          excluded_export_workflow=$EXPORT_WORKFLOW
+          files_changed=$FILES_CHANGED
+          patch_bytes=$PATCH_BYTES
+          patch_sha256=$PATCH_SHA256
+          git_apply_check=PASS
+          EOF
+          cat .artifacts/patch/manifest.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: branchcheck-main-patch
+          path: .artifacts/patch
+          if-no-files-found: error
+          retention-days: 7
