@@ -1,12 +1,32 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Globalization;
 using ChronicleDB.BranchCheck;
 
 string mode = args.Length == 0 ? "all" : args[0].Trim().ToLowerInvariant();
-if (mode is not ("all" or "synthetic" or "historical"))
+if (mode is not ("all" or "synthetic" or "historical" or "matrixone"))
 {
-    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical]");
+    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|matrixone]");
     return 2;
+}
+
+if (mode == "matrixone")
+{
+    try
+    {
+        SqlCliOptions options = MatrixOneEnvironment.ReadOptions();
+        BranchScenario scenario = await MatrixOneAutoIncrementAdapter.ExecuteAsync(options).ConfigureAwait(false);
+        ScenarioReport report = BranchCheckRunner.Evaluate(scenario);
+        WriteJson(new { Mode = mode, Report = report });
+        return report.Relations.Any(static result => result.RelationId == "BC.continuation-state" && result.Status != RelationStatus.Inconclusive)
+            ? 0
+            : 1;
+    }
+    catch (ExternalAdapterException exception)
+    {
+        Console.Error.WriteLine(exception.Message);
+        return 3;
+    }
 }
 
 var syntheticScenarios = mode is "all" or "synthetic"
@@ -57,9 +77,7 @@ var output = new
     },
 };
 
-var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
-jsonOptions.Converters.Add(new JsonStringEnumConverter());
-Console.WriteLine(JsonSerializer.Serialize(output, jsonOptions));
+WriteJson(output);
 
 bool syntheticValid = syntheticReports.All(static report =>
 {
@@ -80,3 +98,27 @@ static int CountBaselineDetections(IEnumerable<ScenarioReport> reports, string b
     => reports.Count(report => report.Baselines.Any(result =>
         string.Equals(result.BaselineId, baselineId, StringComparison.Ordinal)
         && result.Detected));
+
+static void WriteJson<T>(T value)
+{
+    var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
+    jsonOptions.Converters.Add(new JsonStringEnumConverter());
+    Console.WriteLine(JsonSerializer.Serialize(value, jsonOptions));
+}
+
+static class MatrixOneEnvironment
+{
+    public static SqlCliOptions ReadOptions()
+        => new(
+            Environment.GetEnvironmentVariable("BRANCHCHECK_SQL_CLIENT") ?? "mysql",
+            Environment.GetEnvironmentVariable("BRANCHCHECK_MATRIXONE_HOST") ?? "127.0.0.1",
+            ParsePort(Environment.GetEnvironmentVariable("BRANCHCHECK_MATRIXONE_PORT")),
+            Environment.GetEnvironmentVariable("BRANCHCHECK_MATRIXONE_USER") ?? "root",
+            Environment.GetEnvironmentVariable("BRANCHCHECK_MATRIXONE_PASSWORD") ?? "111",
+            TimeSpan.FromSeconds(60));
+
+    private static int ParsePort(string? raw)
+        => int.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out int port) && port > 0
+            ? port
+            : 6001;
+}
