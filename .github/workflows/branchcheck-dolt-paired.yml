@@ -76,3 +76,42 @@ jobs:
         with:
           name: branchcheck-dolt-paired
           path: .artifacts/branchcheck
+
+  dolt-main-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.301'
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.2'
+          cache: false
+      - name: Fetch pinned current Dolt main
+        run: |
+          git init /tmp/dolt-main
+          git -C /tmp/dolt-main remote add origin https://github.com/dolthub/dolt.git
+          git -C /tmp/dolt-main fetch --depth=1 origin c3b5ce3c67f8677ca08a0a58d8c03cdc95bff8b7
+          git -C /tmp/dolt-main checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/dolt-main rev-parse HEAD)" = 'c3b5ce3c67f8677ca08a0a58d8c03cdc95bff8b7'
+      - name: Build pinned current Dolt main
+        working-directory: /tmp/dolt-main/go
+        run: |
+          go build -o /tmp/dolt-main-bin ./cmd/dolt
+          /tmp/dolt-main-bin version | tee "$GITHUB_WORKSPACE/dolt-main-version.txt"
+      - name: Run minimal clone continuation smoke on current main
+        run: |
+          set -o pipefail
+          BRANCHCHECK_DOLT=/tmp/dolt-main-bin \
+            dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-clone-smoke \
+            | tee dolt-main-clone-smoke.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: branchcheck-dolt-main-smoke
+          path: |
+            dolt-main-version.txt
+            dolt-main-clone-smoke.json
