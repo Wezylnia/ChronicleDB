@@ -4,10 +4,31 @@ using System.Text.Json.Serialization;
 using ChronicleDB.BranchCheck;
 
 string mode = args.Length == 0 ? "all" : args[0].Trim().ToLowerInvariant();
-if (mode is not ("all" or "synthetic" or "historical" or "matrixone" or "matrixone-identity" or "slatedb"))
+if (mode is not ("all" or "synthetic" or "historical" or "matrixone" or "matrixone-identity" or "matrixone-budget" or "slatedb"))
 {
-    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|matrixone|matrixone-identity|slatedb]");
+    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|matrixone|matrixone-identity|matrixone-budget|slatedb]");
     return 2;
+}
+
+if (mode == "matrixone-budget")
+{
+    try
+    {
+        TriggerBudgetReport budgetReport = await MatrixOneTriggerBudgetCampaign.ExecuteAsync(
+            MatrixOneEnvironment.ReadOptions()).ConfigureAwait(false);
+        WriteJson(new
+        {
+            Mode = mode,
+            Image = Environment.GetEnvironmentVariable("BRANCHCHECK_MATRIXONE_IMAGE"),
+            Report = budgetReport,
+        });
+        return budgetReport.ExactlyOneViolationRecipe && budgetReport.GuidedRecipeIsViolation ? 0 : 1;
+    }
+    catch (ExternalAdapterException exception)
+    {
+        Console.Error.WriteLine(exception.Message);
+        return 3;
+    }
 }
 
 if (mode is "matrixone" or "matrixone-identity" or "slatedb")
