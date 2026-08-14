@@ -4,9 +4,9 @@ using System.Text.Json.Serialization;
 using ChronicleDB.BranchCheck;
 
 string mode = args.Length == 0 ? "all" : args[0].Trim().ToLowerInvariant();
-if (mode is not ("all" or "synthetic" or "historical" or "matrixone" or "matrixone-identity" or "matrixone-budget" or "slatedb" or "slatedb-budget"))
+if (mode is not ("all" or "synthetic" or "historical" or "matrixone" or "matrixone-identity" or "matrixone-budget" or "slatedb" or "slatedb-budget" or "dolt-budget"))
 {
-    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|matrixone|matrixone-identity|matrixone-budget|slatedb|slatedb-budget]");
+    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|matrixone|matrixone-identity|matrixone-budget|slatedb|slatedb-budget|dolt-budget]");
     return 2;
 }
 
@@ -23,6 +23,29 @@ if (mode == "matrixone-budget")
             Report = budgetReport,
         });
         return budgetReport.ExactlyOneViolationRecipe && budgetReport.GuidedRecipeIsViolation ? 0 : 1;
+    }
+    catch (ExternalAdapterException exception)
+    {
+        Console.Error.WriteLine(exception.Message);
+        return 3;
+    }
+}
+
+if (mode == "dolt-budget")
+{
+    try
+    {
+        var options = new DoltCliOptions(
+            Environment.GetEnvironmentVariable("BRANCHCHECK_DOLT") ?? "dolt",
+            TimeSpan.FromSeconds(90));
+        DoltTriggerBudgetReport budgetReport = await DoltTriggerBudgetCampaign.ExecuteAsync(options).ConfigureAwait(false);
+        WriteJson(new
+        {
+            Mode = mode,
+            Executable = options.Executable,
+            Report = budgetReport,
+        });
+        return 0;
     }
     catch (ExternalAdapterException exception)
     {
