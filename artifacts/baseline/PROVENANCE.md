@@ -12,6 +12,7 @@ The machine and toolchain identity is in [`../environment/environment.json`](../
 | Historical issue campaign | BranchCheck corpus | 5 systems / 7 cases | curated transcript set | every case diagnosed by BC | 7/7 BC detected; 7/7 generic union also detected; 0 BC-only | PASS / limitation recorded | `branchcheck-historical.json` |
 | Combined BranchCheck campaign | BranchCheck | local v0.4 prototype | deterministic recipes | synthetic + historical gates pass | process exit 0 | PASS | `branchcheck-all.json` |
 | ChronicleDB integration | ChronicleDB adapter | local commit above | 1 test | roundtrip branch/history contract | 1/1 passed | PASS | `chronicledb-integration-test.log` |
+| ChronicleDB controlled mutations | ChronicleDB adapter | `10ccc1af8b126195ffe69dd93f07ef8c01b98b9d` | deterministic mutation set | creation B0/B1 pass; semantic relation fails | 5/5 mutation cases and reducer checks pass | PASS / laboratory only | `chronicledb-controlled-mutations.json` |
 | MatrixOne continuation | MatrixOne | unavailable | N/A | live continuation probe | SQL client `mysql` unavailable | UNAVAILABLE | `external/matrixone.log` |
 | MatrixOne historical identity | MatrixOne | unavailable | N/A | live identity probe | SQL client `mysql` unavailable | UNAVAILABLE | `external/matrixone-identity.log` |
 | MatrixOne trigger budget | MatrixOne | unavailable | N/A | fair-budget curve | SQL client `mysql` unavailable | UNAVAILABLE | `external/matrixone-budget.log` |
