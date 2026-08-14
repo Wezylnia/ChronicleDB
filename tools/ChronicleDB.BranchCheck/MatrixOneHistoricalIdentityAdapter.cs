@@ -76,10 +76,11 @@ public static class MatrixOneHistoricalIdentityAdapter
         };
         CanonicalState branchCreation = State(observation.ChildRow, branchBoundaries);
         CanonicalState referenceCreation = State("1:snapshot-row", componentBoundaries: null);
+        string diffDetail = FormatProcessEvidence(diff.StandardOutput, diff.StandardError);
         var diffObservation = new ObserverObservation(
             diff.ExitCode == 0 ? OutcomeClass.Success : OutcomeClass.Rejected,
             null,
-            diff.ExitCode == 0 ? null : diff.StandardError.Trim());
+            diffDetail);
 
         return new BranchScenario(
             "matrixone-live-historical-identity",
@@ -99,7 +100,7 @@ public static class MatrixOneHistoricalIdentityAdapter
                 new TraceFrame(
                     "data-branch-diff",
                     diffObservation,
-                    new ObserverObservation(OutcomeClass.Success, null),
+                    new ObserverObservation(OutcomeClass.Success, null, "Reference branch-history operation is expected to succeed."),
                     OperationClass: TraceOperationClass.BranchSpecificHistory),
             ],
             CreationEvidence: CreationEvidenceKind.Values | CreationEvidenceKind.Schema);
@@ -153,4 +154,16 @@ public static class MatrixOneHistoricalIdentityAdapter
 
     private static ObserverObservation Success(CanonicalState state)
         => new(OutcomeClass.Success, state);
+
+    private static string FormatProcessEvidence(string stdout, string stderr)
+    {
+        string normalizedStdout = Normalize(stdout);
+        string normalizedStderr = Normalize(stderr);
+        return $"stdout=[{normalizedStdout}] stderr=[{normalizedStderr}]";
+    }
+
+    private static string Normalize(string value)
+        => string.Join(
+            " | ",
+            value.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 }
