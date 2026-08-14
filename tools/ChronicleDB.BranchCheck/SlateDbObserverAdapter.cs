@@ -6,8 +6,10 @@ namespace ChronicleDB.BranchCheck;
 public sealed record SlateDbObserverObservation(
     string Version,
     int TotalKeys,
+    int ParentReaderReadableKeys,
     int DbReadableKeys,
     int DbReaderReadableKeys,
+    string? ParentReaderError,
     string? ReaderError);
 
 public static class SlateDbObserverOutputParser
@@ -29,10 +31,19 @@ public static class SlateDbObserverOutputParser
 
         string version = Required(fields, "version");
         int total = ParseCount(fields, "total");
+        int parentReader = ParseCount(fields, "parent_reader");
         int db = ParseCount(fields, "db");
         int reader = ParseCount(fields, "reader");
+        fields.TryGetValue("parent_reader_error", out string? parentReaderError);
         fields.TryGetValue("reader_error", out string? readerError);
-        return new SlateDbObserverObservation(version, total, db, reader, readerError);
+        return new SlateDbObserverObservation(
+            version,
+            total,
+            parentReader,
+            db,
+            reader,
+            parentReaderError,
+            readerError);
     }
 
     private static string Required(IReadOnlyDictionary<string, string> fields, string key)
@@ -55,6 +66,12 @@ public static class SlateDbObserverOutputParser
 public static class SlateDbObserverAdapter
 {
     public static async Task<BranchScenario> ExecuteAsync(
+        string executable,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+        => CreateScenario(await ObserveAsync(executable, timeout, cancellationToken).ConfigureAwait(false));
+
+    public static async Task<SlateDbObserverObservation> ObserveAsync(
         string executable,
         TimeSpan timeout,
         CancellationToken cancellationToken = default)
@@ -107,7 +124,12 @@ public static class SlateDbObserverAdapter
                 $"SlateDB observer probe exited {process.ExitCode}. stderr: {stderr}");
         }
 
-        SlateDbObserverObservation observation = SlateDbObserverOutputParser.Parse(stdout);
+        return SlateDbObserverOutputParser.Parse(stdout);
+    }
+
+    public static BranchScenario CreateScenario(SlateDbObserverObservation observation)
+    {
+        ArgumentNullException.ThrowIfNull(observation);
         CanonicalState expected = State(observation.TotalKeys);
         var branchObservers = new Dictionary<string, ObserverObservation>(StringComparer.Ordinal)
         {
@@ -149,7 +171,7 @@ public static class SlateDbObserverAdapter
             CreationEvidence: CreationEvidenceKind.None);
     }
 
-    private static CanonicalState State(int totalKeys)
+    internal static CanonicalState State(int totalKeys)
         => CanonicalState.Create(
             [new KeyValuePair<string, string>("readable-keys", totalKeys.ToString(CultureInfo.InvariantCulture))],
             "binary-kv",
