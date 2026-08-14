@@ -7,7 +7,7 @@ The machine and toolchain identity is in [`../environment/environment.json`](../
 | Experiment | Backend | Version / identity | Seed / budget | Expected result | Observed result | Status | Artifact |
 |---|---|---|---|---|---|---|---|
 | Full solution build | ChronicleDB | .NET 10.0.301; commit above | N/A | 0 errors/warnings | 0 errors, 0 warnings | PASS | `dotnet-build-release.log` |
-| Full test suite | ChronicleDB + research harness | .NET 10.0.301 | N/A | all tests pass | 565 passed, 0 failed, 0 skipped | PASS | `dotnet-test-release.log` |
+| Full test suite | ChronicleDB + research harness | .NET 10.0.301 | N/A | all tests pass | 569 passed, 0 failed, 0 skipped | PASS | `dotnet-test-release.log` |
 | Synthetic mutation campaign | BranchCheck synthetic | local v0.4 prototype | deterministic recipes | all declared relations classify correctly | 6 scenarios; 5 intended relation failures detected | PASS | `branchcheck-synthetic.json` |
 | Historical issue campaign | BranchCheck corpus | 5 systems / 7 cases | curated transcript set | every case diagnosed by BC | 7/7 BC detected; 7/7 generic union also detected; 0 BC-only | PASS / limitation recorded | `branchcheck-historical.json` |
 | Combined BranchCheck campaign | BranchCheck | local v0.4 prototype | deterministic recipes | synthetic + historical gates pass | process exit 0 | PASS | `branchcheck-all.json` |

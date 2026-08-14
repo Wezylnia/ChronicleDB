@@ -2,8 +2,8 @@ C:\proje\dbengine\.artifacts\bin\ChronicleDB.PersistenceTests\release\ChronicleD
 C:\proje\dbengine\.artifacts\bin\ChronicleDB.CorrectnessTests\release\ChronicleDB.CorrectnessTests.dll (.NETCoreApp,Version=v10.0) için test çalıştırması
 C:\proje\dbengine\.artifacts\bin\ChronicleDB.ArchitectureTests\release\ChronicleDB.ArchitectureTests.dll (.NETCoreApp,Version=v10.0) için test çalıştırması
 C:\proje\dbengine\.artifacts\bin\ChronicleDB.RecoveryTests\release\ChronicleDB.RecoveryTests.dll (.NETCoreApp,Version=v10.0) için test çalıştırması
-C:\proje\dbengine\.artifacts\bin\ChronicleDB.UnitTests\release\ChronicleDB.UnitTests.dll (.NETCoreApp,Version=v10.0) için test çalıştırması
 C:\proje\dbengine\.artifacts\bin\ChronicleDB.BranchCheck.Tests\release\ChronicleDB.BranchCheck.Tests.dll (.NETCoreApp,Version=v10.0) için test çalıştırması
+C:\proje\dbengine\.artifacts\bin\ChronicleDB.UnitTests\release\ChronicleDB.UnitTests.dll (.NETCoreApp,Version=v10.0) için test çalıştırması
 Toplam 1 test dosyası belirtilen desenle eşleşti.
 Toplam 1 test dosyası belirtilen desenle eşleşti.
 Toplam 1 test dosyası belirtilen desenle eşleşti.
@@ -11,14 +11,14 @@ Toplam 1 test dosyası belirtilen desenle eşleşti.
 Toplam 1 test dosyası belirtilen desenle eşleşti.
 Toplam 1 test dosyası belirtilen desenle eşleşti.
 
-Başarılı!  - Başarısız:     0, Başarılı:    29, Atlanan:     0, Toplam:    29, Süre: 762 ms - ChronicleDB.BranchCheck.Tests.dll (net10.0)
+Başarılı!  - Başarısız:     0, Başarılı:     8, Atlanan:     0, Toplam:     8, Süre: 145 ms - ChronicleDB.ArchitectureTests.dll (net10.0)
 
-Başarılı!  - Başarısız:     0, Başarılı:     8, Atlanan:     0, Toplam:     8, Süre: 513 ms - ChronicleDB.ArchitectureTests.dll (net10.0)
+Başarılı!  - Başarısız:     0, Başarılı:    33, Atlanan:     0, Toplam:    33, Süre: 641 ms - ChronicleDB.BranchCheck.Tests.dll (net10.0)
+
+Başarılı!  - Başarısız:     0, Başarılı:   258, Atlanan:     0, Toplam:   258, Süre: 2 s - ChronicleDB.UnitTests.dll (net10.0)
 
 Başarılı!  - Başarısız:     0, Başarılı:    55, Atlanan:     0, Toplam:    55, Süre: 2 s - ChronicleDB.RecoveryTests.dll (net10.0)
 
-Başarılı!  - Başarısız:     0, Başarılı:   258, Atlanan:     0, Toplam:   258, Süre: 1 s - ChronicleDB.UnitTests.dll (net10.0)
+Başarılı!  - Başarısız:     0, Başarılı:   190, Atlanan:     0, Toplam:   190, Süre: 6 s - ChronicleDB.PersistenceTests.dll (net10.0)
 
-Başarılı!  - Başarısız:     0, Başarılı:   190, Atlanan:     0, Toplam:   190, Süre: 5 s - ChronicleDB.PersistenceTests.dll (net10.0)
-
-Başarılı!  - Başarısız:     0, Başarılı:    25, Atlanan:     0, Toplam:    25, Süre: 6 s - ChronicleDB.CorrectnessTests.dll (net10.0)
+Başarılı!  - Başarısız:     0, Başarılı:    25, Atlanan:     0, Toplam:    25, Süre: 8 s - ChronicleDB.CorrectnessTests.dll (net10.0)
