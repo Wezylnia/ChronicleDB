@@ -16,10 +16,10 @@ fn value(i: u32) -> Vec<u8> {
 }
 
 async fn read_with_db_reader(
-    clone_path: &str,
+    path: &str,
     object_store: Arc<dyn ObjectStore>,
 ) -> (u32, Option<String>) {
-    let reader = match DbReader::builder(clone_path, object_store).build().await {
+    let reader = match DbReader::builder(path, object_store).build().await {
         Ok(reader) => reader,
         Err(error) => return (0, Some(format!("DbReader::build failed: {error}"))),
     };
@@ -50,8 +50,8 @@ async fn read_with_db_reader(
     (readable, first_error)
 }
 
-async fn read_with_db(clone_path: &str, object_store: Arc<dyn ObjectStore>) -> (u32, Option<String>) {
-    let db = match Db::open(clone_path, object_store).await {
+async fn read_with_db(path: &str, object_store: Arc<dyn ObjectStore>) -> (u32, Option<String>) {
+    let db = match Db::open(path, object_store).await {
         Ok(db) => db,
         Err(error) => return (0, Some(format!("Db::open failed: {error}"))),
     };
@@ -119,18 +119,27 @@ async fn main() {
         .await
         .expect("create zero-copy clone");
 
-    // Read through DbReader first so writer-side activity cannot re-localize parent SSTs.
-    let (reader_count, reader_error) = read_with_db_reader(clone_path, Arc::clone(&object_store)).await;
-    let (db_count, db_error) = read_with_db(clone_path, Arc::clone(&object_store)).await;
+    // Three legal observation candidates. The parent reader controls for the API itself;
+    // clone Db controls for the clone itself; clone DbReader combines the alternate observer
+    // with a parent-resident SST dependency.
+    let (parent_reader_count, parent_reader_error) =
+        read_with_db_reader(parent_path, Arc::clone(&object_store)).await;
+    let (clone_reader_count, clone_reader_error) =
+        read_with_db_reader(clone_path, Arc::clone(&object_store)).await;
+    let (clone_db_count, clone_db_error) = read_with_db(clone_path, Arc::clone(&object_store)).await;
 
     println!("version={target}");
     println!("total={NUM_KEYS}");
-    println!("db={db_count}");
-    println!("reader={reader_count}");
-    if let Some(error) = reader_error {
+    println!("parent_reader={parent_reader_count}");
+    println!("db={clone_db_count}");
+    println!("reader={clone_reader_count}");
+    if let Some(error) = parent_reader_error {
+        println!("parent_reader_error={}", error.replace(['\r', '\n'], " "));
+    }
+    if let Some(error) = clone_reader_error {
         println!("reader_error={}", error.replace(['\r', '\n'], " "));
     }
-    if let Some(error) = db_error {
+    if let Some(error) = clone_db_error {
         println!("db_error={}", error.replace(['\r', '\n'], " "));
     }
 }
