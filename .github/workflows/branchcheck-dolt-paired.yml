@@ -102,12 +102,16 @@ jobs:
         run: |
           go build -o /tmp/dolt-main-bin ./cmd/dolt
           /tmp/dolt-main-bin version | tee "$GITHUB_WORKSPACE/dolt-main-version.txt"
-      - name: Run minimal clone continuation smoke on current main
+      - name: Build BranchCheck once
+        run: dotnet build -c Release tools/ChronicleDB.BranchCheck/ChronicleDB.BranchCheck.csproj
+      - name: Run twenty unpatched current-main clone continuation smokes
         run: |
-          set -o pipefail
-          BRANCHCHECK_DOLT=/tmp/dolt-main-bin \
-            dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-clone-smoke \
-            | tee dolt-main-clone-smoke.json
+          mkdir -p dolt-main-repeat/unpatched dolt-main-repeat/patched
+          for i in $(seq 1 20); do
+            BRANCHCHECK_DOLT=/tmp/dolt-main-bin \
+              dotnet run -c Release --no-build --project tools/ChronicleDB.BranchCheck -- dolt-clone-smoke \
+              > "dolt-main-repeat/unpatched/${i}.json"
+          done
       - name: Restore pre-regression tracker context lifetime on current main
         run: |
           python3 - <<'PY'
@@ -124,25 +128,47 @@ jobs:
       - name: Build one-line causal patch control
         working-directory: /tmp/dolt-main/go
         run: go build -o /tmp/dolt-main-patched-bin ./cmd/dolt
-      - name: Run minimal smoke on causal patch control
+      - name: Run twenty causal-patched current-main clone continuation smokes
         run: |
-          set -o pipefail
-          BRANCHCHECK_DOLT=/tmp/dolt-main-patched-bin \
-            dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-clone-smoke \
-            | tee dolt-main-patched-clone-smoke.json
-      - name: Assert causal polarity
+          for i in $(seq 1 20); do
+            BRANCHCHECK_DOLT=/tmp/dolt-main-patched-bin \
+              dotnet run -c Release --no-build --project tools/ChronicleDB.BranchCheck -- dolt-clone-smoke \
+              > "dolt-main-repeat/patched/${i}.json"
+          done
+      - name: Aggregate race-aware causal A/B and assert polarity
         run: |
           python3 - <<'PY'
           import json
+          from collections import Counter
           from pathlib import Path
-          buggy = json.loads(Path('dolt-main-clone-smoke.json').read_text())['Report']
-          patched = json.loads(Path('dolt-main-patched-clone-smoke.json').read_text())['Report']
-          assert buggy['ContinuationRelation'] == 'Fail', buggy
-          assert buggy['ContinuationOutcome'] == 'Rejected', buggy
-          assert 'context canceled' in buggy['Detail'].lower(), buggy
-          assert patched['ContinuationRelation'] == 'Pass', patched
-          assert patched['ContinuationOutcome'] == 'Success', patched
-          assert patched['GeneratedId'] == '1', patched
+
+          root = Path('dolt-main-repeat')
+          summary = {}
+          reports_by_group = {}
+          for group in ('unpatched', 'patched'):
+              reports = [json.loads((root / group / f'{i}.json').read_text())['Report'] for i in range(1, 21)]
+              reports_by_group[group] = reports
+              summary[group] = {
+                  'runs': len(reports),
+                  'relation_status': dict(Counter(r['ContinuationRelation'] for r in reports)),
+                  'outcomes': dict(Counter(r['ContinuationOutcome'] for r in reports)),
+                  'generated_ids': dict(Counter(str(r['GeneratedId']) for r in reports)),
+                  'details': dict(Counter(r['Detail'] for r in reports)),
+              }
+          (root / 'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True))
+          print(json.dumps(summary, indent=2, sort_keys=True))
+
+          unpatched = reports_by_group['unpatched']
+          patched = reports_by_group['patched']
+          assert any(
+              r['ContinuationRelation'] == 'Fail'
+              and r['ContinuationOutcome'] == 'Rejected'
+              and 'context canceled' in r['Detail'].lower()
+              for r in unpatched
+          ), summary['unpatched']
+          assert all(r['ContinuationRelation'] == 'Pass' for r in patched), summary['patched']
+          assert all(r['ContinuationOutcome'] == 'Success' for r in patched), summary['patched']
+          assert all(r['GeneratedId'] == '1' for r in patched), summary['patched']
           PY
       - uses: actions/upload-artifact@v4
         if: always()
@@ -150,6 +176,5 @@ jobs:
           name: branchcheck-dolt-main-smoke
           path: |
             dolt-main-version.txt
-            dolt-main-clone-smoke.json
-            dolt-main-patched-clone-smoke.json
             dolt-main-causal-patch.diff
+            dolt-main-repeat
