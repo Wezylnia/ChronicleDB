@@ -1,0 +1,590 @@
+{
+  "Mode": "local-budget",
+  "Protocol": {
+    "CandidateSet": "capability-derived; no issue identifiers",
+    "OrderingPair": "seeded uniform permutation vs target-class-guided permutation",
+    "Seeds": [
+      1,
+      7,
+      13,
+      29,
+      61,
+      127,
+      251,
+      509
+    ],
+    "ExternalEvidence": false
+  },
+  "Reports": [
+    {
+      "Name": "historical-identity",
+      "Profile": {
+        "BackendName": "capability-calibration",
+        "SupportsHistoricalFork": true,
+        "SupportsRestart": true,
+        "SupportsDelete": true,
+        "EquivalentObservers": [
+          "current",
+          "historical"
+        ],
+        "SourceBoundaryComponents": []
+      },
+      "TargetClasses": "IdentityAffecting",
+      "CandidateSetFingerprint": "88B93DC7F55F0B65C07290372062BC6A8E9783A466B4AE58BDD6A6EB70C63612",
+      "Seeds": [
+        1,
+        7,
+        13,
+        29,
+        61,
+        127,
+        251,
+        509
+      ],
+      "CandidateCount": 20,
+      "BudgetCurve": [
+        {
+          "Budget": 1,
+          "Runs": 8,
+          "UniformDetected": 1,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.125,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 2,
+          "Runs": 8,
+          "UniformDetected": 1,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.125,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 3,
+          "Runs": 8,
+          "UniformDetected": 3,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.375,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 4,
+          "Runs": 8,
+          "UniformDetected": 5,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.625,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 5,
+          "Runs": 8,
+          "UniformDetected": 6,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.75,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 6,
+          "Runs": 8,
+          "UniformDetected": 6,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.75,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 7,
+          "Runs": 8,
+          "UniformDetected": 7,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.875,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 8,
+          "Runs": 8,
+          "UniformDetected": 7,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.875,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 9,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 10,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 11,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 12,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 13,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 14,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 15,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 16,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 17,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 18,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 19,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 20,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        }
+      ],
+      "GuidedHasAdvantageAtAnyBudget": true
+    },
+    {
+      "Name": "allocator-continuation",
+      "Profile": {
+        "BackendName": "capability-calibration",
+        "SupportsHistoricalFork": false,
+        "SupportsRestart": false,
+        "SupportsDelete": false,
+        "EquivalentObservers": [],
+        "SourceBoundaryComponents": []
+      },
+      "TargetClasses": "AllocatorAffecting",
+      "CandidateSetFingerprint": "2169165E852F66EF7B1004462D148CB74992E066278B3EE94AA70C900ED31EA6",
+      "Seeds": [
+        1,
+        7,
+        13,
+        29,
+        61,
+        127,
+        251,
+        509
+      ],
+      "CandidateCount": 10,
+      "BudgetCurve": [
+        {
+          "Budget": 1,
+          "Runs": 8,
+          "UniformDetected": 2,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.25,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 2,
+          "Runs": 8,
+          "UniformDetected": 4,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.5,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 3,
+          "Runs": 8,
+          "UniformDetected": 7,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.875,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 4,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 5,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 6,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 7,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 8,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 9,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 10,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        }
+      ],
+      "GuidedHasAdvantageAtAnyBudget": true
+    },
+    {
+      "Name": "observer-dependency",
+      "Profile": {
+        "BackendName": "capability-calibration",
+        "SupportsHistoricalFork": true,
+        "SupportsRestart": false,
+        "SupportsDelete": false,
+        "EquivalentObservers": [
+          "primary",
+          "alternate"
+        ],
+        "SourceBoundaryComponents": []
+      },
+      "TargetClasses": "ObserverAffecting",
+      "CandidateSetFingerprint": "B8668C17C98DDD8DD1385DD4981B2B44B370A7D2FE0DB714E2BF2C38B8CECF0E",
+      "Seeds": [
+        1,
+        7,
+        13,
+        29,
+        61,
+        127,
+        251,
+        509
+      ],
+      "CandidateCount": 15,
+      "BudgetCurve": [
+        {
+          "Budget": 1,
+          "Runs": 8,
+          "UniformDetected": 1,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.125,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 2,
+          "Runs": 8,
+          "UniformDetected": 1,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.125,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 3,
+          "Runs": 8,
+          "UniformDetected": 1,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.125,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 4,
+          "Runs": 8,
+          "UniformDetected": 2,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.25,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 5,
+          "Runs": 8,
+          "UniformDetected": 2,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.25,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 6,
+          "Runs": 8,
+          "UniformDetected": 2,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.25,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 7,
+          "Runs": 8,
+          "UniformDetected": 3,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.375,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 8,
+          "Runs": 8,
+          "UniformDetected": 5,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.625,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 9,
+          "Runs": 8,
+          "UniformDetected": 6,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.75,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 10,
+          "Runs": 8,
+          "UniformDetected": 6,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.75,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 11,
+          "Runs": 8,
+          "UniformDetected": 7,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.875,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 12,
+          "Runs": 8,
+          "UniformDetected": 7,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.875,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 13,
+          "Runs": 8,
+          "UniformDetected": 7,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.875,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 14,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 15,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        }
+      ],
+      "GuidedHasAdvantageAtAnyBudget": true
+    },
+    {
+      "Name": "recovery-closure",
+      "Profile": {
+        "BackendName": "capability-calibration",
+        "SupportsHistoricalFork": false,
+        "SupportsRestart": true,
+        "SupportsDelete": false,
+        "EquivalentObservers": [],
+        "SourceBoundaryComponents": []
+      },
+      "TargetClasses": "RecoveryAffecting",
+      "CandidateSetFingerprint": "E2E3C9A9E68BFA5D53FAFF8F102C60D128F02D30615EEADA4C095F4B2013340A",
+      "Seeds": [
+        1,
+        7,
+        13,
+        29,
+        61,
+        127,
+        251,
+        509
+      ],
+      "CandidateCount": 12,
+      "BudgetCurve": [
+        {
+          "Budget": 1,
+          "Runs": 8,
+          "UniformDetected": 1,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.125,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 2,
+          "Runs": 8,
+          "UniformDetected": 2,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.25,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 3,
+          "Runs": 8,
+          "UniformDetected": 5,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.625,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 4,
+          "Runs": 8,
+          "UniformDetected": 5,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.625,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 5,
+          "Runs": 8,
+          "UniformDetected": 7,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.875,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 6,
+          "Runs": 8,
+          "UniformDetected": 7,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 0.875,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 7,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 8,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 9,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 10,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 11,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        },
+        {
+          "Budget": 12,
+          "Runs": 8,
+          "UniformDetected": 8,
+          "GuidedDetected": 8,
+          "UniformDetectionRate": 1,
+          "GuidedDetectionRate": 1
+        }
+      ],
+      "GuidedHasAdvantageAtAnyBudget": true
+    }
+  ]
+}

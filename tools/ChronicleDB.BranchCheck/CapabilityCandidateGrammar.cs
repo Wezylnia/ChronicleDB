@@ -143,11 +143,17 @@ public static class CapabilityCandidateGrammar
     public static IReadOnlyList<CapabilityCandidate> GuidedOrdering(
         BranchCapabilityProfile profile,
         int seed)
+        => GuidedOrdering(profile, CandidateSemanticClass.Ordinary, seed);
+
+    public static IReadOnlyList<CapabilityCandidate> GuidedOrdering(
+        BranchCapabilityProfile profile,
+        CandidateSemanticClass targetClasses,
+        int seed)
     {
         Random random = new(seed);
         return Generate(profile)
             .Select(candidate => (Candidate: candidate, TieBreak: random.Next()))
-            .OrderBy(static item => SemanticPriority(item.Candidate.SemanticClasses))
+            .OrderBy(item => SemanticPriority(item.Candidate.SemanticClasses, targetClasses))
             .ThenBy(static item => item.TieBreak)
             .Select(static item => item.Candidate)
             .ToArray();
@@ -175,15 +181,25 @@ public static class CapabilityCandidateGrammar
         CandidateSemanticClass semanticClasses)
         => new(id, sourceMutation, continuation, operationClass, semanticClasses);
 
-    private static int SemanticPriority(CandidateSemanticClass classes)
-        => classes switch
+    private static int SemanticPriority(
+        CandidateSemanticClass classes,
+        CandidateSemanticClass targetClasses = CandidateSemanticClass.Ordinary)
+    {
+        if (targetClasses != CandidateSemanticClass.Ordinary
+            && (classes & targetClasses) != 0)
         {
-            var value when value.HasFlag(CandidateSemanticClass.IdentityAffecting) => 0,
-            var value when value.HasFlag(CandidateSemanticClass.AllocatorAffecting) => 1,
-            var value when value.HasFlag(CandidateSemanticClass.DependencyAffecting) => 2,
-            var value when value.HasFlag(CandidateSemanticClass.LifecycleAffecting) => 3,
-            var value when value.HasFlag(CandidateSemanticClass.RecoveryAffecting) => 4,
-            var value when value.HasFlag(CandidateSemanticClass.ObserverAffecting) => 5,
-            _ => 6,
+            return 0;
+        }
+
+        return classes switch
+        {
+            var value when value.HasFlag(CandidateSemanticClass.IdentityAffecting) => 1,
+            var value when value.HasFlag(CandidateSemanticClass.AllocatorAffecting) => 2,
+            var value when value.HasFlag(CandidateSemanticClass.DependencyAffecting) => 3,
+            var value when value.HasFlag(CandidateSemanticClass.LifecycleAffecting) => 4,
+            var value when value.HasFlag(CandidateSemanticClass.RecoveryAffecting) => 5,
+            var value when value.HasFlag(CandidateSemanticClass.ObserverAffecting) => 6,
+            _ => 7,
         };
+    }
 }

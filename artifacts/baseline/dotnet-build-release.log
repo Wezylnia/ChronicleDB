@@ -1,35 +1,35 @@
   Geri yüklenecek projeler belirleniyor...
   Geri yükleme için tüm projeler güncel.
-  ChronicleDB.Core -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Core\release\ChronicleDB.Core.dll
   ChronicleDB.BranchCheck -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.BranchCheck\release\ChronicleDB.BranchCheck.dll
-  ChronicleDB.Mvcc -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Mvcc\release\ChronicleDB.Mvcc.dll
+  ChronicleDB.Core -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Core\release\ChronicleDB.Core.dll
   ChronicleDB.Indexing.Abstractions -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Indexing.Abstractions\release\ChronicleDB.Indexing.Abstractions.dll
+  ChronicleDB.Mvcc -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Mvcc\release\ChronicleDB.Mvcc.dll
   ChronicleDB.Diagnostics -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Diagnostics\release\ChronicleDB.Diagnostics.dll
   ChronicleDB.History -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.History\release\ChronicleDB.History.dll
-  ChronicleDB.Storage -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Storage\release\ChronicleDB.Storage.dll
   ChronicleDB.Wal -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Wal\release\ChronicleDB.Wal.dll
-  ChronicleDB.Transactions -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Transactions\release\ChronicleDB.Transactions.dll
+  ChronicleDB.Indexing.Baseline -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Indexing.Baseline\release\ChronicleDB.Indexing.Baseline.dll
+  ChronicleDB.Storage -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Storage\release\ChronicleDB.Storage.dll
   ChronicleDB.Recovery -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Recovery\release\ChronicleDB.Recovery.dll
   ChronicleDB.Maintenance -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Maintenance\release\ChronicleDB.Maintenance.dll
-  ChronicleDB.ReferenceModel -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.ReferenceModel\release\ChronicleDB.ReferenceModel.dll
-  ChronicleDB.ArchitectureTests -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.ArchitectureTests\release\ChronicleDB.ArchitectureTests.dll
-  ChronicleDB.A8ErasurePilot -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.A8ErasurePilot\release\ChronicleDB.A8ErasurePilot.dll
-  ChronicleDB.Indexing.Baseline -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Indexing.Baseline\release\ChronicleDB.Indexing.Baseline.dll
+  ChronicleDB.Transactions -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Transactions\release\ChronicleDB.Transactions.dll
   ChronicleDB -> C:\proje\dbengine\.artifacts\bin\ChronicleDB\release\ChronicleDB.dll
+  ChronicleDB.ArchitectureTests -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.ArchitectureTests\release\ChronicleDB.ArchitectureTests.dll
+  ChronicleDB.ReferenceModel -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.ReferenceModel\release\ChronicleDB.ReferenceModel.dll
+  ChronicleDB.A8ErasurePilot -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.A8ErasurePilot\release\ChronicleDB.A8ErasurePilot.dll
+  ChronicleDB.UnitTests -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.UnitTests\release\ChronicleDB.UnitTests.dll
   ChronicleDB.Inspector -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Inspector\release\ChronicleDB.Inspector.dll
   ChronicleDB.CrashHarness -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.CrashHarness\release\ChronicleDB.CrashHarness.dll
-  ChronicleDB.WorkloadRunner -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.WorkloadRunner\release\ChronicleDB.WorkloadRunner.dll
-  ChronicleDB.Benchmarks -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Benchmarks\release\ChronicleDB.Benchmarks.dll
   ChronicleDB.A1ShadowRetentionPilot -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.A1ShadowRetentionPilot\release\ChronicleDB.A1ShadowRetentionPilot.dll
   ChronicleDB.ResearchWorkloadRunner -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.ResearchWorkloadRunner\release\ChronicleDB.ResearchWorkloadRunner.dll
-  ChronicleDB.UnitTests -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.UnitTests\release\ChronicleDB.UnitTests.dll
-  ChronicleDB.BranchCheck.Tests -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.BranchCheck.Tests\release\ChronicleDB.BranchCheck.Tests.dll
-  ChronicleDB.CorrectnessTests -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.CorrectnessTests\release\ChronicleDB.CorrectnessTests.dll
-  ChronicleDB.RecoveryTests -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.RecoveryTests\release\ChronicleDB.RecoveryTests.dll
   ChronicleDB.PersistenceTests -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.PersistenceTests\release\ChronicleDB.PersistenceTests.dll
+  ChronicleDB.BranchCheck.Tests -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.BranchCheck.Tests\release\ChronicleDB.BranchCheck.Tests.dll
+  ChronicleDB.WorkloadRunner -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.WorkloadRunner\release\ChronicleDB.WorkloadRunner.dll
+  ChronicleDB.RecoveryTests -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.RecoveryTests\release\ChronicleDB.RecoveryTests.dll
+  ChronicleDB.CorrectnessTests -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.CorrectnessTests\release\ChronicleDB.CorrectnessTests.dll
+  ChronicleDB.Benchmarks -> C:\proje\dbengine\.artifacts\bin\ChronicleDB.Benchmarks\release\ChronicleDB.Benchmarks.dll
 
 Oluşturma başarılı oldu.
     0 Uyarı
     0 Hata
 
-Geçen Süre 00:00:09.03
+Geçen Süre 00:00:08.48

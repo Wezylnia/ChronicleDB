@@ -4,10 +4,39 @@ using System.Text.Json.Serialization;
 using ChronicleDB.BranchCheck;
 
 string mode = args.Length == 0 ? "all" : args[0].Trim().ToLowerInvariant();
-if (mode is not ("all" or "synthetic" or "historical" or "matrixone" or "matrixone-identity" or "matrixone-budget" or "slatedb" or "slatedb-budget" or "dolt-budget" or "dolt-clone-smoke"))
+if (mode is not ("all" or "synthetic" or "historical" or "local-budget" or "unseeded-local" or "matrixone" or "matrixone-identity" or "matrixone-budget" or "slatedb" or "slatedb-budget" or "dolt-budget" or "dolt-clone-smoke"))
 {
-    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|matrixone|matrixone-identity|matrixone-budget|slatedb|slatedb-budget|dolt-budget|dolt-clone-smoke]");
+    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|local-budget|unseeded-local|matrixone|matrixone-identity|matrixone-budget|slatedb|slatedb-budget|dolt-budget|dolt-clone-smoke]");
     return 2;
+}
+
+if (mode == "local-budget")
+{
+    IReadOnlyList<CapabilityBudgetReport> reports = CapabilityBudgetCampaign.ExecuteDefault();
+    WriteJson(new
+    {
+        Mode = mode,
+        Protocol = new
+        {
+            CandidateSet = "capability-derived; no issue identifiers",
+            OrderingPair = "seeded uniform permutation vs target-class-guided permutation",
+            Seeds = CapabilityBudgetCampaign.DefaultSeeds,
+            ExternalEvidence = false,
+        },
+        Reports = reports,
+    });
+    return reports.All(static report => report.GuidedHasAdvantageAtAnyBudget) ? 0 : 1;
+}
+
+if (mode == "unseeded-local")
+{
+    UnseededLocalCampaignReport report = UnseededLocalCampaign.ExecuteDefault();
+    WriteJson(new
+    {
+        Mode = mode,
+        Report = report,
+    });
+    return report.Runs.Count == UnseededLocalCampaign.FrozenSeeds.Count * 4 ? 0 : 1;
 }
 
 if (mode == "matrixone-budget")

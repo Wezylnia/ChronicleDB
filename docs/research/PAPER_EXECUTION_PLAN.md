@@ -98,13 +98,15 @@ For every experiment report separately whether a supplied failing trace is detec
 
 | Step | State | Evidence |
 |---|---|---|
-| A–B. Patch, build, and existing tests | Complete | `artifacts/baseline/PROVENANCE.md`; 569 tests pass |
+| A–B. Patch, build, and existing tests | Complete | `artifacts/baseline/PROVENANCE.md`; 575 tests pass |
 | C. Environment freeze | Complete | `artifacts/environment/environment.json` |
 | D. Local v0.4 replay | Complete for available backends | synthetic + historical JSON; external prerequisites recorded unavailable |
 | E. Reproducibility artifacts | Complete for local runs | command logs, JSON outputs, exit codes under `artifacts/baseline/` |
 | F. Historical corpus audit | Initial freeze | `BRANCHCHECK_HISTORICAL_CORPUS_AUDIT.md` |
 | G. Obligation taxonomy | Initial freeze | `BRANCHCHECK_OBLIGATION_TAXONOMY.md` |
 | H. Capability-derived grammar | Implemented and unit-tested | `CapabilityCandidateGrammar` and 5 grammar tests |
+| E. Seed/budget protocol | Implemented locally | `CapabilityBudgetCampaign`; 4-profile calibration with 8 frozen seeds |
+| L. Unseeded campaign protocol | Implemented as local pilot | `BRANCHCHECK_UNSEEDED_LOCAL_CAMPAIGN.md`; 128 predeclared-seed runs, explicitly not external evidence |
 | O. ChronicleDB controlled mutation study | Implemented locally | `BRANCHCHECK_CHRONICLEDB_MUTATION_STUDY.md`; 5 mutation cases pass |
 | O. Trace reduction | Implemented locally | `BranchScenarioReducer`; semantic-signature reduction tests pass |
 | I onward | Blocked on external backend provisioning | See `BRANCHCHECK_EXTERNAL_PROVISIONING.md`; Docker, Rust/Cargo, Go, and Dolt are absent on this host. Local reduction/mutation work continues independently. |

@@ -7,10 +7,12 @@ The machine and toolchain identity is in [`../environment/environment.json`](../
 | Experiment | Backend | Version / identity | Seed / budget | Expected result | Observed result | Status | Artifact |
 |---|---|---|---|---|---|---|---|
 | Full solution build | ChronicleDB | .NET 10.0.301; commit above | N/A | 0 errors/warnings | 0 errors, 0 warnings | PASS | `dotnet-build-release.log` |
-| Full test suite | ChronicleDB + research harness | .NET 10.0.301 | N/A | all tests pass | 569 passed, 0 failed, 0 skipped | PASS | `dotnet-test-release.log` |
+| Full test suite | ChronicleDB + research harness | .NET 10.0.301 | N/A | all tests pass | 575 passed, 0 failed, 0 skipped | PASS | `dotnet-test-release.log` |
 | Synthetic mutation campaign | BranchCheck synthetic | local v0.4 prototype | deterministic recipes | all declared relations classify correctly | 6 scenarios; 5 intended relation failures detected | PASS | `branchcheck-synthetic.json` |
 | Historical issue campaign | BranchCheck corpus | 5 systems / 7 cases | curated transcript set | every case diagnosed by BC | 7/7 BC detected; 7/7 generic union also detected; 0 BC-only | PASS / limitation recorded | `branchcheck-historical.json` |
 | Historical baseline matrix | BranchCheck corpus | same 5 systems / 7 cases | supplied traces only | B0–B5 vs BC status table | machine-readable comparison recorded; not witness-search evidence | PASS / descriptive | `historical-baseline-matrix.json` |
+| Local capability-budget calibration | BranchCheck grammar | four capability profiles | 8 frozen seeds; all prefixes | uniform vs target-class-guided ordering | complete deterministic curves; calibration only | PASS / not external evidence | `local-capability-budget.json` |
+| Unseeded local campaign pilot | BranchCheck grammar | four capability profiles | 32 frozen seeds; trace budget 8 | relation-agnostic local ordering | 128 runs; 114 known-failure and 14 no-failure classifications | PASS / protocol only | `unseeded-local.json` |
 | Combined BranchCheck campaign | BranchCheck | local v0.4 prototype | deterministic recipes | synthetic + historical gates pass | process exit 0 | PASS | `branchcheck-all.json` |
 | ChronicleDB integration | ChronicleDB adapter | local commit above | 1 test | roundtrip branch/history contract | 1/1 passed | PASS | `chronicledb-integration-test.log` |
 | ChronicleDB controlled mutations | ChronicleDB adapter | `10ccc1af8b126195ffe69dd93f07ef8c01b98b9d` | deterministic mutation set | creation B0/B1 pass; semantic relation fails | 5/5 mutation cases and reducer checks pass | PASS / laboratory only | `chronicledb-controlled-mutations.json` |
