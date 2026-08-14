@@ -32,13 +32,7 @@ jobs:
           test -n "$DOLT_223"
           echo "DOLT_223=$DOLT_223" >> "$GITHUB_ENV"
           "$DOLT_223" version | tee .artifacts/branchcheck/dolt-2.2.3-version.txt
-      - name: Run minimal Dolt 2.2.3 clone continuation smoke
-        run: |
-          set -o pipefail
-          BRANCHCHECK_DOLT="$DOLT_223" \
-            dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-clone-smoke \
-            | tee .artifacts/branchcheck/dolt-2.2.3-clone-smoke.json
-      - name: Run pre-issue Dolt 2.2.3 campaign
+      - name: Run pre-issue Dolt 2.2.3 fair-budget campaign
         run: |
           set -o pipefail
           BRANCHCHECK_DOLT="$DOLT_223" \
@@ -57,14 +51,7 @@ jobs:
           test -n "$DOLT_230"
           echo "DOLT_230=$DOLT_230" >> "$GITHUB_ENV"
           "$DOLT_230" version | tee .artifacts/branchcheck/dolt-2.3.0-version.txt
-      - name: Run minimal Dolt 2.3.0 clone continuation smoke
-        if: always()
-        run: |
-          set -o pipefail
-          BRANCHCHECK_DOLT="$DOLT_230" \
-            dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-clone-smoke \
-            | tee .artifacts/branchcheck/dolt-2.3.0-clone-smoke.json
-      - name: Run current Dolt 2.3.0 campaign
+      - name: Run current Dolt 2.3.0 fair-budget campaign
         if: always()
         run: |
           set -o pipefail
@@ -154,6 +141,9 @@ jobs:
                   'outcomes': dict(Counter(r['ContinuationOutcome'] for r in reports)),
                   'generated_ids': dict(Counter(str(r['GeneratedId']) for r in reports)),
                   'details': dict(Counter(r['Detail'] for r in reports)),
+                  'post_attempt_rows': dict(Counter(str(r['PostAttemptReadableRowCount']) for r in reports)),
+                  'post_attempt_max_pk': dict(Counter(str(r['PostAttemptReadableMaxPrimaryKey']) for r in reports)),
+                  'clone_grammar': dict(Counter(r['CloneGrammarBaseline'] for r in reports)),
               }
           (root / 'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True))
           print(json.dumps(summary, indent=2, sort_keys=True))
@@ -166,9 +156,12 @@ jobs:
               and 'context canceled' in r['Detail'].lower()
               for r in unpatched
           ), summary['unpatched']
+          assert all(r['CloneGrammarBaseline'] == 'Pass' for r in unpatched), summary['unpatched']
+          assert all(r['PostAttemptReadableRowCount'] in (0, 1) for r in unpatched), summary['unpatched']
           assert all(r['ContinuationRelation'] == 'Pass' for r in patched), summary['patched']
           assert all(r['ContinuationOutcome'] == 'Success' for r in patched), summary['patched']
           assert all(r['GeneratedId'] == '1' for r in patched), summary['patched']
+          assert all(r['CloneGrammarBaseline'] == 'Pass' for r in patched), summary['patched']
           PY
       - uses: actions/upload-artifact@v4
         if: always()
