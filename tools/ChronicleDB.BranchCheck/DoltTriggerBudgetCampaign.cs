@@ -2,7 +2,7 @@ namespace ChronicleDB.BranchCheck;
 
 public sealed record DoltTriggerRecipeEvidence(
     DoltHistoryImportRecipe Recipe,
-    bool HighRiskHistoryImport,
+    bool SequenceStateRelevant,
     RelationStatus ContinuationRelation,
     BaselineStatus GenericStateBaseline,
     BaselineStatus BranchGrammarBaseline,
@@ -22,8 +22,8 @@ public sealed record DoltTriggerBudgetReport(
     IReadOnlyList<DoltTriggerRecipeEvidence> Recipes,
     IReadOnlyList<DoltTriggerBudgetPoint> BudgetCurve,
     int ViolationRecipeCount,
-    int HighRiskRecipeCount,
-    bool AllViolationsInsideHighRiskClass,
+    int SequenceRelevantRecipeCount,
+    bool AllViolationsInsideSequenceRelevantClass,
     bool GuidedHasStrictAdvantageAtAnyBudget);
 
 public static class DoltTriggerBudgetCampaign
@@ -48,7 +48,7 @@ public static class DoltTriggerBudgetCampaign
             BaselineResult branchGrammar = AdversarialBaselineSuite.EvaluateBranchGrammar(scenario);
             evidence.Add(new DoltTriggerRecipeEvidence(
                 recipe,
-                DoltHistoryImportSemantics.PublishesImportedRowsToCurrentHistory(recipe),
+                DoltHistoryImportSemantics.ChangesGlobalSequenceInputs(recipe),
                 continuation.Status,
                 genericState.Status,
                 branchGrammar.Status,
@@ -88,18 +88,18 @@ public static class DoltTriggerBudgetCampaign
         }
 
         int violationCount = evidence.Count(static item => item.TriggeredViolation);
-        int highRiskCount = evidence.Count(static item => item.HighRiskHistoryImport);
-        bool allViolationsInsideHighRisk = evidence
+        int relevantCount = evidence.Count(static item => item.SequenceStateRelevant);
+        bool allViolationsInsideRelevant = evidence
             .Where(static item => item.TriggeredViolation)
-            .All(static item => item.HighRiskHistoryImport);
+            .All(static item => item.SequenceStateRelevant);
         bool strictAdvantage = curve.Any(static point => point.GuidedDetectionRate > point.GenericDetectionRate);
         return new DoltTriggerBudgetReport(
             backendVersion,
             evidence.ToArray(),
             curve,
             violationCount,
-            highRiskCount,
-            allViolationsInsideHighRisk,
+            relevantCount,
+            allViolationsInsideRelevant,
             strictAdvantage);
     }
 
@@ -107,21 +107,21 @@ public static class DoltTriggerBudgetCampaign
         IReadOnlyList<DoltTriggerRecipeEvidence> evidence)
     {
         ArgumentNullException.ThrowIfNull(evidence);
-        DoltHistoryImportRecipe[] highRisk = evidence
-            .Where(static item => item.HighRiskHistoryImport)
+        DoltHistoryImportRecipe[] relevant = evidence
+            .Where(static item => item.SequenceStateRelevant)
             .Select(static item => item.Recipe)
             .ToArray();
-        DoltHistoryImportRecipe[] lowRisk = evidence
-            .Where(static item => !item.HighRiskHistoryImport)
+        DoltHistoryImportRecipe[] controls = evidence
+            .Where(static item => !item.SequenceStateRelevant)
             .Select(static item => item.Recipe)
             .ToArray();
 
-        IReadOnlyList<DoltHistoryImportRecipe[]> highRiskOrderings = GeneratePermutations(highRisk);
-        IReadOnlyList<DoltHistoryImportRecipe[]> lowRiskOrderings = GeneratePermutations(lowRisk);
-        var combined = new List<DoltHistoryImportRecipe[]>(Math.Max(1, highRiskOrderings.Count) * Math.Max(1, lowRiskOrderings.Count));
-        foreach (DoltHistoryImportRecipe[] high in highRiskOrderings.DefaultIfEmpty([]))
+        IReadOnlyList<DoltHistoryImportRecipe[]> relevantOrderings = GeneratePermutations(relevant);
+        IReadOnlyList<DoltHistoryImportRecipe[]> controlOrderings = GeneratePermutations(controls);
+        var combined = new List<DoltHistoryImportRecipe[]>(Math.Max(1, relevantOrderings.Count) * Math.Max(1, controlOrderings.Count));
+        foreach (DoltHistoryImportRecipe[] high in relevantOrderings.DefaultIfEmpty([]))
         {
-            foreach (DoltHistoryImportRecipe[] low in lowRiskOrderings.DefaultIfEmpty([]))
+            foreach (DoltHistoryImportRecipe[] low in controlOrderings.DefaultIfEmpty([]))
             {
                 combined.Add([.. high, .. low]);
             }
