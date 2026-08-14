@@ -1,6 +1,6 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Globalization;
 using ChronicleDB.BranchCheck;
 
 string mode = args.Length == 0 ? "all" : args[0].Trim().ToLowerInvariant();
@@ -39,7 +39,8 @@ if (mode is "matrixone" or "matrixone-identity" or "slatedb")
 
         ScenarioReport report = BranchCheckRunner.Evaluate(scenario);
         BaselineResult branchGrammar = AdversarialBaselineSuite.EvaluateBranchGrammar(scenario);
-        bool genericDetected = AdversarialBaselineSuite.AnyGenericBaselineDetected(report, branchGrammar);
+        BaselineResult observerSmoke = AdversarialBaselineSuite.EvaluateObserverSmoke(scenario);
+        bool genericDetected = AdversarialBaselineSuite.AnyGenericBaselineDetected(report, branchGrammar, observerSmoke);
         WriteJson(new
         {
             Mode = mode,
@@ -47,6 +48,7 @@ if (mode is "matrixone" or "matrixone-identity" or "slatedb")
             ExternalIdentity = externalIdentity,
             Report = report,
             BranchGrammarBaseline = branchGrammar,
+            ObserverSmokeBaseline = observerSmoke,
             AnyGenericBaselineDetected = genericDetected,
             StrictBranchCheckOnly = report.BranchCheckDetected && !genericDetected,
         });
@@ -77,6 +79,7 @@ var syntheticReports = syntheticScenarios
         scenario.ExpectedFailingRelationId,
         Report = BranchCheckRunner.Evaluate(scenario),
         BranchGrammarBaseline = AdversarialBaselineSuite.EvaluateBranchGrammar(scenario),
+        ObserverSmokeBaseline = AdversarialBaselineSuite.EvaluateObserverSmoke(scenario),
     })
     .ToArray();
 
@@ -85,7 +88,8 @@ var historicalReports = historicalCases
     {
         ScenarioReport report = BranchCheckRunner.Evaluate(issue.Scenario);
         BaselineResult branchGrammar = AdversarialBaselineSuite.EvaluateBranchGrammar(issue.Scenario);
-        bool genericDetected = AdversarialBaselineSuite.AnyGenericBaselineDetected(report, branchGrammar);
+        BaselineResult observerSmoke = AdversarialBaselineSuite.EvaluateObserverSmoke(issue.Scenario);
+        bool genericDetected = AdversarialBaselineSuite.AnyGenericBaselineDetected(report, branchGrammar, observerSmoke);
         return new
         {
             issue.System,
@@ -96,6 +100,7 @@ var historicalReports = historicalCases
             issue.EvidenceNote,
             Report = report,
             BranchGrammarBaseline = branchGrammar,
+            ObserverSmokeBaseline = observerSmoke,
             AnyGenericBaselineDetected = genericDetected,
             StrictBranchCheckOnly = report.BranchCheckDetected && !genericDetected,
         };
@@ -119,6 +124,7 @@ var output = new
         B2Detected = CountBaselineDetections(historicalReports.Select(static report => report.Report), "B2.generic-state-differential"),
         B3Detected = CountBaselineDetections(historicalReports.Select(static report => report.Report), "B3.generic-recovery"),
         B4Detected = historicalReports.Count(static report => report.BranchGrammarBaseline.Detected),
+        B5Detected = historicalReports.Count(static report => report.ObserverSmokeBaseline.Detected),
     },
 };
 
