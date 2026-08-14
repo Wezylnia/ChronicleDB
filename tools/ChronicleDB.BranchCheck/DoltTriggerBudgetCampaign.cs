@@ -37,7 +37,7 @@ public static class DoltTriggerBudgetCampaign
         string backendVersion = "unknown";
         foreach (DoltHistoryImportRecipe recipe in recipes)
         {
-            BranchScenario scenario = await DoltHistoryImportAdapter.ExecuteAsync(
+            BranchScenario scenario = await DoltSqlServerHistoryImportAdapter.ExecuteAsync(
                 options,
                 recipe,
                 cancellationToken).ConfigureAwait(false);
