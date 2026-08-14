@@ -108,6 +108,42 @@ jobs:
           BRANCHCHECK_DOLT=/tmp/dolt-main-bin \
             dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-clone-smoke \
             | tee dolt-main-clone-smoke.json
+      - name: Restore pre-regression tracker context lifetime on current main
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('/tmp/dolt-main/go/libraries/doltcore/sqle/dsess/sequence_tracker.go')
+          text = path.read_text()
+          old = 'gcSafepointController := getGCSafepointController(ctx)\n\tif gcSafepointController != nil {'
+          new = 'gcSafepointController := getGCSafepointController(ctx)\n\tctx = context.Background()\n\tif gcSafepointController != nil {'
+          if old not in text:
+              raise SystemExit('expected SequenceTracker constructor pattern not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git -C /tmp/dolt-main diff -- go/libraries/doltcore/sqle/dsess/sequence_tracker.go | tee dolt-main-causal-patch.diff
+      - name: Build one-line causal patch control
+        working-directory: /tmp/dolt-main/go
+        run: go build -o /tmp/dolt-main-patched-bin ./cmd/dolt
+      - name: Run minimal smoke on causal patch control
+        run: |
+          set -o pipefail
+          BRANCHCHECK_DOLT=/tmp/dolt-main-patched-bin \
+            dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-clone-smoke \
+            | tee dolt-main-patched-clone-smoke.json
+      - name: Assert causal polarity
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          buggy = json.loads(Path('dolt-main-clone-smoke.json').read_text())['Report']
+          patched = json.loads(Path('dolt-main-patched-clone-smoke.json').read_text())['Report']
+          assert buggy['ContinuationRelation'] == 'Fail', buggy
+          assert buggy['ContinuationOutcome'] == 'Rejected', buggy
+          assert 'context canceled' in buggy['Detail'].lower(), buggy
+          assert patched['ContinuationRelation'] == 'Pass', patched
+          assert patched['ContinuationOutcome'] == 'Success', patched
+          assert patched['GeneratedId'] == '1', patched
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -115,3 +151,5 @@ jobs:
           path: |
             dolt-main-version.txt
             dolt-main-clone-smoke.json
+            dolt-main-patched-clone-smoke.json
+            dolt-main-causal-patch.diff
