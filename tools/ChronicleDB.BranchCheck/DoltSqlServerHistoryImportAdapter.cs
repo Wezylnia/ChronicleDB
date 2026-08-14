@@ -35,11 +35,12 @@ public static class DoltSqlServerHistoryImportAdapter
                 socket,
                 options.Timeout,
                 cancellationToken).ConfigureAwait(false);
-            var client = new DoltServerClient(options, root, port);
+            var client = new DoltServerClient(options, source, port, "source");
             await client.WaitUntilReadyAsync(server, cancellationToken).ConfigureAwait(false);
 
             string remoteUrl = FileUrl(remote);
             string setupSql = $"""
+                USE `source`;
                 CALL DOLT_REMOTE('add', 'origin', '{EscapeSql(remoteUrl)}');
                 CREATE TABLE test(pk BIGINT PRIMARY KEY AUTO_INCREMENT, v INT);
                 CALL DOLT_COMMIT('-Am', 'initial commit');
@@ -54,7 +55,7 @@ public static class DoltSqlServerHistoryImportAdapter
             string recipeSql = BuildRecipeSql(recipe);
             if (!string.IsNullOrWhiteSpace(recipeSql))
             {
-                await client.RequireSqlAsync("USE other; " + recipeSql, cancellationToken).ConfigureAwait(false);
+                await client.RequireSqlAsync("USE `other`; " + recipeSql, cancellationToken).ConfigureAwait(false);
             }
 
             (int rowCount, long? maxPk) = await client.ReadStateAsync("other", cancellationToken).ConfigureAwait(false);
@@ -65,7 +66,7 @@ public static class DoltSqlServerHistoryImportAdapter
             long expectedGlobalSequenceHighWater = changesSequenceInputs ? 1 : 0;
 
             DoltCliResult insert = await client.ExecuteSqlAsync(
-                "USE other; INSERT INTO test(v) VALUES (99);",
+                "USE `other`; INSERT INTO test(v) VALUES (99);",
                 cancellationToken).ConfigureAwait(false);
             OutcomeClass continuationOutcome = insert.ExitCode == 0 ? OutcomeClass.Success : OutcomeClass.Rejected;
             long? maxAfter = null;
@@ -236,30 +237,36 @@ internal sealed class DoltServerClient
     private readonly DoltCliOptions _options;
     private readonly string _workingDirectory;
     private readonly int _port;
+    private readonly string _defaultDatabase;
 
-    public DoltServerClient(DoltCliOptions options, string workingDirectory, int port)
+    public DoltServerClient(DoltCliOptions options, string workingDirectory, int port, string defaultDatabase)
     {
         _options = options;
         _workingDirectory = workingDirectory;
         _port = port;
+        _defaultDatabase = defaultDatabase;
     }
 
     public async Task WaitUntilReadyAsync(DoltSqlServerProcess server, CancellationToken cancellationToken)
     {
+        DoltCliResult? last = null;
         for (int attempt = 0; attempt < 60; attempt++)
         {
             if (server.HasExited)
             {
                 throw new ExternalAdapterException("Dolt sql-server exited during startup: " + await server.ReadLogsAsync().ConfigureAwait(false));
             }
-            DoltCliResult result = await ExecuteSqlAsync("SELECT 1;", cancellationToken).ConfigureAwait(false);
-            if (result.ExitCode == 0)
+            last = await ExecuteSqlAsync("SELECT 1;", cancellationToken).ConfigureAwait(false);
+            if (last.ExitCode == 0)
             {
                 return;
             }
             await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
         }
-        throw new ExternalAdapterException("Timed out waiting for Dolt sql-server: " + await server.ReadLogsAsync().ConfigureAwait(false));
+        string clientEvidence = last is null
+            ? "no client attempt"
+            : $"client exit={last.ExitCode}; stdout={Normalize(last.StandardOutput)}; stderr={Normalize(last.StandardError)}";
+        throw new ExternalAdapterException("Timed out waiting for Dolt sql-server; " + clientEvidence + "; server=" + await server.ReadLogsAsync().ConfigureAwait(false));
     }
 
     public async Task<DoltCliResult> RequireSqlAsync(string sql, CancellationToken cancellationToken)
@@ -279,9 +286,11 @@ internal sealed class DoltServerClient
             _workingDirectory,
             [
                 "-u", "root",
+                "-p", "",
                 "--host", "127.0.0.1",
                 "--no-tls",
                 "--port", _port.ToString(CultureInfo.InvariantCulture),
+                "--use-db", _defaultDatabase,
                 "sql",
                 "-r", "csv",
                 "-q", sql,
@@ -314,6 +323,9 @@ internal sealed class DoltServerClient
         }
         throw new ExternalAdapterException("Could not parse Dolt server row-count/max-pk output: " + result.StandardOutput);
     }
+
+    private static string Normalize(string value)
+        => string.Join(" | ", value.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 }
 
 internal sealed class DoltSqlServerProcess : IAsyncDisposable
