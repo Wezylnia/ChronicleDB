@@ -4,34 +4,52 @@ using System.Globalization;
 using ChronicleDB.BranchCheck;
 
 string mode = args.Length == 0 ? "all" : args[0].Trim().ToLowerInvariant();
-if (mode is not ("all" or "synthetic" or "historical" or "matrixone" or "matrixone-identity"))
+if (mode is not ("all" or "synthetic" or "historical" or "matrixone" or "matrixone-identity" or "slatedb"))
 {
-    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|matrixone|matrixone-identity]");
+    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|matrixone|matrixone-identity|slatedb]");
     return 2;
 }
 
-if (mode is "matrixone" or "matrixone-identity")
+if (mode is "matrixone" or "matrixone-identity" or "slatedb")
 {
     try
     {
-        SqlCliOptions options = MatrixOneEnvironment.ReadOptions();
-        BranchScenario scenario = mode == "matrixone"
-            ? await MatrixOneAutoIncrementAdapter.ExecuteAsync(options).ConfigureAwait(false)
-            : await MatrixOneHistoricalIdentityAdapter.ExecuteAsync(options).ConfigureAwait(false);
+        BranchScenario scenario;
+        string? externalIdentity;
+        string requiredRelation;
+        if (mode == "slatedb")
+        {
+            string executable = Environment.GetEnvironmentVariable("BRANCHCHECK_SLATEDB_PROBE")
+                ?? throw new ExternalAdapterException("BRANCHCHECK_SLATEDB_PROBE is required for slatedb mode.");
+            scenario = await SlateDbObserverAdapter.ExecuteAsync(
+                executable,
+                TimeSpan.FromSeconds(120)).ConfigureAwait(false);
+            externalIdentity = executable;
+            requiredRelation = "BC.observer-dependency";
+        }
+        else
+        {
+            SqlCliOptions options = MatrixOneEnvironment.ReadOptions();
+            scenario = mode == "matrixone"
+                ? await MatrixOneAutoIncrementAdapter.ExecuteAsync(options).ConfigureAwait(false)
+                : await MatrixOneHistoricalIdentityAdapter.ExecuteAsync(options).ConfigureAwait(false);
+            externalIdentity = Environment.GetEnvironmentVariable("BRANCHCHECK_MATRIXONE_IMAGE");
+            requiredRelation = mode == "matrixone" ? "BC.continuation-state" : "BC.temporal-boundary";
+        }
+
         ScenarioReport report = BranchCheckRunner.Evaluate(scenario);
         BaselineResult branchGrammar = AdversarialBaselineSuite.EvaluateBranchGrammar(scenario);
+        bool genericDetected = AdversarialBaselineSuite.AnyGenericBaselineDetected(report, branchGrammar);
         WriteJson(new
         {
             Mode = mode,
             Backend = scenario.Capabilities.BackendName,
-            Image = Environment.GetEnvironmentVariable("BRANCHCHECK_MATRIXONE_IMAGE"),
+            ExternalIdentity = externalIdentity,
             Report = report,
             BranchGrammarBaseline = branchGrammar,
-            AnyGenericBaselineDetected = AdversarialBaselineSuite.AnyGenericBaselineDetected(report, branchGrammar),
-            StrictBranchCheckOnly = report.BranchCheckDetected
-                && !AdversarialBaselineSuite.AnyGenericBaselineDetected(report, branchGrammar),
+            AnyGenericBaselineDetected = genericDetected,
+            StrictBranchCheckOnly = report.BranchCheckDetected && !genericDetected,
         });
-        string requiredRelation = mode == "matrixone" ? "BC.continuation-state" : "BC.temporal-boundary";
         return report.Relations.Any(result =>
             string.Equals(result.RelationId, requiredRelation, StringComparison.Ordinal)
             && result.Status != RelationStatus.Inconclusive)
