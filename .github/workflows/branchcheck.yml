@@ -1,0 +1,212 @@
+name: BranchCheck gate
+
+on:
+  pull_request:
+    paths:
+      - 'tools/ChronicleDB.BranchCheck/**'
+      - 'tools/BranchCheck.External/**'
+      - 'tests/Research/ChronicleDB.BranchCheck.Tests/**'
+      - 'docs/research/BRANCHCHECK_*.md'
+      - 'src/**'
+      - 'Directory.Build.props'
+      - 'Directory.Packages.props'
+      - 'global.json'
+      - 'ChronicleDB.slnx'
+  workflow_dispatch:
+
+jobs:
+  branchcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.301'
+      - name: Build full solution
+        run: dotnet build ChronicleDB.slnx -c Release
+      - name: Restore BranchCheck gate
+        run: dotnet restore tests/Research/ChronicleDB.BranchCheck.Tests/ChronicleDB.BranchCheck.Tests.csproj
+      - name: Build BranchCheck gate
+        run: dotnet build tests/Research/ChronicleDB.BranchCheck.Tests/ChronicleDB.BranchCheck.Tests.csproj -c Release --no-restore
+      - name: Test BranchCheck gate
+        run: dotnet test tests/Research/ChronicleDB.BranchCheck.Tests/ChronicleDB.BranchCheck.Tests.csproj -c Release --no-build --no-restore
+      - name: Run historical evidence matrix
+        run: dotnet run -c Release --project tools/ChronicleDB.BranchCheck --no-build -- historical
+      - name: Architecture tests
+        run: dotnet test tests/Architecture/ChronicleDB.ArchitectureTests/ChronicleDB.ArchitectureTests.csproj -c Release
+
+  matrixone-exploratory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.301'
+      - name: Install SQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mariadb-client
+      - name: Start MatrixOne
+        run: |
+          docker run -d --name matrixone -p 6001:6001 matrixorigin/matrixone:latest
+          docker inspect --format='image={{.Image}}' matrixone
+          echo "BRANCHCHECK_MATRIXONE_IMAGE=$(docker inspect --format='{{.Image}}' matrixone)" >> "$GITHUB_ENV"
+      - name: Wait for MatrixOne
+        env:
+          MYSQL_PWD: '111'
+        run: |
+          for attempt in $(seq 1 60); do
+            if mysql --protocol=tcp --host=127.0.0.1 --port=6001 --user=root --batch --skip-column-names -e 'SELECT 1' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs matrixone
+          exit 1
+      - name: Run executable MatrixOne continuation probe
+        env: &matrixone-env
+          BRANCHCHECK_SQL_CLIENT: mysql
+          BRANCHCHECK_MATRIXONE_HOST: 127.0.0.1
+          BRANCHCHECK_MATRIXONE_PORT: '6001'
+          BRANCHCHECK_MATRIXONE_USER: root
+          BRANCHCHECK_MATRIXONE_PASSWORD: '111'
+        run: |
+          set -o pipefail
+          mkdir -p .artifacts/branchcheck
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- matrixone | tee .artifacts/branchcheck/matrixone-continuation.json
+      - name: Run executable MatrixOne historical identity probe
+        env: *matrixone-env
+        run: |
+          set -o pipefail
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- matrixone-identity | tee .artifacts/branchcheck/matrixone-identity.json
+      - name: Run fair-budget MatrixOne identity trigger campaign
+        env: *matrixone-env
+        run: |
+          set -o pipefail
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- matrixone-budget | tee .artifacts/branchcheck/matrixone-trigger-budget.json
+      - name: Capture MatrixOne logs
+        if: always()
+        run: |
+          mkdir -p .artifacts/branchcheck
+          docker logs matrixone > .artifacts/branchcheck/matrixone.log 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: branchcheck-matrixone-exploratory
+          path: .artifacts/branchcheck
+
+  slatedb-exploratory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.301'
+      - name: Record Rust toolchain
+        run: cargo --version && rustc --version
+      - name: Build published SlateDB 0.14.1 observer probe
+        run: |
+          mkdir -p .artifacts/branchcheck
+          cargo generate-lockfile --manifest-path tools/BranchCheck.External/SlateDbProbe/Cargo.toml
+          cp tools/BranchCheck.External/SlateDbProbe/Cargo.lock .artifacts/branchcheck/slatedb-0.14.1-Cargo.lock
+          cargo build --locked --manifest-path tools/BranchCheck.External/SlateDbProbe/Cargo.toml
+      - name: Run published SlateDB 0.14.1 observer relation and budget
+        env: &slatedb-buggy-env
+          BRANCHCHECK_SLATEDB_PROBE: ${{ github.workspace }}/tools/BranchCheck.External/SlateDbProbe/target/debug/branchcheck-slatedb-probe
+          SLATEDB_PROBE_TARGET: crate-0.14.1
+        run: |
+          set -o pipefail
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- slatedb | tee .artifacts/branchcheck/slatedb-buggy.json
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- slatedb-budget | tee .artifacts/branchcheck/slatedb-buggy-budget.json
+      - name: Retarget probe to merged SlateDB fix
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tools/BranchCheck.External/SlateDbProbe/Cargo.toml')
+          text = path.read_text()
+          text = text.replace(
+              'slatedb = "=0.14.1"',
+              'slatedb = { git = "https://github.com/slatedb/slatedb", rev = "6a131a9ebfd121ca553cb80a08b7b8f2bd142092" }')
+          path.write_text(text)
+          PY
+          rm -f tools/BranchCheck.External/SlateDbProbe/Cargo.lock
+          cargo generate-lockfile --manifest-path tools/BranchCheck.External/SlateDbProbe/Cargo.toml
+          cp tools/BranchCheck.External/SlateDbProbe/Cargo.lock .artifacts/branchcheck/slatedb-fix-6a131a9e-Cargo.lock
+          cargo build --locked --manifest-path tools/BranchCheck.External/SlateDbProbe/Cargo.toml
+      - name: Run merged SlateDB fix observer relation and budget
+        env:
+          BRANCHCHECK_SLATEDB_PROBE: ${{ github.workspace }}/tools/BranchCheck.External/SlateDbProbe/target/debug/branchcheck-slatedb-probe
+          SLATEDB_PROBE_TARGET: fix-6a131a9e
+        run: |
+          set -o pipefail
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- slatedb | tee .artifacts/branchcheck/slatedb-fixed.json
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- slatedb-budget | tee .artifacts/branchcheck/slatedb-fixed-budget.json
+      - name: Assert buggy/fixed relation and budget polarity
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          buggy = json.loads(Path('.artifacts/branchcheck/slatedb-buggy.json').read_text())
+          fixed = json.loads(Path('.artifacts/branchcheck/slatedb-fixed.json').read_text())
+          buggy_budget = json.loads(Path('.artifacts/branchcheck/slatedb-buggy-budget.json').read_text())['Report']
+          fixed_budget = json.loads(Path('.artifacts/branchcheck/slatedb-fixed-budget.json').read_text())['Report']
+          def relation(doc):
+              return next(r for r in doc['Report']['Relations'] if r['RelationId'] == 'BC.observer-dependency')['Status']
+          def smoke(doc):
+              return doc['ObserverSmokeBaseline']['Status']
+          assert relation(buggy) == 'Fail', relation(buggy)
+          assert smoke(buggy) == 'Detected', smoke(buggy)
+          assert buggy['StrictBranchCheckOnly'] is False, buggy['StrictBranchCheckOnly']
+          assert buggy_budget['ViolationCandidateCount'] == 1, buggy_budget['ViolationCandidateCount']
+          assert buggy_budget['GuidedCandidateIsViolation'] is True
+          assert [round(point['GenericDetectionRate'], 6) for point in buggy_budget['BudgetCurve']] == [0.333333, 0.666667, 1.0]
+          assert all(point['RelationGuidedDetectionRate'] == 1.0 for point in buggy_budget['BudgetCurve'])
+          assert relation(fixed) == 'Pass', relation(fixed)
+          assert smoke(fixed) == 'Pass', smoke(fixed)
+          assert fixed['Report']['BranchCheckDetected'] is False, fixed['Report']['BranchCheckDetected']
+          assert fixed_budget['ViolationCandidateCount'] == 0, fixed_budget['ViolationCandidateCount']
+          assert fixed_budget['GuidedCandidateIsViolation'] is False
+          assert all(point['GenericDetectionRate'] == 0.0 for point in fixed_budget['BudgetCurve'])
+          assert all(point['RelationGuidedDetectionRate'] == 0.0 for point in fixed_budget['BudgetCurve'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: branchcheck-slatedb-exploratory
+          path: .artifacts/branchcheck
+
+  dolt-exploratory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.301'
+      - name: Install pinned current Dolt 2.3.0
+        run: |
+          mkdir -p .artifacts/branchcheck /tmp/branchcheck-dolt
+          curl -L --fail --retry 3 \
+            https://github.com/dolthub/dolt/releases/download/v2.3.0/dolt-linux-amd64.tar.gz \
+            -o /tmp/branchcheck-dolt/dolt.tar.gz
+          echo 'f702aa9fc4246b076e6e255f5bb6eb6f0a120962ab8895dda9e77a0a77cfe10d  /tmp/branchcheck-dolt/dolt.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/branchcheck-dolt/dolt.tar.gz -C /tmp/branchcheck-dolt
+          DOLT_BIN="$(find /tmp/branchcheck-dolt -type f -name dolt -perm -u+x | head -n 1)"
+          test -n "$DOLT_BIN"
+          echo "BRANCHCHECK_DOLT=$DOLT_BIN" >> "$GITHUB_ENV"
+          "$DOLT_BIN" version | tee .artifacts/branchcheck/dolt-version.txt
+      - name: Run fair-budget Dolt history-import campaign
+        run: |
+          set -o pipefail
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-budget | tee .artifacts/branchcheck/dolt-trigger-budget.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: branchcheck-dolt-exploratory
+          path: .artifacts/branchcheck

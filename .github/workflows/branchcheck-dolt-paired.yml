@@ -1,0 +1,204 @@
+name: BranchCheck Dolt paired gate
+
+on:
+  pull_request:
+    paths:
+      - 'tools/ChronicleDB.BranchCheck/**'
+      - 'tests/Research/ChronicleDB.BranchCheck.Tests/**'
+      - '.github/workflows/branchcheck-dolt-paired.yml'
+  workflow_dispatch:
+
+jobs:
+  dolt-budget-223:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.301'
+      - name: Prepare artifact directory
+        run: mkdir -p .artifacts/branchcheck /tmp/branchcheck-dolt/v2.2.3
+      - name: Install pinned Dolt 2.2.3 pre-issue release
+        run: |
+          curl -L --fail --retry 3 \
+            https://github.com/dolthub/dolt/releases/download/v2.2.3/dolt-linux-amd64.tar.gz \
+            -o /tmp/branchcheck-dolt/dolt-2.2.3.tar.gz
+          echo 'ffafa7cc172cada5f77ca3fb96306545ddac44a111625f75f870306c7f197301  /tmp/branchcheck-dolt/dolt-2.2.3.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/branchcheck-dolt/dolt-2.2.3.tar.gz -C /tmp/branchcheck-dolt/v2.2.3
+          DOLT_BIN="$(find /tmp/branchcheck-dolt/v2.2.3 -type f -name dolt -perm -u+x | head -n 1)"
+          test -n "$DOLT_BIN"
+          echo "BRANCHCHECK_DOLT=$DOLT_BIN" >> "$GITHUB_ENV"
+          "$DOLT_BIN" version | tee .artifacts/branchcheck/dolt-2.2.3-version.txt
+      - name: Run Dolt 2.2.3 fair-budget campaign
+        run: |
+          set -o pipefail
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-budget \
+            | tee .artifacts/branchcheck/dolt-2.2.3-budget.json
+      - name: Assert frozen 2.2.3 fair-budget shape
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('.artifacts/branchcheck/dolt-2.2.3-budget.json').read_text())['Report']
+          by_recipe = {row['Recipe']: row for row in report['Recipes']}
+          assert by_recipe['NoOp']['ContinuationRelation'] == 'Pass', by_recipe['NoOp']
+          for recipe in ('FetchOnly', 'Pull', 'FetchMerge'):
+              assert by_recipe[recipe]['ContinuationRelation'] == 'Fail', by_recipe[recipe]
+              assert by_recipe[recipe]['SequenceStateRelevant'] is True, by_recipe[recipe]
+              assert by_recipe[recipe]['BranchGrammarBaseline'] == 'Pass', by_recipe[recipe]
+          assert report['ViolationRecipeCount'] == 3, report['ViolationRecipeCount']
+          assert report['SequenceRelevantRecipeCount'] == 3, report['SequenceRelevantRecipeCount']
+          curve = report['BudgetCurve']
+          assert curve[0]['GenericDetectionRate'] == 0.75, curve[0]
+          assert curve[0]['GuidedDetectionRate'] == 1.0, curve[0]
+          assert all(point['GenericDetectionRate'] == 1.0 for point in curve[1:]), curve
+          assert all(point['GuidedDetectionRate'] == 1.0 for point in curve), curve
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: branchcheck-dolt-budget-2.2.3
+          path: .artifacts/branchcheck
+
+  dolt-budget-230:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.301'
+      - name: Prepare artifact directory
+        run: mkdir -p .artifacts/branchcheck /tmp/branchcheck-dolt/v2.3.0
+      - name: Install pinned Dolt 2.3.0 release
+        run: |
+          curl -L --fail --retry 3 \
+            https://github.com/dolthub/dolt/releases/download/v2.3.0/dolt-linux-amd64.tar.gz \
+            -o /tmp/branchcheck-dolt/dolt-2.3.0.tar.gz
+          echo 'f702aa9fc4246b076e6e255f5bb6eb6f0a120962ab8895dda9e77a0a77cfe10d  /tmp/branchcheck-dolt/dolt-2.3.0.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/branchcheck-dolt/dolt-2.3.0.tar.gz -C /tmp/branchcheck-dolt/v2.3.0
+          DOLT_BIN="$(find /tmp/branchcheck-dolt/v2.3.0 -type f -name dolt -perm -u+x | head -n 1)"
+          test -n "$DOLT_BIN"
+          echo "BRANCHCHECK_DOLT=$DOLT_BIN" >> "$GITHUB_ENV"
+          "$DOLT_BIN" version | tee .artifacts/branchcheck/dolt-2.3.0-version.txt
+      - name: Run Dolt 2.3.0 fair-budget campaign independently
+        run: |
+          set -o pipefail
+          dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- dolt-budget \
+            | tee .artifacts/branchcheck/dolt-2.3.0-budget.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: branchcheck-dolt-budget-2.3.0
+          path: .artifacts/branchcheck
+
+  dolt-main-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.301'
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.2'
+          cache: false
+      - name: Fetch pinned current Dolt main
+        run: |
+          git init /tmp/dolt-main
+          git -C /tmp/dolt-main remote add origin https://github.com/dolthub/dolt.git
+          git -C /tmp/dolt-main fetch --depth=1 origin c3b5ce3c67f8677ca08a0a58d8c03cdc95bff8b7
+          git -C /tmp/dolt-main checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/dolt-main rev-parse HEAD)" = 'c3b5ce3c67f8677ca08a0a58d8c03cdc95bff8b7'
+      - name: Build pinned current Dolt main
+        working-directory: /tmp/dolt-main/go
+        run: |
+          go build -o /tmp/dolt-main-bin ./cmd/dolt
+          /tmp/dolt-main-bin version | tee "$GITHUB_WORKSPACE/dolt-main-version.txt"
+      - name: Build BranchCheck once
+        run: dotnet build -c Release tools/ChronicleDB.BranchCheck/ChronicleDB.BranchCheck.csproj
+      - name: Run twenty unpatched current-main clone continuation smokes
+        run: |
+          mkdir -p dolt-main-repeat/unpatched dolt-main-repeat/patched
+          for i in $(seq 1 20); do
+            BRANCHCHECK_DOLT=/tmp/dolt-main-bin \
+              dotnet run -c Release --no-build --project tools/ChronicleDB.BranchCheck -- dolt-clone-smoke \
+              > "dolt-main-repeat/unpatched/${i}.json"
+          done
+      - name: Restore pre-regression tracker context lifetime on current main
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('/tmp/dolt-main/go/libraries/doltcore/sqle/dsess/sequence_tracker.go')
+          text = path.read_text()
+          old = 'gcSafepointController := getGCSafepointController(ctx)\n\tif gcSafepointController != nil {'
+          new = 'gcSafepointController := getGCSafepointController(ctx)\n\tctx = context.Background()\n\tif gcSafepointController != nil {'
+          if old not in text:
+              raise SystemExit('expected SequenceTracker constructor pattern not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git -C /tmp/dolt-main diff -- go/libraries/doltcore/sqle/dsess/sequence_tracker.go | tee dolt-main-causal-patch.diff
+      - name: Build one-line causal patch control
+        working-directory: /tmp/dolt-main/go
+        run: go build -o /tmp/dolt-main-patched-bin ./cmd/dolt
+      - name: Run twenty causal-patched current-main clone continuation smokes
+        run: |
+          for i in $(seq 1 20); do
+            BRANCHCHECK_DOLT=/tmp/dolt-main-patched-bin \
+              dotnet run -c Release --no-build --project tools/ChronicleDB.BranchCheck -- dolt-clone-smoke \
+              > "dolt-main-repeat/patched/${i}.json"
+          done
+      - name: Aggregate race-aware causal A/B and assert polarity
+        run: |
+          python3 - <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          root = Path('dolt-main-repeat')
+          summary = {}
+          reports_by_group = {}
+          for group in ('unpatched', 'patched'):
+              reports = [json.loads((root / group / f'{i}.json').read_text())['Report'] for i in range(1, 21)]
+              reports_by_group[group] = reports
+              summary[group] = {
+                  'runs': len(reports),
+                  'relation_status': dict(Counter(r['ContinuationRelation'] for r in reports)),
+                  'outcomes': dict(Counter(r['ContinuationOutcome'] for r in reports)),
+                  'generated_ids': dict(Counter(str(r['GeneratedId']) for r in reports)),
+                  'details': dict(Counter(r['Detail'] for r in reports)),
+                  'post_attempt_rows': dict(Counter(str(r['PostAttemptReadableRowCount']) for r in reports)),
+                  'post_attempt_max_pk': dict(Counter(str(r['PostAttemptReadableMaxPrimaryKey']) for r in reports)),
+                  'clone_grammar': dict(Counter(r['CloneGrammarBaseline'] for r in reports)),
+              }
+          (root / 'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True))
+          print(json.dumps(summary, indent=2, sort_keys=True))
+
+          unpatched = reports_by_group['unpatched']
+          patched = reports_by_group['patched']
+          assert any(
+              r['ContinuationRelation'] == 'Fail'
+              and r['ContinuationOutcome'] == 'Rejected'
+              and 'context canceled' in r['Detail'].lower()
+              for r in unpatched
+          ), summary['unpatched']
+          assert all(r['CloneGrammarBaseline'] == 'Pass' for r in unpatched), summary['unpatched']
+          assert all(r['PostAttemptReadableRowCount'] in (0, 1) for r in unpatched), summary['unpatched']
+          assert all(r['ContinuationRelation'] == 'Pass' for r in patched), summary['patched']
+          assert all(r['ContinuationOutcome'] == 'Success' for r in patched), summary['patched']
+          assert all(r['GeneratedId'] == '1' for r in patched), summary['patched']
+          assert all(r['CloneGrammarBaseline'] == 'Pass' for r in patched), summary['patched']
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: branchcheck-dolt-main-smoke
+          path: |
+            dolt-main-version.txt
+            dolt-main-causal-patch.diff
+            dolt-main-repeat
