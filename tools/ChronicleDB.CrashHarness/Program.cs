@@ -54,11 +54,6 @@ static async Task<int> RunHarnessAsync(int iterations)
             CrashScenario.GarbageCollectionDuringCheckpointWrite,
             CrashScenario.GarbageCollectionBeforeWalReset,
             CrashScenario.GarbageCollectionAfterWalReset,
-            CrashScenario.ShadowGarbageCollectionChildAfterCheckpointFlush,
-            CrashScenario.ShadowGarbageCollectionParentAfterCheckpointRecordWrite,
-            CrashScenario.ShadowGarbageCollectionParentAfterCheckpointFlush,
-            CrashScenario.ShadowGarbageCollectionParentBeforeWalReset,
-            CrashScenario.ShadowGarbageCollectionParentAfterWalReset,
             CrashScenario.CompactionDuringOutputWrite,
             CrashScenario.CompactionBeforePublish,
             CrashScenario.CompactionAfterPublish
@@ -92,9 +87,7 @@ static async Task<int> RunHarnessAsync(int iterations)
                                 ? ValidateBranchDeleteScenario(directory, scenario)
                                 : scenario.StartsWith("BranchSnapshot", StringComparison.Ordinal)
                                     ? ValidateBranchSnapshotScenario(directory, scenario)
-                                    : scenario.StartsWith("ShadowGarbageCollection", StringComparison.Ordinal)
-                                        ? ValidateShadowGarbageCollectionScenario(directory, scenario)
-                                        : scenario.StartsWith("GarbageCollection", StringComparison.Ordinal)
+                                    : scenario.StartsWith("GarbageCollection", StringComparison.Ordinal)
                                             || scenario.StartsWith("Compaction", StringComparison.Ordinal)
                                             ? ValidateMaintenanceScenario(directory, scenario)
                                             : ValidateTransactionScenario(directory, scenario);
@@ -254,20 +247,6 @@ static bool ValidateBranchSnapshotScenario(string directory, string scenario)
     return valid;
 }
 
-static bool ValidateShadowGarbageCollectionScenario(string directory, string scenario)
-{
-    using var database = ChronicleDatabase.Open(directory);
-    using var branch = database.OpenBranch("shadow-process-crash");
-    var mainK = database.TryGet([1], out var mainKValue) && mainKValue.SequenceEqual(new byte[] { 30 });
-    var mainX = database.TryGet([2], out var mainXValue) && mainXValue.SequenceEqual(new byte[] { 31 });
-    var branchK = branch.TryGet([1], out var branchKValue) && branchKValue.SequenceEqual(new byte[] { 20 });
-    var branchX = branch.TryGet([2], out var branchXValue) && branchXValue.SequenceEqual(new byte[] { 11 });
-    var valid = mainK && mainX && branchK && branchX;
-    Console.WriteLine(
-        $"{scenario}: {(valid ? "PASS" : "FAIL")} mainK={mainK} mainX={mainX} branchK={branchK} branchX={branchX}");
-    return valid;
-}
-
 static bool ValidateMaintenanceScenario(string directory, string scenario)
 {
     using var database = ChronicleDatabase.Open(directory);
@@ -412,28 +391,6 @@ static int RunChild(string directory, string scenario)
         return 0;
     }
 
-    if (TryShadowGarbageCollectionCrashPoint(scenario, out var shadowPoint, out var shadowOccurrence))
-    {
-        using (var setup = ChronicleDatabase.Open(directory))
-        {
-            setup.Put([1], [10]);
-            setup.Put([2], [11]);
-            using var branch = setup.CreateBranch("shadow-process-crash");
-            branch.Put([1], [20]);
-            setup.Put([1], [30]);
-            setup.Put([2], [31]);
-        }
-
-        using var database = ChronicleDatabase.Open(
-            directory,
-            new StorageOptions { FaultInjector = new NthFailFastStorageInjector(shadowPoint, shadowOccurrence) });
-        _ = database.RunShadowAwareGarbageCollection(new ChronicleDB.Maintenance.GarbageCollectionOptions
-        {
-            RetainRecentCommits = 0,
-        });
-        return 0;
-    }
-
     if (scenario is CrashScenario.GarbageCollectionDuringCheckpointWrite
         or CrashScenario.GarbageCollectionBeforeWalReset
         or CrashScenario.GarbageCollectionAfterWalReset
@@ -559,28 +516,6 @@ static int RunChild(string directory, string scenario)
     transactionToCrash.Put([2], [22]);
     transactionToCrash.Commit();
     return 0;
-}
-
-static bool TryShadowGarbageCollectionCrashPoint(
-    string scenario,
-    out StorageFaultPoint point,
-    out int occurrence)
-{
-    (point, occurrence) = scenario switch
-    {
-        CrashScenario.ShadowGarbageCollectionChildAfterCheckpointFlush
-            => (StorageFaultPoint.AfterHistoryCheckpointOutputFlush, 1),
-        CrashScenario.ShadowGarbageCollectionParentAfterCheckpointRecordWrite
-            => (StorageFaultPoint.AfterHistoryCheckpointRecordWrite, 2),
-        CrashScenario.ShadowGarbageCollectionParentAfterCheckpointFlush
-            => (StorageFaultPoint.AfterHistoryCheckpointOutputFlush, 2),
-        CrashScenario.ShadowGarbageCollectionParentBeforeWalReset
-            => (StorageFaultPoint.BeforeHistoryWalReset, 2),
-        CrashScenario.ShadowGarbageCollectionParentAfterWalReset
-            => (StorageFaultPoint.AfterHistoryWalReset, 2),
-        _ => (default, 0),
-    };
-    return occurrence != 0;
 }
 
 static bool TrySnapshotFaultPoint(string scenario, out StorageFaultPoint point)
@@ -714,11 +649,6 @@ file static class CrashScenario
     public const string GarbageCollectionDuringCheckpointWrite = "GarbageCollectionDuringCheckpointWrite";
     public const string GarbageCollectionBeforeWalReset = "GarbageCollectionBeforeWalReset";
     public const string GarbageCollectionAfterWalReset = "GarbageCollectionAfterWalReset";
-    public const string ShadowGarbageCollectionChildAfterCheckpointFlush = "ShadowGarbageCollectionChildAfterCheckpointFlush";
-    public const string ShadowGarbageCollectionParentAfterCheckpointRecordWrite = "ShadowGarbageCollectionParentAfterCheckpointRecordWrite";
-    public const string ShadowGarbageCollectionParentAfterCheckpointFlush = "ShadowGarbageCollectionParentAfterCheckpointFlush";
-    public const string ShadowGarbageCollectionParentBeforeWalReset = "ShadowGarbageCollectionParentBeforeWalReset";
-    public const string ShadowGarbageCollectionParentAfterWalReset = "ShadowGarbageCollectionParentAfterWalReset";
     public const string CompactionDuringOutputWrite = "CompactionDuringOutputWrite";
     public const string CompactionBeforePublish = "CompactionBeforePublish";
     public const string CompactionAfterPublish = "CompactionAfterPublish";

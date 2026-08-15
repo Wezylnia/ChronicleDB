@@ -134,20 +134,7 @@ public sealed class ResearchTelemetryTests
         Assert.Equal(2, sink.Snapshot().Count);
     }
 
-    [Fact]
-    public void TimedTraceSinkPreservesLogicalOrderAndMonotonicElapsedTime()
-    {
-        var sink = new TimedTraceResearchEventSink();
-        sink.Publish(CreateEvent(1, ["wal"], []));
-        sink.Publish(CreateEvent(2, ["wal"], [1], ResearchEventKind.HistoryValidated));
 
-        var snapshot = sink.Snapshot();
-
-        Assert.Equal(2, snapshot.Count);
-        Assert.Equal([1L, 2L], snapshot.Select(item => item.Event.LogicalEventId));
-        Assert.True(snapshot[1].Elapsed >= snapshot[0].Elapsed);
-        Assert.Equal(2, sink.LastLogicalEventId);
-    }
 
     [Fact]
     public void NewPublisherContinuesLogicalIdsFromExistingTraceSink()

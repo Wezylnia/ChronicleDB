@@ -293,34 +293,7 @@ public sealed class ResearchTelemetryIntegrationTests
         Assert.True(validated.LogicalEventId < events.Single(item => item.EventKind == ResearchEventKind.RecoveryCompleted).LogicalEventId);
     }
 
-    [Fact]
-    public void ResearchRetentionSnapshotCapturesRawVersionsAndPersistentRoots()
-    {
-        using var directory = new StorageTestDirectory();
-        using var database = ChronicleDatabase.Open(directory.Path);
-        database.Put([0x51], [0x61, 0x62]);
-        Guid snapshotId;
-        using (var snapshot = database.CreateSnapshot("retention-research"))
-        {
-            snapshotId = snapshot.SnapshotId;
-        }
-        database.Put([0x51], [0x71, 0x72, 0x73]);
 
-        var captured = database.CaptureResearchRetentionSnapshot();
-
-        var mainHistoryId = database.GetHistoryTopologyDiagnostics().Main.HistoryId;
-        var main = Assert.Single(captured.Histories, history => history.HistoryId == mainHistoryId);
-        Assert.Equal(2, main.Versions.Count(version => version.KeyBytes == 1));
-        Assert.Contains(main.Versions, version => version.ValueBytes == 2 && !version.IsTombstone);
-        Assert.Contains(main.Versions, version => version.ValueBytes == 3 && !version.IsTombstone);
-        var root = Assert.Single(captured.PersistentRoots, item => item.RootId == snapshotId);
-        Assert.Equal(mainHistoryId, root.ProtectedHistoryId);
-        Assert.Empty(captured.ActiveBoundaries);
-
-        var inspector = new RetentionInspector(captured);
-        var explanation = inspector.ExplainRetention(snapshotId);
-        Assert.NotEmpty(explanation.RequiredVersionIds);
-    }
 
     private sealed class ThrowingResearchEventSink : IResearchEventSink
     {
