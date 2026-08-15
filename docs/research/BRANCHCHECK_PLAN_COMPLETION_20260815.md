@@ -55,4 +55,3 @@ Everything else is either complete, optional strengthening, or paper-writing wor
 7. Re-run/reduce any live failures and classify duplicates before issue filing.
 8. File the Dolt candidate only after the minimal reproducer still survives the fresh environment; preserve maintainer response/fix as paper evidence.
 9. Freeze tables/figures and write Evaluation + Methodology before Introduction/Abstract.
-

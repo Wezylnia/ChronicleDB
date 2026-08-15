@@ -94,25 +94,38 @@ For every experiment report separately whether a supplied failing trace is detec
 8. Run the ChronicleDB controlled mutation study and trace reduction.
 9. Freeze results, generate tables/figures, then write Evaluation and Methodology before Introduction and Abstract.
 
-## Local execution status (2026-08-14)
+## Local execution status (2026-08-15)
 
 | Step | State | Evidence |
 |---|---|---|
-| A–B. Patch, build, and existing tests | Complete | `artifacts/baseline/PROVENANCE.md`; 575 tests pass |
+| A–B. Patch, build, and existing tests | Complete | frozen baseline: 575 tests; 2026-08-15 verification after 5 evidence/audit/fairness/preregistration tests: 580/580 pass, 0 build warnings/errors |
 | C. Environment freeze | Complete | `artifacts/environment/environment.json` |
 | D. Local v0.4 replay | Complete for available backends | synthetic + historical JSON; external prerequisites recorded unavailable |
 | E. Reproducibility artifacts | Complete for local runs | command logs, JSON outputs, exit codes under `artifacts/baseline/` |
-| F. Historical corpus audit | Initial freeze | `BRANCHCHECK_HISTORICAL_CORPUS_AUDIT.md` |
+| F. Historical corpus audit | Complete for seven primary cases | root-cause deduplication + 2026-08-15 upstream state/fix re-audit in `BRANCHCHECK_HISTORICAL_CORPUS_AUDIT.md` |
 | G. Obligation taxonomy | Initial freeze | `BRANCHCHECK_OBLIGATION_TAXONOMY.md` |
 | H. Capability-derived grammar | Implemented and unit-tested | `CapabilityCandidateGrammar` and 5 grammar tests |
 | E. Seed/budget protocol | Implemented locally | `CapabilityBudgetCampaign`; 4-profile calibration with 8 frozen seeds |
 | L. Unseeded campaign protocol | Implemented as local pilot | `BRANCHCHECK_UNSEEDED_LOCAL_CAMPAIGN.md`; 128 predeclared-seed runs, explicitly not external evidence |
 | N. False-positive / trigger-oracle analysis | Initial freeze | `BRANCHCHECK_FALSE_POSITIVE_ANALYSIS.md` |
-| Q. Evaluation tables | Local scaffold frozen | `BRANCHCHECK_EVALUATION_TABLES.md` and machine-readable artifacts |
-| Reproducibility gate | Local items complete; external items pending | `BRANCHCHECK_REPRODUCIBILITY_CHECKLIST.md` |
+| Q. Evaluation tables | Local scaffold frozen and external freeze linked | `BRANCHCHECK_EVALUATION_TABLES.md`; local and imported-external artifacts remain explicitly separated |
+| Reproducibility gate | Local gate complete; frozen external CI evidence imported and validated; fresh local external rerun pending | `BRANCHCHECK_REPRODUCIBILITY_CHECKLIST.md`; `BRANCHCHECK_EXTERNAL_EVIDENCE_FREEZE.md` |
 | O. ChronicleDB controlled mutation study | Implemented locally | `BRANCHCHECK_CHRONICLEDB_MUTATION_STUDY.md`; 5 mutation cases pass |
 | O. Trace reduction | Implemented locally | `BranchScenarioReducer`; semantic-signature reduction tests pass |
-| I onward | Blocked on external backend provisioning | See `BRANCHCHECK_EXTERNAL_PROVISIONING.md`; Docker, Rust/Cargo, Go, and Dolt are absent on this host. Local reduction/mutation work continues independently. |
+| I. MatrixOne external identity / fair budget | Identity evidence preserved; old budget fairness rejected; v2 preregistered | immutable CI artifact validates B0/B2/B4 Pass + BC temporal Fail. Re-audit found exact-recipe leakage in the old 5-recipe guide, so 20% vs 100% is legacy controlled evidence only. Current code freezes a 10-recipe / 3-risk-class v2 grammar (`1FA61958...`) pending external execution. |
+| J. Dolt external fair budget | Existing external evidence preserved | Dolt 2.2.3 frozen artifact validates 75% vs 100% budget-1; larger candidate space and final-main local rerun still pending |
+| K. Third external system/family | Partial gate met | SlateDB buggy/fixed observer evidence supplies an independent observer/dependency family, but its guided 3-candidate budget is not counted as fair-search evidence |
+| L. External unseeded campaign | Pending | local 128-run protocol pilot exists; no live external unseeded campaign yet |
+| M. Dolt race/causal study | Existing external evidence preserved | release repetition + pinned current-main 20x/20x causal A/B validate the current regression candidate; larger local timing/load sweep remains optional strengthening |
+| N. Upstream confirmation | Pending | maintainer-ready issue draft exists; no matching public issue found in the latest targeted search |
+
+A consolidated Done/Partial/Open A–O matrix is frozen in `BRANCHCHECK_PLAN_COMPLETION_20260815.md`. It is the current execution checklist for local continuation.
+
+## 2026-08-15 external evidence preservation update
+
+Five GitHub Actions artifacts from the final BranchCheck research branch are now stored under `artifacts/external-frozen/raw/` with a manifest and a fail-closed `external-evidence` validator. The bundle covers MatrixOne, SlateDB, and Dolt and validates archive digests plus the exact paper-facing semantic polarity. This closes the evidence-preservation gap but does not replace a fresh final-`main` local rerun. See `BRANCHCHECK_EXTERNAL_EVIDENCE_FREEZE.md`.
+
+The remaining high-value work is now narrow: execute the preregistered MatrixOne v2 fair budget, enlarge Dolt fairly, run an external unseeded campaign across at least three latent-state families, and obtain upstream/independent confirmation of the Dolt current regression candidate. Framework expansion without one of those goals remains frozen.
 
 ## Stop conditions
 
