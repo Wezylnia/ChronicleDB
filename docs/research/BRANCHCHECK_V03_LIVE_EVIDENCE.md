@@ -227,3 +227,11 @@ Required before a larger implementation investment:
 6. if guided search does not provide a repeatable advantage or new diagnostic value across systems, downgrade or kill the BranchCheck paper direction.
 
 Until that gate is passed, the present code should remain a research spike rather than an engine dependency or large generalized framework.
+
+## 10. Post-v0.4 fairness correction (2026-08-15)
+
+The five-recipe MatrixOne budget in Section 5 is retained as historical experimental provenance, but its original “relation-guided” interpretation is superseded. Re-audit of `MatrixOneTriggerBudgetCampaign` found that the guided path directly selected `RecreateSourceSameName`, the exact recipe already known to violate the historical-identity invariant. Under the later preregistered fairness rules this is target leakage, even though no issue ID was encoded.
+
+Therefore the 20%→100% budget-1 result must **not** be used as fair RQ3 search evidence. Current `main` replaces future MatrixOne runs with a pre-execution 10-recipe grammar and a 3-recipe source-identity-risk class; all recipes inside the risk class are treated uniformly. Fingerprint: `1FA61958C7E97E5EC5BBC8F32D03D99BAAD902F5C360465A7594B8F053B52040`.
+
+This correction lowers current RQ3 evidence from two fair external backends to one (Dolt 2.2.3) until MatrixOne v2 or another fair backend is executed. The temporal-boundary bug evidence itself is unaffected.

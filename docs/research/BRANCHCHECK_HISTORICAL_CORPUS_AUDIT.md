@@ -21,6 +21,22 @@ The implementation contains seven curated issue transcripts from five systems. T
 | Neon #506 | mixed historical LSN boundary | A+B+C | requested old boundary is recorded but one component comes from newer source state | compute restart | `BC.temporal-boundary` + `BC.recovery` | B3 detects supplied restart failure | boundary/recovery support; retain with multi-family label |
 | SlateDB #1902 | parent-backed observer dependency | A | primary `Db` reads all clone keys; observer-specific dependency is hidden | `DbReader` reads parent-resident SST | `BC.observer-dependency` | B2 passes ordinary read; B5 detects supplied observer failure | strongest observer-closure example; retain |
 
+## Upstream status re-audit (2026-08-15)
+
+This table records the public upstream state re-checked after the local `main` freeze. `Closed` is **not** treated as synonymous with `fixed`: the close reason and linked fix evidence are recorded separately.
+
+| System / issue | Current public state | Fix / confirmation evidence | Audit consequence |
+|---|---|---|---|
+| MatrixOne #27092 | **Open**; `kind/bug`, `severity/s0`, assigned, milestone 43 | No maintainer confirmation or merged fix is established in the issue thread as of this audit. Reporter follow-ups reproduce the same allocator jump for empty clones and Data Branch creation. | Keep as an open live/historical continuation defect and generic-detectability negative control; do not label it fixed or maintainer-confirmed. |
+| MatrixOne #26120 | **Closed / completed** | PR #26310 merged as `ccfcea46981aba349b4fa11445202939f1045c53`; upstream QA and black-/white-box regressions verify historical parent identity and successful downstream DIFF. | Strongest fixed temporal-identity case; safe to use as paired bug/fix evidence. |
+| YugabyteDB #29335 | **Closed / completed**; `priority/high`, `2026.1_blocker`, `ga_feature_blocker` | Public issue links DB-19117 but contains no public GitHub comment or fix PR. The issue itself explicitly validates cloned objects/data before later DDL fails. | Creation-evidence caveat can be narrowed: object/data validation is explicit, but complete metadata equality is still not established. Do not invent a fix commit. |
+| YugabyteDB #32057 | **Closed / not_planned**; `priority/highest` | No public GitHub fix evidence in the issue. The issue body directly attributes clone-time vector-index `PREPARING` state to a later restart-triggered crash loop. | Retain as recovery-family evidence, but **never call it fixed** merely because it is closed. |
+| Dolt #7106 | **Closed / completed** | Maintainer root-cause comment identifies divergent clone-created provider state; PR #7107 merged as `db3472ab54c83bf3891cc5ec8e5526e706a55ddd` and explicitly fixes #7106. | Strong fixed lifecycle/provider case. |
+| Neon #506 | **Closed / completed** | Public discussion establishes that an old-LSN branch does not know the correct previous WAL record and that the incorrect value breaks startup/streaming semantics. This audit did not establish a single linked merged fix PR/commit. | Retain as historical boundary/recovery evidence; report closure separately from fix provenance. |
+| SlateDB #1902 | **Closed / completed**, but the reporter first closed it because an agent filed it without owner review | A maintainer independently reported finding the same defect; PR #1907 (`Fixes #1902`) merged as `6a131a9ebfd121ca553cb80a08b7b8f2bd142092` with normal and checkpoint-pinned regression tests. | Preserve the unusual provenance in the paper. The paired 0.14.1/fixed artifact is valid regression evidence; do not imply the initial issue closure itself was maintainer acceptance. |
+
+Machine-readable snapshot: `artifacts/external-frozen/historical-upstream-status-20260815.json`.
+
 ## Root-cause deduplication
 
 The seven transcripts reduce to six root-cause groups:
@@ -52,8 +68,8 @@ The supplied-trace union of B0–B5 detects all seven cases. BranchCheck therefo
 
 ## Audit actions before submission
 
-1. Re-check each issue/PR URL and version against the literature/bug archive.
-2. Replace “creation correct” with explicit evidence fields wherever the issue does not report complete creation metadata.
-3. Add maintainer confirmation/fix commit fields for any live finding.
-4. Do not count a case as an independent root cause when only the symptom or backend differs.
-5. Preserve all excluded or ambiguous cases in an appendix ledger.
+1. **Completed 2026-08-15:** re-check the seven primary issue URLs, public state, and available fix provenance; frozen in `historical-upstream-status-20260815.json`.
+2. **Partially completed:** creation evidence is now explicit in the ledger; keep the remaining “complete metadata equality not established” caveats for YugabyteDB #29335/#32057 and Dolt #7106.
+3. **Still required for the new live finding:** obtain upstream/independent confirmation or a fix reference for the current Dolt dynamic-clone regression candidate before calling it confirmed.
+4. Continue deduplicating by root cause rather than issue count.
+5. Preserve all excluded or ambiguous cases in an appendix ledger before submission.

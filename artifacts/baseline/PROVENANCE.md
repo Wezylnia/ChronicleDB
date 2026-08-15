@@ -39,3 +39,37 @@ The external rows were invoked independently with the corresponding `matrixone`,
 ## Interpretation boundary
 
 This baseline is a reproducibility checkpoint, not new external evidence. The historical corpus remains curated, and the local synthetic campaign is a harness sanity check. The missing Docker/Rust/Go/Dolt prerequisites must be provisioned on a Linux runner before making live-backend claims.
+
+## Imported frozen external evidence (2026-08-15)
+
+The rows above remain the truthful record of what the original Windows local baseline could execute. They are **not** overwritten. Separately, immutable GitHub Actions artifacts produced by the final BranchCheck research branch were imported under `artifacts/external-frozen/raw/` and validated by `ExternalEvidenceBundleValidator`.
+
+Run:
+
+```text
+dotnet run -c Release --no-build --project tools/ChronicleDB.BranchCheck -- external-evidence artifacts/external-frozen/manifest.json
+```
+
+| Evidence | GitHub artifact | Source head | Integrity | Paper-facing result |
+|---|---:|---|---|---|
+| MatrixOne continuation + identity + legacy budget | `9224759215` | `02bf57e79c8212e2136bc12ee85c54e656abf9d8` | SHA-256 + required entries + semantic polarity PASS | continuation is generic-detectable negative control; identity is B0/B2/B4 Pass + BC temporal Fail; legacy budget-1 20%/100% is preserved but excluded from fair RQ3 evidence because guidance selected the known failing recipe directly |
+| SlateDB buggy/fixed pair | `9224859095` | `02bf57e79c8212e2136bc12ee85c54e656abf9d8` | PASS | buggy observer fails BC and B5; fixed observer passes; 3-candidate budget excluded from fair-search claims |
+| Dolt 2.2.3 fair budget | `9224706547` | `253a80652669f1e91fee2c6256ca6d491fe9aca2` | PASS; explicit artifact-selection caveat in manifest | 3/4 recipes violate continuation; B4 passes; budget-1 generic/guided 75%/100% |
+| Dolt release repetition | `9224757113` | `02bf57e79c8212e2136bc12ee85c54e656abf9d8` | PASS | 2.2.3 10/10 Pass; frozen 2.3.0 sample 7/10 Pass + 3/10 `context canceled` |
+| Dolt current-main causal A/B | `9224930424` | `02bf57e79c8212e2136bc12ee85c54e656abf9d8` | PASS | unpatched 12/20 Pass + 8/20 `context canceled`; causal control 20/20 Pass |
+
+`artifacts/external-frozen/manifest.json` is authoritative for IDs, digests, backend identities, required archive entries, and the one Dolt 2.2.3 artifact-selection exception. `artifacts/external-frozen/validation.json` is the current machine-readable validation result.
+
+These imported artifacts are external evidence, but they are not described as fresh executions on the current local machine. Fresh final-`main` WSL2/Docker reproduction remains a reproducibility task before final artifact submission.
+
+## Current paper-gate verification (2026-08-15)
+
+The frozen 575-test baseline above is intentionally retained unchanged. After adding the external-evidence validator, upstream-status audit regression, and MatrixOne v2 fairness regression, the current working tree was independently rebuilt with the offline .NET 10.0.301 toolchain:
+
+- full Release solution build: **0 warnings, 0 errors**;
+- full solution tests: **580 passed, 0 failed, 0 skipped**;
+- focused BranchCheck tests: **44/44 passed**;
+- local capability-budget calibration: 20 identity, 10 allocator, 15 observer, and 12 recovery candidates; all four calibration profiles retain a guided advantage (calibration only, not external RQ3 evidence);
+- unseeded-local protocol: **128 runs** across four families, retained as protocol calibration rather than external discovery evidence;
+- frozen external-evidence validation: **5/5 artifacts passed** integrity/structure/semantic checks;
+- MatrixOne legacy budget is explicitly marked target-seeded; MatrixOne v2 is frozen before external execution in `artifacts/external-frozen/matrixone-v2-preregistration.json`.
