@@ -13,25 +13,42 @@ jobs:
       fail-fast: false
       max-parallel: 20
       matrix:
-        delay_ms: [0, 1, 5, 10, 50, 100, 500]
         include:
-          - label: dolt-223
-            kind: release
-            version: 2.2.3
-            sha256: ffafa7cc172cada5f77ca3fb96306545ddac44a111625f75f870306c7f197301
-          - label: dolt-230
-            kind: release
-            version: 2.3.0
-            sha256: f702aa9fc4246b076e6e255f5bb6eb6f0a120962ab8895dda9e77a0a77cfe10d
-          - label: dolt-main-unpatched
-            kind: current
-            causal: unpatched
-          - label: dolt-main-background
-            kind: current
-            causal: background
-          - label: dolt-main-without-cancel
-            kind: current
-            causal: without-cancel
+          - { label: dolt-223, kind: release, version: 2.2.3, sha256: ffafa7cc172cada5f77ca3fb96306545ddac44a111625f75f870306c7f197301, delay_ms: 0 }
+          - { label: dolt-230, kind: release, version: 2.3.0, sha256: f702aa9fc4246b076e6e255f5bb6eb6f0a120962ab8895dda9e77a0a77cfe10d, delay_ms: 0 }
+          - { label: dolt-main-unpatched, kind: current, causal: unpatched, delay_ms: 0 }
+          - { label: dolt-main-background, kind: current, causal: background, delay_ms: 0 }
+          - { label: dolt-main-without-cancel, kind: current, causal: without-cancel, delay_ms: 0 }
+          - { label: dolt-223, kind: release, version: 2.2.3, sha256: ffafa7cc172cada5f77ca3fb96306545ddac44a111625f75f870306c7f197301, delay_ms: 1 }
+          - { label: dolt-230, kind: release, version: 2.3.0, sha256: f702aa9fc4246b076e6e255f5bb6eb6f0a120962ab8895dda9e77a0a77cfe10d, delay_ms: 1 }
+          - { label: dolt-main-unpatched, kind: current, causal: unpatched, delay_ms: 1 }
+          - { label: dolt-main-background, kind: current, causal: background, delay_ms: 1 }
+          - { label: dolt-main-without-cancel, kind: current, causal: without-cancel, delay_ms: 1 }
+          - { label: dolt-223, kind: release, version: 2.2.3, sha256: ffafa7cc172cada5f77ca3fb96306545ddac44a111625f75f870306c7f197301, delay_ms: 5 }
+          - { label: dolt-230, kind: release, version: 2.3.0, sha256: f702aa9fc4246b076e6e255f5bb6eb6f0a120962ab8895dda9e77a0a77cfe10d, delay_ms: 5 }
+          - { label: dolt-main-unpatched, kind: current, causal: unpatched, delay_ms: 5 }
+          - { label: dolt-main-background, kind: current, causal: background, delay_ms: 5 }
+          - { label: dolt-main-without-cancel, kind: current, causal: without-cancel, delay_ms: 5 }
+          - { label: dolt-223, kind: release, version: 2.2.3, sha256: ffafa7cc172cada5f77ca3fb96306545ddac44a111625f75f870306c7f197301, delay_ms: 10 }
+          - { label: dolt-230, kind: release, version: 2.3.0, sha256: f702aa9fc4246b076e6e255f5bb6eb6f0a120962ab8895dda9e77a0a77cfe10d, delay_ms: 10 }
+          - { label: dolt-main-unpatched, kind: current, causal: unpatched, delay_ms: 10 }
+          - { label: dolt-main-background, kind: current, causal: background, delay_ms: 10 }
+          - { label: dolt-main-without-cancel, kind: current, causal: without-cancel, delay_ms: 10 }
+          - { label: dolt-223, kind: release, version: 2.2.3, sha256: ffafa7cc172cada5f77ca3fb96306545ddac44a111625f75f870306c7f197301, delay_ms: 50 }
+          - { label: dolt-230, kind: release, version: 2.3.0, sha256: f702aa9fc4246b076e6e255f5bb6eb6f0a120962ab8895dda9e77a0a77cfe10d, delay_ms: 50 }
+          - { label: dolt-main-unpatched, kind: current, causal: unpatched, delay_ms: 50 }
+          - { label: dolt-main-background, kind: current, causal: background, delay_ms: 50 }
+          - { label: dolt-main-without-cancel, kind: current, causal: without-cancel, delay_ms: 50 }
+          - { label: dolt-223, kind: release, version: 2.2.3, sha256: ffafa7cc172cada5f77ca3fb96306545ddac44a111625f75f870306c7f197301, delay_ms: 100 }
+          - { label: dolt-230, kind: release, version: 2.3.0, sha256: f702aa9fc4246b076e6e255f5bb6eb6f0a120962ab8895dda9e77a0a77cfe10d, delay_ms: 100 }
+          - { label: dolt-main-unpatched, kind: current, causal: unpatched, delay_ms: 100 }
+          - { label: dolt-main-background, kind: current, causal: background, delay_ms: 100 }
+          - { label: dolt-main-without-cancel, kind: current, causal: without-cancel, delay_ms: 100 }
+          - { label: dolt-223, kind: release, version: 2.2.3, sha256: ffafa7cc172cada5f77ca3fb96306545ddac44a111625f75f870306c7f197301, delay_ms: 500 }
+          - { label: dolt-230, kind: release, version: 2.3.0, sha256: f702aa9fc4246b076e6e255f5bb6eb6f0a120962ab8895dda9e77a0a77cfe10d, delay_ms: 500 }
+          - { label: dolt-main-unpatched, kind: current, causal: unpatched, delay_ms: 500 }
+          - { label: dolt-main-background, kind: current, causal: background, delay_ms: 500 }
+          - { label: dolt-main-without-cancel, kind: current, causal: without-cancel, delay_ms: 500 }
     runs-on: ubuntu-latest
     timeout-minutes: 120
     continue-on-error: true
