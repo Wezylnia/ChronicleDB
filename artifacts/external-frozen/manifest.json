@@ -166,6 +166,23 @@
         "external-unseeded-replay-provenance.txt"
       ],
       "externalIdentity": "MatrixOne, Dolt 2.2.3/2.3.0, and SlateDB 0.14.1/fix six-family external observation replay"
+    },
+    {
+      "key": "dolt-robustness-sweep",
+      "kind": "DoltRobustness",
+      "artifactId": 9250861648,
+      "workflowRunId": 31899398139,
+      "sourceHeadSha": "233eaa1528febc776658277883a30072f01572d6",
+      "sha256": "2291952C6F13D37E93C60E7612D0F4A191E85E9CF8C2ACB8283EB848F16A0F10",
+      "archive": "raw/dolt-robustness-final.zip",
+      "evidenceClass": "external-robustness-causal-sweep",
+      "selectionNote": "The archive combines all 35 matrix uploads; artifact 9250861648 is the 500 ms current-main background upload used as the composite provenance anchor. Every cell retains raw JSON, stderr, timing, ids, relation/outcome counts, health, and harness failures.",
+      "requiredEntries": [
+        "branchcheck-dolt-robustness-dolt-223-0ms\\dolt-version.txt",
+        "branchcheck-dolt-robustness-dolt-223-0ms\\dolt-223\\delay-0ms\\summary.json",
+        "branchcheck-dolt-robustness-dolt-main-unpatched-500ms\\dolt-main-unpatched\\delay-500ms\\summary.json"
+      ],
+      "externalIdentity": "Dolt 2.2.3/2.3.0 and current main causal controls across seven delays, 100 repetitions per cell"
     }
   ]
 }

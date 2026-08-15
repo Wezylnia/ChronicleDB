@@ -107,3 +107,15 @@ The pending rows above were executed and imported after the original local scaff
 | External unseeded replay | 5 versions × 32 seeds; budget 4 | 160 complete replays; all seven outcome classes represented in schema; no filtering | external protocol/classification evidence, explicitly replay not live rerun |
 
 The previous “pending” wording is retained as historical provenance of the scaffold; the addendum is the final result used by the paper.
+
+### Robustness and causal sweep (35-cell final matrix)
+
+| Target | Delay cells | Repetitions | Relation failures / reported | Harness failures |
+|---|---:|---:|---:|---:|
+| Dolt 2.2.3 | 7 | 700 | 0 / 681 | 19 |
+| Dolt 2.3.0 | 7 | 700 | 221 / 681 | 19 |
+| current main unpatched | 7 | 700 | 300 / 688 | 12 |
+| current main + `context.Background()` | 7 | 700 | 0 / 700 | 0 |
+| current main + `context.WithoutCancel` | 7 | 700 | 0 / 674 | 26 |
+
+The full cell-level timing and health vectors are in `raw/dolt-robustness-final.zip`. These totals are descriptive robustness evidence and do not assert a universal probability.

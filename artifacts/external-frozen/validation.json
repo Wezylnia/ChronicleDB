@@ -162,6 +162,23 @@
         ],
         "Errors": [],
         "Passed": true
+      },
+      {
+        "Key": "dolt-robustness-sweep",
+        "Kind": "DoltRobustness",
+        "ArtifactId": 9250861648,
+        "ExternalIdentity": "Dolt 2.2.3/2.3.0 and current main causal controls across seven delays, 100 repetitions per cell",
+        "DigestValid": true,
+        "StructureValid": true,
+        "SemanticValid": true,
+        "Findings": [
+          "archive-sha256=2291952C6F13D37E93C60E7612D0F4A191E85E9CF8C2ACB8283EB848F16A0F10",
+          "required-entries=3",
+          "dolt-robustness=35-cells;3500-repetitions;7-delays;5-targets",
+          "dolt-robustness-preservation=outcomes;relations;ids;server-health;timing;harness-failures"
+        ],
+        "Errors": [],
+        "Passed": true
       }
     ],
     "Passed": true,

@@ -20,7 +20,7 @@ The external unseeded artifact contains 46 complete candidate observations from 
 
 ### 1.4 Dolt robustness and causal sweep
 
-The robustness workflow covers releases 2.2.3/2.3.0, pinned current main, and three context-lifetime controls over delays 0, 1, 5, 10, 50, 100, and 500 ms, with 100 repetitions per cell. Each cell records outcome, relation, generated id, server health, harness failures, and timing. A failed cell or control is preserved rather than converted into a probability claim. The final archive and summary are imported only after the complete matrix finishes.
+The robustness workflow covers releases 2.2.3/2.3.0, pinned current main, and three context-lifetime controls over delays 0, 1, 5, 10, 50, 100, and 500 ms, with 100 repetitions per cell. The final 35-cell matrix reports 0/681 relation failures for 2.2.3, 221/681 for 2.3.0, 300/688 for unpatched current main, 0/700 for `context.Background()`, and 0/674 for `context.WithoutCancel`; harness failures (19, 19, 12, 0, 26) remain in the ledger. Each cell records outcome, relation, generated id, server health, harness failures, and timing. A failed cell or control is preserved rather than converted into a probability claim.
 
 ### 1.5 ChronicleDB controls and reduction
 

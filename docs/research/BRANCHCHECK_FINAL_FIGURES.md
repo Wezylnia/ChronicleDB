@@ -42,3 +42,13 @@ flowchart TD
 ## Figure 4 — Unseeded outcome composition
 
 The committed `external-unseeded-replay.json` contains 160 runs (5 frozen external versions × 32 seeds), budget 4, with counts: no-failure 37, known-failure 3, duplicate-root-cause 94, false-positive 26, new-root-cause 0, oracle-ambiguity 0, harness/environment 0. The replay flag is explicit because these are uniform permutations over complete frozen candidate observations, not 160 fresh backend reruns.
+
+## Figure 5 — Robustness sweep outcome totals
+
+| Target | Relation fail / reported | Harness failures | Causal interpretation |
+|---|---:|---:|---|
+| Dolt 2.2.3 | 0 / 681 | 19 | release control |
+| Dolt 2.3.0 | 221 / 681 | 19 | version-specific stochastic regression |
+| current main unpatched | 300 / 688 | 12 | race-sensitive source reproduction |
+| current main `context.Background()` | 0 / 700 | 0 | rescue control |
+| current main `context.WithoutCancel` | 0 / 674 | 26 | rescue control with preserved harness loss |

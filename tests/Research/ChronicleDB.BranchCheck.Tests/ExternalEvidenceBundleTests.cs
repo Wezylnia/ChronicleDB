@@ -16,7 +16,7 @@ public sealed class ExternalEvidenceBundleTests
         ExternalEvidenceBundleReport report = ExternalEvidenceBundleValidator.Validate(manifestPath);
 
         Assert.True(report.Passed);
-        Assert.Equal(9, report.Artifacts.Count);
+        Assert.Equal(10, report.Artifacts.Count);
         Assert.Equal(3, report.ExternalSystemCount);
         Assert.All(report.Artifacts, artifact =>
         {
@@ -43,6 +43,9 @@ public sealed class ExternalEvidenceBundleTests
         Assert.Contains(
             report.Artifacts.Single(artifact => artifact.Key == "external-unseeded-replay").Findings,
             finding => finding.Contains("160-replays", StringComparison.Ordinal));
+        Assert.Contains(
+            report.Artifacts.Single(artifact => artifact.Key == "dolt-robustness-sweep").Findings,
+            finding => finding.Contains("35-cells", StringComparison.Ordinal));
     }
 
 
