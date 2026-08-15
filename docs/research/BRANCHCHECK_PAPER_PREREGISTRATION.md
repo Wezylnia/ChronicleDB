@@ -165,23 +165,19 @@ Without being told the exact known failing operation, does capability-derived pr
 
 ## Current controlled results
 
-### MatrixOne historical identity
+### MatrixOne historical identity — fairness correction and preregistered v2
 
-Five legal source-history mutation recipes; one same-name source-generation replacement violates temporal identity.
+The original five-recipe artifact is preserved, but it is **not counted as fair RQ3 evidence**. Code re-audit found that its guided path selected `RecreateSourceSameName` directly. That violates fairness rules 2–3 above even though the recipe name contains no issue number. The historical 20/40/60/80/100% generic curve versus 100% guided is therefore only a legacy target-seeded controlled result.
 
-Generic exhaustive ordering:
+Before any fresh MatrixOne execution, current `main` freezes a v2 candidate grammar:
 
-- budget 1: 20%
-- budget 2: 40%
-- budget 3: 60%
-- budget 4: 80%
-- budget 5: 100%
+- 10 total recipes;
+- 3 source-identity-risk recipes: `RenameSourceRoundTrip`, `RecreateSourceSameName`, `RecreateSourceSameNameSchemaVariant`;
+- exact failing recipe is never selected by guidance;
+- candidate order inside the risk class is uniform, with exact analytic detection probabilities rather than one chosen ordering;
+- candidate-set fingerprint: `1FA61958C7E97E5EC5BBC8F32D03D99BAAD902F5C360465A7594B8F053B52040`.
 
-Semantic-identity-guided ordering:
-
-- 100% from budget 1.
-
-This is a strong but single-backend controlled result.
+The v2 result is pending external execution. It must be reported even if guidance loses.
 
 ### Dolt global sequence state
 
@@ -212,7 +208,7 @@ This is a **modest 25-percentage-point budget-1 advantage** on a second backend.
 
 At least **two independent backend families** must show a positive guided-search advantage under predeclared, fair candidate spaces.
 
-Current MatrixOne + Dolt controlled experiments satisfy this minimum condition, but the final paper should add larger grammars or seeded random campaigns so the result is not dominated by tiny candidate sets.
+After the MatrixOne fairness correction, this minimum condition is **not currently satisfied**: Dolt 2.2.3 is the only external backend with a fair positive RQ3 result. MatrixOne v2 must be executed (or another backend must provide a fair positive result) before search efficiency can remain a central contribution.
 
 ## Kill condition
 

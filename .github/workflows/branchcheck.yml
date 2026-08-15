@@ -51,7 +51,7 @@ jobs:
           sudo apt-get install -y mariadb-client
       - name: Start MatrixOne
         run: |
-          docker run -d --name matrixone -p 6001:6001 matrixorigin/matrixone:latest
+          docker run -d --name matrixone -p 6001:6001 matrixorigin/matrixone@sha256:7161e9d672fc55c5330af2acaf3afe29d2d2dfe9273a1748bca4c77f8dac8bf8
           docker inspect --format='image={{.Image}}' matrixone
           echo "BRANCHCHECK_MATRIXONE_IMAGE=$(docker inspect --format='{{.Image}}' matrixone)" >> "$GITHUB_ENV"
       - name: Wait for MatrixOne
@@ -82,11 +82,26 @@ jobs:
         run: |
           set -o pipefail
           dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- matrixone-identity | tee .artifacts/branchcheck/matrixone-identity.json
-      - name: Run fair-budget MatrixOne identity trigger campaign
+      - name: Run preregistered MatrixOne v2 identity trigger campaign
         env: *matrixone-env
         run: |
           set -o pipefail
           dotnet run -c Release --project tools/ChronicleDB.BranchCheck -- matrixone-budget | tee .artifacts/branchcheck/matrixone-trigger-budget.json
+      - name: Assert frozen MatrixOne v2 candidate grammar
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path('.artifacts/branchcheck/matrixone-trigger-budget.json').read_text())['Report']
+          assert report['CandidateCount'] == 10, report['CandidateCount']
+          assert report['IdentityRelevantRecipeCount'] == 3, report['IdentityRelevantRecipeCount']
+          assert report['CandidateSetFingerprint'] == '1FA61958C7E97E5EC5BBC8F32D03D99BAAD902F5C360465A7594B8F053B52040', report['CandidateSetFingerprint']
+          assert len(report['Recipes']) == 10, len(report['Recipes'])
+          assert sum(1 for recipe in report['Recipes'] if recipe['IdentityStateRelevant']) == 3, report['Recipes']
+          # Deliberately do not assert that a violation exists or that guidance wins.
+          # Those are empirical outcomes, not preregistered expectations.
+          PY
       - name: Capture MatrixOne logs
         if: always()
         run: |
