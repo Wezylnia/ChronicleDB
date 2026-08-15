@@ -49,7 +49,14 @@ public sealed record ExternalEvidenceBundleReport(
 
     public int ExternalSystemCount
         => Artifacts
-            .Select(static artifact => artifact.Key.Split('-', 2, StringSplitOptions.RemoveEmptyEntries)[0])
+            .Select(static artifact => artifact.Key.StartsWith("matrixone-", StringComparison.Ordinal)
+                ? "matrixone"
+                : artifact.Key.StartsWith("dolt-", StringComparison.Ordinal)
+                    ? "dolt"
+                    : artifact.Key.StartsWith("slatedb-", StringComparison.Ordinal)
+                        ? "slatedb"
+                        : null)
+            .Where(static key => key is not null)
             .Distinct(StringComparer.Ordinal)
             .Count();
 }
@@ -200,6 +207,9 @@ public static class ExternalEvidenceBundleValidator
                 break;
             case "SlateDbExpandedPaired":
                 ValidateSlateDbExpanded(archive, findings);
+                break;
+            case "ExternalUnseededReplay":
+                ValidateExternalUnseededReplay(archive, findings);
                 break;
             default:
                 throw new InvalidDataException($"Unknown external evidence kind '{artifact.Kind}'.");
@@ -457,6 +467,36 @@ public static class ExternalEvidenceBundleValidator
         RequireBoolean(fixedReport, true, "AllViolationsInsideDependencyClass");
         findings.Add("slatedb-expanded=8-candidate-observer-grammar;buggy=3/3-dependency-violations;fixed=0");
         findings.Add("slatedb-expanded-fairness=dependency-class-prioritized;fingerprint-validated");
+    }
+
+    private static void ValidateExternalUnseededReplay(ZipArchive archive, List<string> findings)
+    {
+        using JsonDocument evidence = ReadJson(archive, "external-unseeded-replay.json");
+        JsonElement report = RequireProperty(evidence.RootElement, "Report");
+        RequireString(report, "external-unseeded-v1;five frozen external versions;uniform Fisher-Yates order", "GrammarIdentity");
+        RequireInt32(report, 4, "TraceBudget");
+        RequireInt32(report, 120_000, "TimeBudgetMilliseconds");
+        RequireBoolean(report, true, "ExternalEvidence");
+        RequireBoolean(report, true, "ReplayFromFrozenCandidateObservations");
+        RequireBoolean(report, false, "LiveBackendReruns");
+        if (RequireArray(report, "Seeds").Length != 32
+            || RequireArray(report, "Candidates").Length != 46
+            || RequireArray(report, "Runs").Length != 160)
+        {
+            throw new InvalidDataException("External unseeded replay does not contain the frozen 32-seed, five-family ledger.");
+        }
+
+        JsonElement counts = RequireProperty(report, "OutcomeCounts");
+        RequireInt32(counts, 37, "NoFailure");
+        RequireInt32(counts, 3, "KnownFailure");
+        RequireInt32(counts, 94, "DuplicateRootCause");
+        RequireInt32(counts, 0, "NewRootCauseCandidate");
+        RequireInt32(counts, 26, "FalsePositive");
+        RequireInt32(counts, 0, "OracleAmbiguity");
+        RequireInt32(counts, 0, "HarnessEnvironmentFailure");
+        findings.Add("external-unseeded=5-versions;32-seeds;160-replays;budget4");
+        findings.Add("external-unseeded-outcomes=no-failure37;known3;duplicate94;false-positive26;new0;ambiguity0;harness0");
+        findings.Add("external-unseeded-limit=deterministic-replay-over-frozen-observations;not-160-live-reruns");
     }
 
     private static string ResolveArchivePath(string baseDirectory, string relativeArchive)

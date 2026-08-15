@@ -4,9 +4,9 @@ using System.Text.Json.Serialization;
 using ChronicleDB.BranchCheck;
 
 string mode = args.Length == 0 ? "all" : args[0].Trim().ToLowerInvariant();
-if (mode is not ("all" or "synthetic" or "historical" or "local-budget" or "unseeded-local" or "external-evidence" or "matrixone" or "matrixone-identity" or "matrixone-budget" or "slatedb" or "slatedb-budget" or "slatedb-expanded-budget" or "dolt-budget" or "dolt-expanded-budget" or "dolt-clone-smoke"))
+if (mode is not ("all" or "synthetic" or "historical" or "local-budget" or "unseeded-local" or "external-unseeded" or "external-evidence" or "matrixone" or "matrixone-identity" or "matrixone-budget" or "slatedb" or "slatedb-budget" or "slatedb-expanded-budget" or "dolt-budget" or "dolt-expanded-budget" or "dolt-clone-smoke"))
 {
-    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|local-budget|unseeded-local|external-evidence|matrixone|matrixone-identity|matrixone-budget|slatedb|slatedb-budget|slatedb-expanded-budget|dolt-budget|dolt-expanded-budget|dolt-clone-smoke]");
+    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|local-budget|unseeded-local|external-unseeded <matrixone> <dolt223> <dolt230> <slatedb-buggy> <slatedb-fixed>|external-evidence|matrixone|matrixone-identity|matrixone-budget|slatedb|slatedb-budget|slatedb-expanded-budget|dolt-budget|dolt-expanded-budget|dolt-clone-smoke]");
     return 2;
 }
 
@@ -37,6 +37,28 @@ if (mode == "unseeded-local")
         Report = report,
     });
     return report.Runs.Count == UnseededLocalCampaign.FrozenSeeds.Count * 4 ? 0 : 1;
+}
+
+if (mode == "external-unseeded")
+{
+    if (args.Length < 6)
+    {
+        Console.Error.WriteLine("external-unseeded requires five frozen JSON paths: MatrixOne, Dolt 2.2.3, Dolt 2.3.0, SlateDB buggy, SlateDB fixed.");
+        return 2;
+    }
+
+    ExternalUnseededCampaignReport report = ExternalUnseededCampaign.ExecuteFromFrozenArtifacts(
+        args[1],
+        args[2],
+        args[3],
+        args[4],
+        args[5]);
+    WriteJson(new
+    {
+        Mode = mode,
+        Report = report,
+    });
+    return report.Runs.Count == report.Seeds.Count * 5 ? 0 : 1;
 }
 
 if (mode == "external-evidence")

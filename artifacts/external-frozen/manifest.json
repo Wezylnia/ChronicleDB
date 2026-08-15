@@ -150,6 +150,22 @@
         "matrixone-image-pinned.txt"
       ],
       "externalIdentity": "MatrixOne 8.0.30-MatrixOne-v4.1.4; pinned OCI manifest sha256:c920128b7e02622f27ddc12db32f8968d030c8eb3fd05bcccac47ca7d5b1c2b8"
+    },
+    {
+      "key": "external-unseeded-replay",
+      "kind": "ExternalUnseededReplay",
+      "artifactId": 9250463461,
+      "workflowRunId": 31898523617,
+      "sourceHeadSha": "e3114a32a0c778c2ee5dd9d360f4290adfda640a",
+      "sha256": "AA350268FE233C7E7D4FBEB47240FFC1BE8831D7A750080A22EA467B346C493C",
+      "archive": "raw/external-unseeded-replay-final.zip",
+      "evidenceClass": "external-unseeded-replay",
+      "selectionNote": "The replay consumes complete per-candidate observations from the MatrixOne v2, Dolt expanded, and SlateDB expanded workflow runs. Uniform seed permutations were frozen in code and all outcome classes are retained; this is not a claim of 160 fresh backend reruns.",
+      "requiredEntries": [
+        "external-unseeded-replay.json",
+        "external-unseeded-replay-provenance.txt"
+      ],
+      "externalIdentity": "MatrixOne, Dolt 2.2.3/2.3.0, and SlateDB 0.14.1/fix six-family external observation replay"
     }
   ]
 }

@@ -144,6 +144,24 @@
         ],
         "Errors": [],
         "Passed": true
+      },
+      {
+        "Key": "external-unseeded-replay",
+        "Kind": "ExternalUnseededReplay",
+        "ArtifactId": 9250463461,
+        "ExternalIdentity": "MatrixOne, Dolt 2.2.3/2.3.0, and SlateDB 0.14.1/fix six-family external observation replay",
+        "DigestValid": true,
+        "StructureValid": true,
+        "SemanticValid": true,
+        "Findings": [
+          "archive-sha256=AA350268FE233C7E7D4FBEB47240FFC1BE8831D7A750080A22EA467B346C493C",
+          "required-entries=2",
+          "external-unseeded=5-versions;32-seeds;160-replays;budget4",
+          "external-unseeded-outcomes=no-failure37;known3;duplicate94;false-positive26;new0;ambiguity0;harness0",
+          "external-unseeded-limit=deterministic-replay-over-frozen-observations;not-160-live-reruns"
+        ],
+        "Errors": [],
+        "Passed": true
       }
     ],
     "Passed": true,
