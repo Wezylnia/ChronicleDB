@@ -16,7 +16,7 @@ public sealed class ExternalEvidenceBundleTests
         ExternalEvidenceBundleReport report = ExternalEvidenceBundleValidator.Validate(manifestPath);
 
         Assert.True(report.Passed);
-        Assert.Equal(5, report.Artifacts.Count);
+        Assert.Equal(8, report.Artifacts.Count);
         Assert.Equal(3, report.ExternalSystemCount);
         Assert.All(report.Artifacts, artifact =>
         {
@@ -31,6 +31,15 @@ public sealed class ExternalEvidenceBundleTests
         Assert.Contains(
             report.Artifacts.Single(artifact => artifact.Key == "dolt-main-causal").Findings,
             finding => finding.Contains("20/20-pass", StringComparison.Ordinal));
+        Assert.Contains(
+            report.Artifacts.Single(artifact => artifact.Key == "dolt-expanded-fair-budget").Findings,
+            finding => finding.Contains("2.2.3=6/10-violations", StringComparison.Ordinal));
+        Assert.Contains(
+            report.Artifacts.Single(artifact => artifact.Key == "slatedb-expanded-fair-observer").Findings,
+            finding => finding.Contains("buggy=3/3-dependency-violations", StringComparison.Ordinal));
+        Assert.Contains(
+            report.Artifacts.Single(artifact => artifact.Key == "matrixone-v2-fair-identity").Findings,
+            finding => finding.Contains("matrixone-v2-pinned-image", StringComparison.Ordinal));
     }
 
 

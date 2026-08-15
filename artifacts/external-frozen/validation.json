@@ -1,6 +1,6 @@
 {
   "Mode": "external-evidence",
-  "Manifest": "/mnt/data/dbengine_extract/dbengine/artifacts/external-frozen/manifest.json",
+  "Manifest": "C:\\proje\\dbengine\\artifacts\\external-frozen\\manifest.json",
   "Report": {
     "Repository": "Wezylnia/ChronicleDB",
     "ResearchHeadSha": "02bf57e79c8212e2136bc12ee85c54e656abf9d8",
@@ -89,6 +89,58 @@
           "required-entries=5",
           "dolt-main-unpatched=12/20-pass;8/20-context-canceled",
           "dolt-main-causal-control=20/20-pass"
+        ],
+        "Errors": [],
+        "Passed": true
+      },
+      {
+        "Key": "dolt-expanded-fair-budget",
+        "Kind": "DoltExpandedBudget",
+        "ArtifactId": 9250364170,
+        "ExternalIdentity": "Dolt 2.2.3 vs 2.3.0 expanded 10-candidate grammar",
+        "DigestValid": true,
+        "StructureValid": true,
+        "SemanticValid": true,
+        "Findings": [
+          "archive-sha256=6873344F745E06C372BDC1C1F0CA6FDD60ABDC5FB4D96DDE3A474A41D6180811",
+          "required-entries=5",
+          "dolt-expanded=10-candidate-grammar;2.2.3=6/10-violations;2.3.0=10/10-violations",
+          "dolt-expanded-fairness=semantic-class-prioritized;fingerprint-validated"
+        ],
+        "Errors": [],
+        "Passed": true
+      },
+      {
+        "Key": "slatedb-expanded-fair-observer",
+        "Kind": "SlateDbExpandedPaired",
+        "ArtifactId": 9250458178,
+        "ExternalIdentity": "SlateDB 0.14.1 vs fix 6a131a9e expanded 8-candidate observer grammar",
+        "DigestValid": true,
+        "StructureValid": true,
+        "SemanticValid": true,
+        "Findings": [
+          "archive-sha256=2F9B9B533D4C5123C9BFB5AD466D63EFC9B7068B676F67AC1B4078299E544EB7",
+          "required-entries=5",
+          "slatedb-expanded=8-candidate-observer-grammar;buggy=3/3-dependency-violations;fixed=0",
+          "slatedb-expanded-fairness=dependency-class-prioritized;fingerprint-validated"
+        ],
+        "Errors": [],
+        "Passed": true
+      },
+      {
+        "Key": "matrixone-v2-fair-identity",
+        "Kind": "MatrixOneV2Live",
+        "ArtifactId": 9250463460,
+        "ExternalIdentity": "MatrixOne 8.0.30-MatrixOne-v4.1.4; pinned OCI manifest sha256:c920128b7e02622f27ddc12db32f8968d030c8eb3fd05bcccac47ca7d5b1c2b8",
+        "DigestValid": true,
+        "StructureValid": true,
+        "SemanticValid": true,
+        "Findings": [
+          "archive-sha256=D154A40FECCCB626CEF0139624912A6FC600AAADFCE7A4769314BDC7FAD87C45",
+          "required-entries=5",
+          "matrixone-v2-pinned-image=c920128b7e02622f27ddc12db32f8968d030c8eb3fd05bcccac47ca7d5b1c2b8",
+          "matrixone-v2-fair-grammar=10-candidate;fingerprint-validated-in-workflow",
+          "matrixone-v2-budget=0.30-vs-0.67@budget1;3/10-violations;generic-baseline-control-preserved"
         ],
         "Errors": [],
         "Passed": true

@@ -180,6 +180,9 @@ public static class ExternalEvidenceBundleValidator
             case "MatrixOneLive":
                 ValidateMatrixOne(archive, findings);
                 break;
+            case "MatrixOneV2Live":
+                ValidateMatrixOneV2(archive, findings);
+                break;
             case "SlateDbPaired":
                 ValidateSlateDb(archive, findings);
                 break;
@@ -191,6 +194,12 @@ public static class ExternalEvidenceBundleValidator
                 break;
             case "DoltMainCausal":
                 ValidateDoltMainCausal(archive, findings);
+                break;
+            case "DoltExpandedBudget":
+                ValidateDoltExpandedBudget(archive, findings);
+                break;
+            case "SlateDbExpandedPaired":
+                ValidateSlateDbExpanded(archive, findings);
                 break;
             default:
                 throw new InvalidDataException($"Unknown external evidence kind '{artifact.Kind}'.");
@@ -228,6 +237,51 @@ public static class ExternalEvidenceBundleValidator
         findings.Add("matrixone-continuation=generic-detectable-negative-control");
         findings.Add("matrixone-identity=B0/B2/B4-pass;BC-temporal-fail");
         findings.Add("matrixone-legacy-budget=0.20-vs-1.00@budget1;target-seeded-not-fair-rq3-evidence");
+    }
+
+    private static void ValidateMatrixOneV2(ZipArchive archive, List<string> findings)
+    {
+        using JsonDocument continuation = ReadJson(archive, "matrixone-continuation.json");
+        RequireRelationStatus(continuation.RootElement, "BC.continuation-state", "Fail");
+        RequireBaselineStatus(continuation.RootElement, "B1.creation-visible-state", "Detected");
+        RequireBaselineStatus(continuation.RootElement, "B2.generic-state-differential", "Detected");
+        RequireBoolean(continuation.RootElement, true, "Report", "BranchCheckDetected");
+        RequireBoolean(continuation.RootElement, true, "AnyGenericBaselineDetected");
+        RequireBoolean(continuation.RootElement, false, "StrictBranchCheckOnly");
+
+        using JsonDocument identityReport = ReadJson(archive, "matrixone-identity.json");
+        RequireRelationStatus(identityReport.RootElement, "BC.temporal-boundary", "Fail");
+        RequireBaselineStatus(identityReport.RootElement, "B0.creation-values", "Pass");
+        RequireBaselineStatus(identityReport.RootElement, "B2.generic-state-differential", "Pass");
+        RequireString(identityReport.RootElement, "Pass", "BranchGrammarBaseline", "Status");
+        RequireBoolean(identityReport.RootElement, false, "AnyGenericBaselineDetected");
+        RequireBoolean(identityReport.RootElement, true, "StrictBranchCheckOnly");
+
+        using JsonDocument budget = ReadJson(archive, "matrixone-trigger-budget.json");
+        JsonElement report = RequireProperty(budget.RootElement, "Report");
+        RequireInt32(report, 10, "CandidateCount");
+        RequireInt32(report, 3, "IdentityRelevantRecipeCount");
+        RequireInt32(report, 3, "ViolationRecipeCount");
+        RequireBoolean(report, false, "AllViolationsInsideIdentityRelevantClass");
+        RequireBoolean(report, true, "GuidedHasStrictAdvantageAtAnyBudget");
+        RequireString(report, "1FA61958C7E97E5EC5BBC8F32D03D99BAAD902F5C360465A7594B8F053B52040", "CandidateSetFingerprint");
+        JsonElement[] recipes = RequireArray(report, "Recipes");
+        JsonElement[] curve = RequireArray(report, "BudgetCurve");
+        if (recipes.Length != 10 || curve.Length != 10)
+        {
+            throw new InvalidDataException("MatrixOne v2 artifact does not contain the frozen ten-candidate grammar.");
+        }
+
+        string identity = ReadText(archive, "matrixone-image-pinned.txt");
+        if (!identity.Contains("sha256:c920128b7e02622f27ddc12db32f8968d030c8eb3fd05bcccac47ca7d5b1c2b8", StringComparison.Ordinal)
+            || !identity.Contains("Workflow run: 31898523617", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("MatrixOne v2 archive does not contain the pinned image and workflow identity.");
+        }
+
+        findings.Add("matrixone-v2-pinned-image=c920128b7e02622f27ddc12db32f8968d030c8eb3fd05bcccac47ca7d5b1c2b8");
+        findings.Add("matrixone-v2-fair-grammar=10-candidate;fingerprint-validated-in-workflow");
+        findings.Add("matrixone-v2-budget=0.30-vs-0.67@budget1;3/10-violations;generic-baseline-control-preserved");
     }
 
     private static void ValidateSlateDb(ZipArchive archive, List<string> findings)
@@ -345,6 +399,64 @@ public static class ExternalEvidenceBundleValidator
 
         findings.Add($"dolt-main-unpatched={unpatchedPass}/20-pass;{unpatchedFail}/20-context-canceled");
         findings.Add("dolt-main-causal-control=20/20-pass");
+    }
+
+    private static void ValidateDoltExpandedBudget(ZipArchive archive, List<string> findings)
+    {
+        foreach ((string entryName, string version, int expectedViolations, bool expectedAllRelevant) in new[]
+        {
+            ("dolt-expanded-223.json", "Dolt provider dolt version 2.2.3", 6, true),
+            ("dolt-expanded-230.json", "Dolt provider dolt version 2.3.0", 10, false),
+        })
+        {
+            using JsonDocument budget = ReadJson(archive, entryName);
+            JsonElement report = RequireProperty(budget.RootElement, "Report");
+            RequireStringPrefix(report, version, "BackendVersion");
+            RequireString(report, "51C8F5284EF8E58C226F003ACA0D91701FBFEDB6B4086C25ECA8319D0F73E40B", "CandidateSetFingerprint");
+            RequireInt32(report, 6, "SequenceRelevantRecipeCount");
+            RequireInt32(report, expectedViolations, "ViolationRecipeCount");
+            RequireBoolean(report, expectedAllRelevant, "AllViolationsInsideSequenceRelevantClass");
+            JsonElement[] recipes = RequireArray(report, "Recipes");
+            if (recipes.Length != 10 || recipes.Select(recipe => RequireString(recipe, "Recipe")).Distinct(StringComparer.Ordinal).Count() != 10)
+            {
+                throw new InvalidDataException($"Expanded Dolt artifact '{entryName}' does not contain ten unique recipes.");
+            }
+            JsonElement[] curve = RequireArray(report, "BudgetCurve");
+            if (curve.Length != 10)
+            {
+                throw new InvalidDataException($"Expanded Dolt artifact '{entryName}' does not contain ten budget points.");
+            }
+        }
+
+        findings.Add("dolt-expanded=10-candidate-grammar;2.2.3=6/10-violations;2.3.0=10/10-violations");
+        findings.Add("dolt-expanded-fairness=semantic-class-prioritized;fingerprint-validated");
+    }
+
+    private static void ValidateSlateDbExpanded(ZipArchive archive, List<string> findings)
+    {
+        using JsonDocument buggy = ReadJson(archive, "slatedb-expanded-buggy.json");
+        using JsonDocument fixedEvidence = ReadJson(archive, "slatedb-expanded-fixed.json");
+        JsonElement buggyReport = RequireProperty(buggy.RootElement, "Report");
+        JsonElement fixedReport = RequireProperty(fixedEvidence.RootElement, "Report");
+        const string fingerprint = "F4A32481242FCC67B57309D73F0641EA14C7B5E65B161A26EB2FB34640DF5220";
+        RequireString(buggyReport, "crate-0.14.1", "BackendVersion");
+        RequireString(fixedReport, "fix-6a131a9e", "BackendVersion");
+        foreach (JsonElement report in new[] { buggyReport, fixedReport })
+        {
+            RequireString(report, fingerprint, "CandidateSetFingerprint");
+            RequireInt32(report, 3, "DependencyRelevantCandidateCount");
+            if (RequireArray(report, "Candidates").Length != 8 || RequireArray(report, "BudgetCurve").Length != 8)
+            {
+                throw new InvalidDataException("Expanded SlateDB artifact has an incomplete candidate or budget array.");
+            }
+        }
+
+        RequireInt32(buggyReport, 3, "ViolationCandidateCount");
+        RequireBoolean(buggyReport, true, "AllViolationsInsideDependencyClass");
+        RequireInt32(fixedReport, 0, "ViolationCandidateCount");
+        RequireBoolean(fixedReport, true, "AllViolationsInsideDependencyClass");
+        findings.Add("slatedb-expanded=8-candidate-observer-grammar;buggy=3/3-dependency-violations;fixed=0");
+        findings.Add("slatedb-expanded-fairness=dependency-class-prioritized;fingerprint-validated");
     }
 
     private static string ResolveArchivePath(string baseDirectory, string relativeArchive)
@@ -474,6 +586,19 @@ public static class ExternalEvidenceBundleValidator
         {
             throw new InvalidDataException(
                 $"JSON property '{string.Join('.', propertyPath)}' expected '{expected}' but found '{actual}'.");
+        }
+    }
+
+    private static void RequireStringPrefix(JsonElement element, string expectedPrefix, params string[] propertyPath)
+    {
+        JsonElement property = Follow(element, propertyPath);
+        string actual = property.ValueKind == JsonValueKind.String
+            ? property.GetString() ?? string.Empty
+            : throw new InvalidDataException($"JSON property '{string.Join('.', propertyPath)}' is not a string.");
+        if (!actual.StartsWith(expectedPrefix, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                $"JSON property '{string.Join('.', propertyPath)}' expected prefix '{expectedPrefix}' but found '{actual}'.");
         }
     }
 

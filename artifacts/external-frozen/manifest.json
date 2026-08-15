@@ -93,6 +93,63 @@
         "dolt-main-repeat/patched/1.json"
       ],
       "externalIdentity": "Dolt source commit c3b5ce3c67f8677ca08a0a58d8c03cdc95bff8b7; unpatched vs one-line causal control"
+    },
+    {
+      "key": "dolt-expanded-fair-budget",
+      "kind": "DoltExpandedBudget",
+      "artifactId": 9250364170,
+      "workflowRunId": 31898137698,
+      "sourceHeadSha": "0cd69da37dbf2b5bbb6e994546e9c604e4786dc9",
+      "sha256": "6873344F745E06C372BDC1C1F0CA6FDD60ABDC5FB4D96DDE3A474A41D6180811",
+      "archive": "raw/dolt-expanded-final.zip",
+      "evidenceClass": "external-expanded-fair-budget",
+      "selectionNote": "The archive combines the paired 2.2.3 and 2.3.0 matrix uploads; artifact 9250364170 is the 2.2.3 upload and 9250364490 is the paired 2.3.0 upload. The ten-recipe grammar and fingerprint were frozen before execution.",
+      "requiredEntries": [
+        "dolt-expanded-223.json",
+        "dolt-expanded-230.json",
+        "dolt-223-version.txt",
+        "dolt-230-version.txt",
+        "workflow-run.txt"
+      ],
+      "externalIdentity": "Dolt 2.2.3 vs 2.3.0 expanded 10-candidate grammar"
+    },
+    {
+      "key": "slatedb-expanded-fair-observer",
+      "kind": "SlateDbExpandedPaired",
+      "artifactId": 9250458178,
+      "workflowRunId": 31898389670,
+      "sourceHeadSha": "a751fe071a0ce565deb0b534d87b656e713fd3a9",
+      "sha256": "2F9B9B533D4C5123C9BFB5AD466D63EFC9B7068B676F67AC1B4078299E544EB7",
+      "archive": "raw/slatedb-expanded-final.zip",
+      "evidenceClass": "external-expanded-fair-budget",
+      "selectionNote": "The archive combines the buggy crate 0.14.1 and fixed commit 6a131a9e matrix uploads; artifact 9250458178 is the buggy upload and 9250456804 is the paired fixed upload. The eight-observer grammar and fingerprint were frozen before execution.",
+      "requiredEntries": [
+        "slatedb-expanded-buggy.json",
+        "slatedb-expanded-fixed.json",
+        "slatedb-buggy-Cargo.lock",
+        "slatedb-fixed-Cargo.lock",
+        "workflow-run.txt"
+      ],
+      "externalIdentity": "SlateDB 0.14.1 vs fix 6a131a9e expanded 8-candidate observer grammar"
+    },
+    {
+      "key": "matrixone-v2-fair-identity",
+      "kind": "MatrixOneV2Live",
+      "artifactId": 9250463460,
+      "workflowRunId": 31898523617,
+      "sourceHeadSha": "64d06b5a428d724f71a7fedc6173a1d6c708b651",
+      "sha256": "D154A40FECCCB626CEF0139624912A6FC600AAADFCE7A4769314BDC7FAD87C45",
+      "archive": "raw/matrixone-v2-final.zip",
+      "evidenceClass": "external-expanded-fair-budget",
+      "selectionNote": "The workflow pinned the MatrixOne OCI manifest digest c920128b; the resolved image content ID remains 7161e9d. The ten-candidate grammar was frozen before this run and was asserted by the workflow. The artifact id is recorded as a local composite archive because the three workflow uploads are combined here.",
+      "requiredEntries": [
+        "matrixone-continuation.json",
+        "matrixone-identity.json",
+        "matrixone-trigger-budget.json",
+        "matrixone.log",
+        "matrixone-image-pinned.txt"
+      ],
+      "externalIdentity": "MatrixOne 8.0.30-MatrixOne-v4.1.4; pinned OCI manifest sha256:c920128b7e02622f27ddc12db32f8968d030c8eb3fd05bcccac47ca7d5b1c2b8"
     }
   ]
 }
