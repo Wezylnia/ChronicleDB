@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Sockets;
 
+using System.Diagnostics;
+
 namespace ChronicleDB.BranchCheck;
 
 public sealed record DoltCloneContinuationSmokeReport(
@@ -13,7 +15,10 @@ public sealed record DoltCloneContinuationSmokeReport(
     RelationStatus ContinuationRelation,
     string RelationEvidence,
     BaselineStatus CloneGrammarBaseline,
-    string CloneGrammarEvidence);
+    string CloneGrammarEvidence,
+    int ContinuationDelayMilliseconds,
+    long ElapsedMilliseconds,
+    string ServerProcessHealth);
 
 public static class DoltCloneContinuationSmokeProbe
 {
@@ -61,9 +66,17 @@ public static class DoltCloneContinuationSmokeProbe
             // Deliberately execute the continuation in a separate request. If clone-time
             // global-state initialization incorrectly captures the DOLT_CLONE request
             // context, that request is now complete and its context may be cancelled.
+            int continuationDelayMilliseconds = ReadContinuationDelayMilliseconds();
+            if (continuationDelayMilliseconds > 0)
+            {
+                await Task.Delay(continuationDelayMilliseconds, cancellationToken).ConfigureAwait(false);
+            }
+
+            Stopwatch stopwatch = Stopwatch.StartNew();
             DoltCliResult insert = await client.ExecuteSqlAsync(
                 "USE `other`; INSERT INTO test(v) VALUES (99);",
                 cancellationToken).ConfigureAwait(false);
+            stopwatch.Stop();
 
             OutcomeClass outcome = insert.ExitCode == 0 ? OutcomeClass.Success : OutcomeClass.Rejected;
             string detail = Normalize(insert.StandardError.Length == 0 ? insert.StandardOutput : insert.StandardError);
@@ -92,7 +105,10 @@ public static class DoltCloneContinuationSmokeProbe
                 relation.Status,
                 relation.Evidence,
                 cloneGrammar.Status,
-                cloneGrammar.Evidence);
+                cloneGrammar.Evidence,
+                continuationDelayMilliseconds,
+                stopwatch.ElapsedMilliseconds,
+                server.HasExited ? "exited-before-return" : "running-after-continuation");
         }
         finally
         {
@@ -190,4 +206,21 @@ public static class DoltCloneContinuationSmokeProbe
 
     private static string Normalize(string value)
         => string.Join(" | ", value.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+
+    private static int ReadContinuationDelayMilliseconds()
+    {
+        string? raw = Environment.GetEnvironmentVariable("BRANCHCHECK_DOLT_CONTINUATION_DELAY_MS");
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return 0;
+        }
+
+        if (!int.TryParse(raw, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int delay)
+            || delay < 0)
+        {
+            throw new ExternalAdapterException($"BRANCHCHECK_DOLT_CONTINUATION_DELAY_MS is invalid: '{raw}'.");
+        }
+
+        return delay;
+    }
 }
