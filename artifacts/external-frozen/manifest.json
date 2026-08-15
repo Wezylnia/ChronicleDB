@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "repository": "Wezylnia/ChronicleDB",
-  "researchHeadSha": "02bf57e79c8212e2136bc12ee85c54e656abf9d8",
-  "importedIntoMainSha": "0142a12fab77eb8cca87b201eaf3953ef2c80592",
+  "researchHeadSha": "233eaa1528febc776658277883a30072f01572d6",
+  "importedIntoMainSha": "288281967703406641f0b6014d0cefcd56510050",
   "artifacts": [
     {
       "key": "matrixone-live",
