@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "repository": "Wezylnia/ChronicleDB",
+  "researchHeadSha": "02bf57e79c8212e2136bc12ee85c54e656abf9d8",
+  "importedIntoMainSha": "0142a12fab77eb8cca87b201eaf3953ef2c80592",
+  "artifacts": [
+    {
+      "key": "matrixone-live",
+      "kind": "MatrixOneLive",
+      "artifactId": 9224759215,
+      "workflowRunId": 31815253810,
+      "sourceHeadSha": "02bf57e79c8212e2136bc12ee85c54e656abf9d8",
+      "sha256": "e113b3e9ef26ed275047b6f40308e32ce66037d524890ed3fc346c32219c5a66",
+      "archive": "raw/matrixone-final.zip",
+      "evidenceClass": "external-live",
+      "requiredEntries": [
+        "matrixone-continuation.json",
+        "matrixone-identity.json",
+        "matrixone-trigger-budget.json",
+        "matrixone.log"
+      ],
+      "externalIdentity": "MatrixOne 8.0.30-MatrixOne-v4.1.4; image sha256:7161e9d672fc55c5330af2acaf3afe29d2d2dfe9273a1748bca4c77f8dac8bf8"
+    },
+    {
+      "key": "slatedb-paired",
+      "kind": "SlateDbPaired",
+      "artifactId": 9224859095,
+      "workflowRunId": 31815253810,
+      "sourceHeadSha": "02bf57e79c8212e2136bc12ee85c54e656abf9d8",
+      "sha256": "98462e762498f838f45b091ff7bc0cbb51527f90aa8f7aa9b5c577ad216ce630",
+      "archive": "raw/slatedb-final.zip",
+      "evidenceClass": "external-paired-regression",
+      "requiredEntries": [
+        "slatedb-buggy.json",
+        "slatedb-fixed.json",
+        "slatedb-buggy-budget.json",
+        "slatedb-fixed-budget.json",
+        "slatedb-0.14.1-Cargo.lock",
+        "slatedb-fix-6a131a9e-Cargo.lock"
+      ],
+      "externalIdentity": "SlateDB crate 0.14.1 vs fix commit 6a131a9e"
+    },
+    {
+      "key": "dolt-223-budget",
+      "kind": "Dolt223Budget",
+      "artifactId": 9224706547,
+      "workflowRunId": 31815174951,
+      "sourceHeadSha": "253a80652669f1e91fee2c6256ca6d491fe9aca2",
+      "sha256": "db872e3dfc45ba190ea6fd06c2d012baf93e3e4e55df81406fb57a5f5ae26e99",
+      "archive": "raw/dolt-223-frozen.zip",
+      "evidenceClass": "external-fair-budget",
+      "selectionNote": "The final-head artifact upload contained an empty budget JSON. This is the last non-empty frozen 2.2.3 artifact. Git diff confirms no relevant BranchCheck or paired-workflow semantic changes between sourceHeadSha and researchHeadSha; the intervening commit only added the temporary patch-export workflow.",
+      "requiredEntries": [
+        "dolt-2.2.3-budget.json",
+        "dolt-2.2.3-version.txt"
+      ],
+      "externalIdentity": "Dolt 2.2.3"
+    },
+    {
+      "key": "dolt-release-repeat",
+      "kind": "DoltReleaseRepeat",
+      "artifactId": 9224757113,
+      "workflowRunId": 31815253822,
+      "sourceHeadSha": "02bf57e79c8212e2136bc12ee85c54e656abf9d8",
+      "sha256": "75cee24dc0a8bf71478631bd24089474d1be62308235df3824d11e7ed71ff914",
+      "archive": "raw/dolt-repeat-final.zip",
+      "evidenceClass": "external-stochastic-repetition",
+      "requiredEntries": [
+        "summary.json",
+        "dolt-2.2.3-version.txt",
+        "dolt-2.3.0-version.txt",
+        "223-1.json",
+        "223-10.json",
+        "230-1.json",
+        "230-10.json"
+      ],
+      "externalIdentity": "Dolt 2.2.3 vs 2.3.0"
+    },
+    {
+      "key": "dolt-main-causal",
+      "kind": "DoltMainCausal",
+      "artifactId": 9224930424,
+      "workflowRunId": 31815253811,
+      "sourceHeadSha": "02bf57e79c8212e2136bc12ee85c54e656abf9d8",
+      "sha256": "03e9300b8a15072674a7bf29dcd4c8fa5baf6250b4e8ee62ecfe8b2ffebdfcf6",
+      "archive": "raw/dolt-main-causal-final.zip",
+      "evidenceClass": "external-source-causal-ab",
+      "requiredEntries": [
+        "dolt-main-version.txt",
+        "dolt-main-causal-patch.diff",
+        "dolt-main-repeat/summary.json",
+        "dolt-main-repeat/unpatched/1.json",
+        "dolt-main-repeat/patched/1.json"
+      ],
+      "externalIdentity": "Dolt source commit c3b5ce3c67f8677ca08a0a58d8c03cdc95bff8b7; unpatched vs one-line causal control"
+    }
+  ]
+}

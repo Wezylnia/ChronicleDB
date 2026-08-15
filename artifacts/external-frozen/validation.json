@@ -1,0 +1,100 @@
+{
+  "Mode": "external-evidence",
+  "Manifest": "/mnt/data/dbengine_extract/dbengine/artifacts/external-frozen/manifest.json",
+  "Report": {
+    "Repository": "Wezylnia/ChronicleDB",
+    "ResearchHeadSha": "02bf57e79c8212e2136bc12ee85c54e656abf9d8",
+    "ImportedIntoMainSha": "0142a12fab77eb8cca87b201eaf3953ef2c80592",
+    "Artifacts": [
+      {
+        "Key": "matrixone-live",
+        "Kind": "MatrixOneLive",
+        "ArtifactId": 9224759215,
+        "ExternalIdentity": "MatrixOne 8.0.30-MatrixOne-v4.1.4; image sha256:7161e9d672fc55c5330af2acaf3afe29d2d2dfe9273a1748bca4c77f8dac8bf8",
+        "DigestValid": true,
+        "StructureValid": true,
+        "SemanticValid": true,
+        "Findings": [
+          "archive-sha256=E113B3E9EF26ED275047B6F40308E32CE66037D524890ED3FC346C32219C5A66",
+          "required-entries=4",
+          "matrixone-continuation=generic-detectable-negative-control",
+          "matrixone-identity=B0/B2/B4-pass;BC-temporal-fail",
+          "matrixone-legacy-budget=0.20-vs-1.00@budget1;target-seeded-not-fair-rq3-evidence"
+        ],
+        "Errors": [],
+        "Passed": true
+      },
+      {
+        "Key": "slatedb-paired",
+        "Kind": "SlateDbPaired",
+        "ArtifactId": 9224859095,
+        "ExternalIdentity": "SlateDB crate 0.14.1 vs fix commit 6a131a9e",
+        "DigestValid": true,
+        "StructureValid": true,
+        "SemanticValid": true,
+        "Findings": [
+          "archive-sha256=98462E762498F838F45B091FF7BC0CBB51527F90AA8F7AA9B5C577AD216CE630",
+          "required-entries=6",
+          "slatedb-paired=buggy-fail/fixed-pass",
+          "slatedb-B5=detects-buggy-version",
+          "slatedb-budget=regression-only;not-fair-search-evidence"
+        ],
+        "Errors": [],
+        "Passed": true
+      },
+      {
+        "Key": "dolt-223-budget",
+        "Kind": "Dolt223Budget",
+        "ArtifactId": 9224706547,
+        "ExternalIdentity": "Dolt 2.2.3",
+        "DigestValid": true,
+        "StructureValid": true,
+        "SemanticValid": true,
+        "Findings": [
+          "archive-sha256=DB872E3DFC45BA190EA6FD06C2D012BAF93E3E4E55DF81406FB57A5F5AE26E99",
+          "required-entries=2",
+          "dolt-2.2.3-budget=0.75-vs-1.00@budget1",
+          "dolt-2.2.3-B4=passes-all-four-recipes"
+        ],
+        "Errors": [],
+        "Passed": true
+      },
+      {
+        "Key": "dolt-release-repeat",
+        "Kind": "DoltReleaseRepeat",
+        "ArtifactId": 9224757113,
+        "ExternalIdentity": "Dolt 2.2.3 vs 2.3.0",
+        "DigestValid": true,
+        "StructureValid": true,
+        "SemanticValid": true,
+        "Findings": [
+          "archive-sha256=75CEE24DC0A8BF71478631BD24089474D1BE62308235DF3824D11E7ED71FF914",
+          "required-entries=7",
+          "dolt-2.2.3-repeat=10/10-pass",
+          "dolt-2.3.0-repeat=7/10-pass;3/10-context-canceled"
+        ],
+        "Errors": [],
+        "Passed": true
+      },
+      {
+        "Key": "dolt-main-causal",
+        "Kind": "DoltMainCausal",
+        "ArtifactId": 9224930424,
+        "ExternalIdentity": "Dolt source commit c3b5ce3c67f8677ca08a0a58d8c03cdc95bff8b7; unpatched vs one-line causal control",
+        "DigestValid": true,
+        "StructureValid": true,
+        "SemanticValid": true,
+        "Findings": [
+          "archive-sha256=03E9300B8A15072674A7BF29DCD4C8FA5BAF6250B4E8EE62ECFE8B2FFEBDFCF6",
+          "required-entries=5",
+          "dolt-main-unpatched=12/20-pass;8/20-context-canceled",
+          "dolt-main-causal-control=20/20-pass"
+        ],
+        "Errors": [],
+        "Passed": true
+      }
+    ],
+    "Passed": true,
+    "ExternalSystemCount": 3
+  }
+}
