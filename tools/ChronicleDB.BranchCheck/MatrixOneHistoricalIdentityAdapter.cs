@@ -4,9 +4,14 @@ public enum MatrixOneIdentityMutationRecipe
 {
     NoOp,
     UpdateSourceRow,
+    InsertSourceRow,
+    DeleteSourceRow,
+    TruncateSource,
     CreateUnrelatedObject,
     RecreateUnrelatedObject,
+    RenameSourceRoundTrip,
     RecreateSourceSameName,
+    RecreateSourceSameNameSchemaVariant,
 }
 
 public sealed record MatrixOneHistoricalIdentityObservation(
@@ -159,12 +164,22 @@ public static class MatrixOneHistoricalIdentityAdapter
             MatrixOneIdentityMutationRecipe.NoOp => "SET @branchcheck_noop = 1;",
             MatrixOneIdentityMutationRecipe.UpdateSourceRow =>
                 $"UPDATE {database}.parent_t SET val = 'current-row' WHERE id = 1;",
+            MatrixOneIdentityMutationRecipe.InsertSourceRow =>
+                $"INSERT INTO {database}.parent_t VALUES (2, 'current-row');",
+            MatrixOneIdentityMutationRecipe.DeleteSourceRow =>
+                $"DELETE FROM {database}.parent_t WHERE id = 1;",
+            MatrixOneIdentityMutationRecipe.TruncateSource =>
+                $"TRUNCATE TABLE {database}.parent_t;",
             MatrixOneIdentityMutationRecipe.CreateUnrelatedObject =>
                 $"CREATE TABLE {database}.unrelated_t (id INT PRIMARY KEY);",
             MatrixOneIdentityMutationRecipe.RecreateUnrelatedObject =>
                 $"CREATE TABLE {database}.unrelated_t (id INT PRIMARY KEY); DROP TABLE {database}.unrelated_t; CREATE TABLE {database}.unrelated_t (id INT PRIMARY KEY);",
+            MatrixOneIdentityMutationRecipe.RenameSourceRoundTrip =>
+                $"RENAME TABLE {database}.parent_t TO {database}.parent_tmp; RENAME TABLE {database}.parent_tmp TO {database}.parent_t;",
             MatrixOneIdentityMutationRecipe.RecreateSourceSameName =>
                 $"DROP TABLE {database}.parent_t; CREATE TABLE {database}.parent_t (id INT PRIMARY KEY, val VARCHAR(20)); INSERT INTO {database}.parent_t VALUES (2, 'current-row');",
+            MatrixOneIdentityMutationRecipe.RecreateSourceSameNameSchemaVariant =>
+                $"DROP TABLE {database}.parent_t; CREATE TABLE {database}.parent_t (id INT PRIMARY KEY, val VARCHAR(20), extra INT DEFAULT 0); INSERT INTO {database}.parent_t(id, val, extra) VALUES (2, 'current-row', 7);",
             _ => throw new ArgumentOutOfRangeException(nameof(recipe), recipe, "Unknown MatrixOne identity mutation recipe."),
         };
 

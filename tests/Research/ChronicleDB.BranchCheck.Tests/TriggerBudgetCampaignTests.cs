@@ -1,3 +1,4 @@
+using System.Text.Json;
 using ChronicleDB.BranchCheck;
 
 namespace ChronicleDB.BranchCheck.Tests;
@@ -5,32 +6,82 @@ namespace ChronicleDB.BranchCheck.Tests;
 public sealed class TriggerBudgetCampaignTests
 {
     [Fact]
-    public void FiveRecipeSpaceHasAllOneHundredTwentyOrderings()
+    public void MatrixOneV2CandidateSetIsLargerAndSemanticClassContainsMultipleRecipes()
     {
         MatrixOneIdentityMutationRecipe[] recipes = Enum.GetValues<MatrixOneIdentityMutationRecipe>();
-        IReadOnlyList<MatrixOneIdentityMutationRecipe[]> permutations =
-            MatrixOneTriggerBudgetCampaign.GeneratePermutations(recipes);
+        MatrixOneIdentityMutationRecipe[] relevant = recipes
+            .Where(MatrixOneIdentityMutationSemantics.IsIdentityStateRelevant)
+            .ToArray();
 
-        Assert.Equal(120, permutations.Count);
+        Assert.Equal(10, recipes.Length);
         Assert.Equal(
-            120,
-            permutations.Select(static ordering => string.Join(',', ordering)).Distinct(StringComparer.Ordinal).Count());
+            [
+                MatrixOneIdentityMutationRecipe.RenameSourceRoundTrip,
+                MatrixOneIdentityMutationRecipe.RecreateSourceSameName,
+                MatrixOneIdentityMutationRecipe.RecreateSourceSameNameSchemaVariant,
+            ],
+            relevant);
+        Assert.DoesNotContain(MatrixOneIdentityMutationRecipe.RecreateUnrelatedObject, relevant);
+        Assert.Equal(
+            "1FA61958C7E97E5EC5BBC8F32D03D99BAAD902F5C360465A7594B8F053B52040",
+            MatrixOneIdentityMutationSemantics.Fingerprint());
     }
 
     [Fact]
-    public void EveryRecipeAppearsAtEveryPositionEquallyOften()
+    public void MatrixOneV2PreregistrationArtifactMatchesCompiledCandidateGrammar()
     {
-        MatrixOneIdentityMutationRecipe[] recipes = Enum.GetValues<MatrixOneIdentityMutationRecipe>();
-        IReadOnlyList<MatrixOneIdentityMutationRecipe[]> permutations =
-            MatrixOneTriggerBudgetCampaign.GeneratePermutations(recipes);
+        string root = FindRepositoryRoot();
+        string path = Path.Combine(root, "artifacts", "external-frozen", "matrixone-v2-preregistration.json");
+        using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+        JsonElement top = document.RootElement;
 
-        foreach (MatrixOneIdentityMutationRecipe recipe in recipes)
-        {
-            for (int position = 0; position < recipes.Length; position++)
-            {
-                Assert.Equal(24, permutations.Count(ordering => ordering[position] == recipe));
-            }
-        }
+        Assert.Equal("pending-external-execution", top.GetProperty("status").GetString());
+        Assert.Equal(MatrixOneIdentityMutationSemantics.Fingerprint(), top.GetProperty("candidate_set_fingerprint").GetString());
+        Assert.Equal(10, top.GetProperty("candidate_count").GetInt32());
+        Assert.Equal(3, top.GetProperty("identity_relevant_count").GetInt32());
+
+        JsonElement.ArrayEnumerator rows = top.GetProperty("candidates").EnumerateArray();
+        var frozen = rows.Select(row => (
+                Recipe: row.GetProperty("recipe").GetString() ?? throw new InvalidOperationException("Frozen MatrixOne recipe name is null."),
+                Relevant: row.GetProperty("identity_state_relevant").GetBoolean()))
+            .ToArray();
+        var compiled = Enum.GetValues<MatrixOneIdentityMutationRecipe>()
+            .Select(recipe => (
+                Recipe: recipe.ToString(),
+                Relevant: MatrixOneIdentityMutationSemantics.IsIdentityStateRelevant(recipe)))
+            .ToArray();
+
+        Assert.Equal(compiled, frozen);
+    }
+
+    [Fact]
+    public void MatrixOneV2SingleRelevantViolationUsesClassGuidanceRatherThanExactRecipe()
+    {
+        TriggerBudgetReport report = MatrixOneTriggerBudgetCampaign.EvaluateEvidence(
+            CreateMatrixOneEvidence(MatrixOneIdentityMutationRecipe.RecreateSourceSameName));
+
+        Assert.Equal(10, report.CandidateCount);
+        Assert.Equal(3, report.IdentityRelevantRecipeCount);
+        Assert.Equal(1, report.ViolationRecipeCount);
+        Assert.True(report.AllViolationsInsideIdentityRelevantClass);
+        Assert.True(report.GuidedHasStrictAdvantageAtAnyBudget);
+        Assert.Equal(0.1, report.BudgetCurve[0].GenericDetectionRate, precision: 10);
+        Assert.Equal(1.0 / 3.0, report.BudgetCurve[0].RelationGuidedDetectionRate, precision: 10);
+        Assert.Equal(0.3, report.BudgetCurve[2].GenericDetectionRate, precision: 10);
+        Assert.Equal(1.0, report.BudgetCurve[2].RelationGuidedDetectionRate, precision: 10);
+    }
+
+    [Fact]
+    public void MatrixOneV2GuidanceDoesNotMagicallyDetectControlClassViolation()
+    {
+        TriggerBudgetReport report = MatrixOneTriggerBudgetCampaign.EvaluateEvidence(
+            CreateMatrixOneEvidence(MatrixOneIdentityMutationRecipe.UpdateSourceRow));
+
+        Assert.False(report.AllViolationsInsideIdentityRelevantClass);
+        Assert.Equal(0.1, report.BudgetCurve[0].GenericDetectionRate, precision: 10);
+        Assert.Equal(0.0, report.BudgetCurve[0].RelationGuidedDetectionRate, precision: 10);
+        Assert.Equal(0.0, report.BudgetCurve[2].RelationGuidedDetectionRate, precision: 10);
+        Assert.True(report.BudgetCurve[3].RelationGuidedDetectionRate > 0.0);
     }
 
     [Fact]
@@ -87,6 +138,17 @@ public sealed class TriggerBudgetCampaignTests
         Assert.DoesNotContain(DoltHistoryImportRecipe.FetchHardReset, DoltTriggerBudgetCampaign.PortableRecipes);
     }
 
+    private static TriggerRecipeEvidence[] CreateMatrixOneEvidence(MatrixOneIdentityMutationRecipe violatingRecipe)
+        => Enum.GetValues<MatrixOneIdentityMutationRecipe>()
+            .Select(recipe => new TriggerRecipeEvidence(
+                recipe,
+                MatrixOneIdentityMutationSemantics.IsIdentityStateRelevant(recipe),
+                recipe == violatingRecipe ? RelationStatus.Fail : RelationStatus.Pass,
+                BaselineStatus.Pass,
+                BaselineStatus.Pass,
+                recipe == violatingRecipe))
+            .ToArray();
+
     private static DoltTriggerRecipeEvidence[] CreatePortableDoltEvidence(DoltHistoryImportRecipe violatingRecipe)
         => DoltTriggerBudgetCampaign.PortableRecipes
             .Select(recipe => new DoltTriggerRecipeEvidence(
@@ -105,4 +167,20 @@ public sealed class TriggerBudgetCampaignTests
                 BaselineStatus.Pass,
                 recipe == violatingRecipe))
             .ToArray();
+    private static string FindRepositoryRoot()
+    {
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "ChronicleDB.slnx")))
+            {
+                return directory.FullName;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new InvalidOperationException("Could not locate ChronicleDB repository root.");
+    }
+
 }
