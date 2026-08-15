@@ -124,22 +124,66 @@ async fn main() {
     // with a parent-resident SST dependency.
     let (parent_reader_count, parent_reader_error) =
         read_with_db_reader(parent_path, Arc::clone(&object_store)).await;
+    let (parent_count, parent_error) =
+        read_with_db(parent_path, Arc::clone(&object_store)).await;
+    let (parent_reader_reopen_count, parent_reader_reopen_error) =
+        read_with_db_reader(parent_path, Arc::clone(&object_store)).await;
     let (clone_reader_count, clone_reader_error) =
         read_with_db_reader(clone_path, Arc::clone(&object_store)).await;
+    let (clone_reader_reopen_count, clone_reader_reopen_error) =
+        read_with_db_reader(clone_path, Arc::clone(&object_store)).await;
     let (clone_db_count, clone_db_error) = read_with_db(clone_path, Arc::clone(&object_store)).await;
+    let (clone_db_reopen_count, clone_db_reopen_error) =
+        read_with_db(clone_path, Arc::clone(&object_store)).await;
+    let _ = read_with_db(parent_path, Arc::clone(&object_store)).await;
+    let (clone_reader_after_parent_reopen_count, clone_reader_after_parent_reopen_error) =
+        read_with_db_reader(clone_path, Arc::clone(&object_store)).await;
 
     println!("version={target}");
     println!("total={NUM_KEYS}");
     println!("parent_reader={parent_reader_count}");
     println!("db={clone_db_count}");
     println!("reader={clone_reader_count}");
-    if let Some(error) = parent_reader_error {
+    if let Some(error) = &parent_reader_error {
         println!("parent_reader_error={}", error.replace(['\r', '\n'], " "));
     }
-    if let Some(error) = clone_reader_error {
+    if let Some(error) = &clone_reader_error {
         println!("reader_error={}", error.replace(['\r', '\n'], " "));
     }
-    if let Some(error) = clone_db_error {
+    if let Some(error) = &clone_db_error {
         println!("db_error={}", error.replace(['\r', '\n'], " "));
+    }
+
+    println!("candidate_parent_db_reader={parent_reader_count}");
+    println!("candidate_parent_db={parent_count}");
+    println!("candidate_parent_db_reader_reopen={parent_reader_reopen_count}");
+    println!("candidate_clone_db={clone_db_count}");
+    println!("candidate_clone_db_reopen={clone_db_reopen_count}");
+    println!("candidate_clone_db_reader={clone_reader_count}");
+    println!("candidate_clone_db_reader_reopen={clone_reader_reopen_count}");
+    println!("candidate_clone_db_reader_after_parent_reopen={clone_reader_after_parent_reopen_count}");
+    if let Some(error) = &parent_reader_error {
+        println!("candidate_parent_db_reader_error={}", error.replace(['\r', '\n'], " "));
+    }
+    if let Some(error) = &parent_error {
+        println!("candidate_parent_db_error={}", error.replace(['\r', '\n'], " "));
+    }
+    if let Some(error) = &parent_reader_reopen_error {
+        println!("candidate_parent_db_reader_reopen_error={}", error.replace(['\r', '\n'], " "));
+    }
+    if let Some(error) = &clone_db_error {
+        println!("candidate_clone_db_error={}", error.replace(['\r', '\n'], " "));
+    }
+    if let Some(error) = &clone_db_reopen_error {
+        println!("candidate_clone_db_reopen_error={}", error.replace(['\r', '\n'], " "));
+    }
+    if let Some(error) = &clone_reader_error {
+        println!("candidate_clone_db_reader_error={}", error.replace(['\r', '\n'], " "));
+    }
+    if let Some(error) = &clone_reader_reopen_error {
+        println!("candidate_clone_db_reader_reopen_error={}", error.replace(['\r', '\n'], " "));
+    }
+    if let Some(error) = &clone_reader_after_parent_reopen_error {
+        println!("candidate_clone_db_reader_after_parent_reopen_error={}", error.replace(['\r', '\n'], " "));
     }
 }

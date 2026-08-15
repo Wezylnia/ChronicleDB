@@ -1,3 +1,4 @@
+using System.Text.Json;
 using ChronicleDB.BranchCheck;
 
 namespace ChronicleDB.BranchCheck.Tests;
@@ -132,5 +133,92 @@ public sealed class ExternalSqlAdapterTests
             Assert.Equal(0.0, point.GenericDetectionRate);
             Assert.Equal(0.0, point.RelationGuidedDetectionRate);
         });
+    }
+
+    [Fact]
+    public void SlateDbExpandedParserPreservesAllFrozenObserverCandidates()
+    {
+        SlateDbObserverObservation observation = SlateDbObserverOutputParser.Parse(
+            "version=0.14.1\ntotal=128\nparent_reader=128\ndb=128\nreader=0\n" +
+            "candidate_parent_db_reader=128\n" +
+            "candidate_parent_db=128\n" +
+            "candidate_parent_db_reader_reopen=128\n" +
+            "candidate_clone_db=128\n" +
+            "candidate_clone_db_reopen=128\n" +
+            "candidate_clone_db_reader=0\n" +
+            "candidate_clone_db_reader_reopen=0\n" +
+            "candidate_clone_db_reader_after_parent_reopen=0\n");
+
+        Assert.NotNull(observation.ExpandedCandidates);
+        Assert.Equal(8, observation.ExpandedCandidates!.Count);
+        Assert.Equal(SlateDbExpandedObserverCandidate.CloneDbReaderAfterParentReopen, observation.ExpandedCandidates[^1].Candidate);
+        Assert.Equal(0, observation.ExpandedCandidates[^1].ReadableKeys);
+    }
+
+    [Fact]
+    public void SlateDbExpandedBudgetUsesDependencyClassWithoutExactCandidateSelection()
+    {
+        var candidates = SlateDbExpandedTriggerBudgetCampaign.CandidateFields
+            .Select(item => new SlateDbExpandedCandidateObservation(
+                item.Candidate,
+                SlateDbExpandedTriggerBudgetCampaign.IsDependencyRelevant(item.Candidate) ? 0 : 128,
+                128,
+                SlateDbExpandedTriggerBudgetCampaign.IsDependencyRelevant(item.Candidate) ? "dependency test failure" : null))
+            .ToArray();
+        var observation = new SlateDbObserverObservation(
+            "0.14.1",
+            128,
+            128,
+            128,
+            0,
+            null,
+            "dependency test failure",
+            candidates);
+
+        SlateDbExpandedTriggerBudgetReport report = SlateDbExpandedTriggerBudgetCampaign.Evaluate(observation);
+
+        Assert.Equal(8, report.Candidates.Count);
+        Assert.Equal(3, report.DependencyRelevantCandidateCount);
+        Assert.Equal(3, report.ViolationCandidateCount);
+        Assert.True(report.AllViolationsInsideDependencyClass);
+        Assert.True(report.GuidedHasStrictAdvantageAtAnyBudget);
+        Assert.Equal(3.0 / 8.0, report.BudgetCurve[0].GenericDetectionRate, precision: 10);
+        Assert.Equal(1.0, report.BudgetCurve[0].GuidedDetectionRate, precision: 10);
+        Assert.Equal(
+            "F4A32481242FCC67B57309D73F0641EA14C7B5E65B161A26EB2FB34640DF5220",
+            report.CandidateSetFingerprint);
+    }
+
+    [Fact]
+    public void SlateDbExpandedPreregistrationMatchesCompiledObserverGrammar()
+    {
+        string root = FindRepositoryRoot();
+        string path = Path.Combine(root, "artifacts", "external-frozen", "slatedb-expanded-preregistration.json");
+        using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+        JsonElement top = document.RootElement;
+
+        Assert.Equal("pending-external-execution", top.GetProperty("status").GetString());
+        Assert.Equal(
+            SlateDbExpandedTriggerBudgetCampaign.CandidateSetFingerprint,
+            top.GetProperty("candidate_set_fingerprint").GetString());
+        Assert.Equal(8, top.GetProperty("candidate_count").GetInt32());
+        Assert.Equal(3, top.GetProperty("dependency_relevant_count").GetInt32());
+        Assert.Equal(8, top.GetProperty("candidates").GetArrayLength());
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "ChronicleDB.slnx")))
+            {
+                return directory.FullName;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new DirectoryNotFoundException("Could not locate ChronicleDB.slnx from the test output directory.");
     }
 }

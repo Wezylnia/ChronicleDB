@@ -10,7 +10,14 @@ public sealed record SlateDbObserverObservation(
     int DbReadableKeys,
     int DbReaderReadableKeys,
     string? ParentReaderError,
-    string? ReaderError);
+    string? ReaderError,
+    IReadOnlyList<SlateDbExpandedCandidateObservation>? ExpandedCandidates = null);
+
+public sealed record SlateDbExpandedCandidateObservation(
+    SlateDbExpandedObserverCandidate Candidate,
+    int ReadableKeys,
+    int TotalKeys,
+    string? Error);
 
 public static class SlateDbObserverOutputParser
 {
@@ -36,6 +43,7 @@ public static class SlateDbObserverOutputParser
         int reader = ParseCount(fields, "reader");
         fields.TryGetValue("parent_reader_error", out string? parentReaderError);
         fields.TryGetValue("reader_error", out string? readerError);
+        IReadOnlyList<SlateDbExpandedCandidateObservation>? expandedCandidates = ParseExpandedCandidates(fields);
         return new SlateDbObserverObservation(
             version,
             total,
@@ -43,7 +51,8 @@ public static class SlateDbObserverOutputParser
             db,
             reader,
             parentReaderError,
-            readerError);
+            readerError,
+            expandedCandidates);
     }
 
     private static string Required(IReadOnlyDictionary<string, string> fields, string key)
@@ -60,6 +69,36 @@ public static class SlateDbObserverOutputParser
         }
 
         return value;
+    }
+
+    private static List<SlateDbExpandedCandidateObservation>? ParseExpandedCandidates(
+        Dictionary<string, string> fields)
+    {
+        var candidates = new List<SlateDbExpandedCandidateObservation>();
+        foreach ((SlateDbExpandedObserverCandidate candidate, string field) in SlateDbExpandedTriggerBudgetCampaign.CandidateFields)
+        {
+            string key = "candidate_" + field;
+            if (!fields.ContainsKey(key))
+            {
+                continue;
+            }
+
+            int readable = ParseCount(fields, key);
+            fields.TryGetValue(key + "_error", out string? error);
+            candidates.Add(new SlateDbExpandedCandidateObservation(candidate, readable, ParseCount(fields, "total"), error));
+        }
+
+        if (candidates.Count == 0)
+        {
+            return null;
+        }
+
+        if (candidates.Count != SlateDbExpandedTriggerBudgetCampaign.CandidateFields.Count)
+        {
+            throw new ExternalAdapterException("SlateDB expanded observer output omitted one or more frozen candidates.");
+        }
+
+        return candidates;
     }
 }
 

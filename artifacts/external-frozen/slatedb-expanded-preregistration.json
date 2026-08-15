@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "status": "pending-external-execution",
+  "backend": "SlateDB",
+  "comparison_targets": [
+    { "label": "crate-0.14.1", "dependency": "slatedb = \"=0.14.1\"" },
+    { "label": "fix-6a131a9e", "dependency": "slatedb git rev 6a131a9ebfd121ca553cb80a08b7b8f2bd142092" }
+  ],
+  "candidate_set_fingerprint": "F4A32481242FCC67B57309D73F0641EA14C7B5E65B161A26EB2FB34640DF5220",
+  "candidate_count": 8,
+  "dependency_relevant_count": 3,
+  "budget_protocol": {
+    "candidate_budgets": [1, 2, 3, 4, 5, 6, 7, 8],
+    "generic_ordering": "uniform over all candidate permutations",
+    "guided_ordering": "all clone-reader dependency candidates first; uniform within the class",
+    "exact_candidate_selection": false,
+    "issue_identifiers_in_grammar": false
+  },
+  "candidates": [
+    { "candidate": "ParentDbReader", "field": "parent_db_reader", "dependency_relevant": false },
+    { "candidate": "ParentDb", "field": "parent_db", "dependency_relevant": false },
+    { "candidate": "ParentDbReaderReopen", "field": "parent_db_reader_reopen", "dependency_relevant": false },
+    { "candidate": "CloneDb", "field": "clone_db", "dependency_relevant": false },
+    { "candidate": "CloneDbReopen", "field": "clone_db_reopen", "dependency_relevant": false },
+    { "candidate": "CloneDbReader", "field": "clone_db_reader", "dependency_relevant": true },
+    { "candidate": "CloneDbReaderReopen", "field": "clone_db_reader_reopen", "dependency_relevant": true },
+    { "candidate": "CloneDbReaderAfterParentReopen", "field": "clone_db_reader_after_parent_reopen", "dependency_relevant": true }
+  ],
+  "nonclaims": [
+    "The grammar is not derived from issue 1902 or an exact known failing observer.",
+    "A guided advantage is not assumed before execution.",
+    "Unsupported or environment-failed candidates remain explicit outcomes and are not silently dropped."
+  ]
+}

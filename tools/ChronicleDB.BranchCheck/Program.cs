@@ -4,9 +4,9 @@ using System.Text.Json.Serialization;
 using ChronicleDB.BranchCheck;
 
 string mode = args.Length == 0 ? "all" : args[0].Trim().ToLowerInvariant();
-if (mode is not ("all" or "synthetic" or "historical" or "local-budget" or "unseeded-local" or "external-evidence" or "matrixone" or "matrixone-identity" or "matrixone-budget" or "slatedb" or "slatedb-budget" or "dolt-budget" or "dolt-expanded-budget" or "dolt-clone-smoke"))
+if (mode is not ("all" or "synthetic" or "historical" or "local-budget" or "unseeded-local" or "external-evidence" or "matrixone" or "matrixone-identity" or "matrixone-budget" or "slatedb" or "slatedb-budget" or "slatedb-expanded-budget" or "dolt-budget" or "dolt-expanded-budget" or "dolt-clone-smoke"))
 {
-    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|local-budget|unseeded-local|external-evidence|matrixone|matrixone-identity|matrixone-budget|slatedb|slatedb-budget|dolt-budget|dolt-expanded-budget|dolt-clone-smoke]");
+    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|local-budget|unseeded-local|external-evidence|matrixone|matrixone-identity|matrixone-budget|slatedb|slatedb-budget|slatedb-expanded-budget|dolt-budget|dolt-expanded-budget|dolt-clone-smoke]");
     return 2;
 }
 
@@ -113,7 +113,7 @@ if (mode is "dolt-budget" or "dolt-expanded-budget" or "dolt-clone-smoke")
     }
 }
 
-if (mode == "slatedb-budget")
+if (mode is "slatedb-budget" or "slatedb-expanded-budget")
 {
     try
     {
@@ -122,6 +122,18 @@ if (mode == "slatedb-budget")
         SlateDbObserverObservation observation = await SlateDbObserverAdapter.ObserveAsync(
             executable,
             TimeSpan.FromSeconds(120)).ConfigureAwait(false);
+        if (mode == "slatedb-expanded-budget")
+        {
+            SlateDbExpandedTriggerBudgetReport expandedReport = SlateDbExpandedTriggerBudgetCampaign.Evaluate(observation);
+            WriteJson(new
+            {
+                Mode = mode,
+                ExternalIdentity = executable,
+                Report = expandedReport,
+            });
+            return 0;
+        }
+
         SlateDbTriggerBudgetReport budgetReport = SlateDbTriggerBudgetCampaign.Evaluate(observation);
         WriteJson(new
         {
