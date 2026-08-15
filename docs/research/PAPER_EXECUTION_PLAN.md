@@ -98,7 +98,7 @@ For every experiment report separately whether a supplied failing trace is detec
 
 | Step | State | Evidence |
 |---|---|---|
-| A–B. Patch, build, and existing tests | Complete | frozen baseline: 575 tests; 2026-08-15 verification after 5 evidence/audit/fairness/preregistration tests: 580/580 pass, 0 build warnings/errors |
+| A–B. Patch, build, and existing tests | Complete | 2026-08-15 final verification: 588/588 pass across architecture, unit, research, persistence, correctness, and recovery suites; Release build 0 warnings/errors |
 | C. Environment freeze | Complete | `artifacts/environment/environment.json` |
 | D. Local v0.4 replay | Complete for available backends | synthetic + historical JSON; external prerequisites recorded unavailable |
 | E. Reproducibility artifacts | Complete for local runs | command logs, JSON outputs, exit codes under `artifacts/baseline/` |

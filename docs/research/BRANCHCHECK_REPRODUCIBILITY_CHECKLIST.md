@@ -22,7 +22,7 @@ This checklist is the gate for promoting a result into paper evidence. It now di
 
 - [x] Full restore/build/test baseline exists for the frozen local runner state.
 - [x] Architecture suite and BranchCheck suite pass in the frozen baseline.
-- [x] 2026-08-15 offline Linux verification after evidence/audit/fairness additions: full solution 580/580 tests pass, Release build 0 warnings/errors.
+- [x] 2026-08-15 final verification: full solution 588/588 tests pass across architecture, unit, research, persistence, correctness, and recovery suites; Release build 0 warnings/errors.
 - [x] Historical corpus and synthetic baseline artifacts parse as JSON.
 - [x] External prerequisites were recorded as unavailable rather than silently omitted on the Windows baseline.
 - [x] Local budget and unseeded pilots declare `ExternalEvidence: false`.

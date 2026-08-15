@@ -9,7 +9,7 @@ This snapshot separates **prototype completion** from **paper-evidence completio
 | Step | Engineering state | Scientific state | Evidence / remaining work |
 |---|---|---|---|
 | A. Apply/freeze BranchCheck on clean `main` | **Done** | N/A | Current archive, local git, `origin/main`, and GitHub `main` all resolve to `0142a12...`. |
-| B. Build and existing tests | **Done** | N/A | Offline .NET 10.0.301 restore/build works. Current verification after adding the evidence/audit/fairness regressions is 580/580 tests passing with 0 build warnings/errors; the earlier frozen baseline recorded 575 tests before these five paper-gate tests were added. |
+| B. Build and existing tests | **Done** | N/A | Offline .NET 10.0.301 restore/build works. Final verification is 588/588 tests passing with 0 build warnings/errors across architecture, unit, research, persistence, correctness, and recovery suites. |
 | C. Environment + provenance freeze | **Done** | **Done for current local baseline** | `artifacts/environment/environment.json`, `artifacts/baseline/PROVENANCE.md`, external artifact manifest/digests. |
 | D. Reproduce v0.4 baseline | **Done locally where dependencies exist** | **Partial externally** | Local synthetic/historical/ChronicleDB evidence reruns; frozen MatrixOne/SlateDB/Dolt CI evidence is imported but is not a fresh final-main Windows/WSL rerun. |
 | E. Reproducibility scripts/seeds/budgets | **Done for current campaigns** | **Done for reported small-space experiments** | JSON outputs, fixed seed/budget protocol, fail-closed external evidence validator. Larger external campaigns need their own preregistered freeze before execution. |
