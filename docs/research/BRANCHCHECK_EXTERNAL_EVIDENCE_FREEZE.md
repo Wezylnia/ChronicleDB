@@ -72,3 +72,22 @@ Current `main` therefore replaces the future `matrixone-budget` campaign with a 
 - frozen candidate-set fingerprint: `1FA61958C7E97E5EC5BBC8F32D03D99BAAD902F5C360465A7594B8F053B52040`.
 
 The v2 result is **pending external execution**. Until then Dolt 2.2.3 is the only external backend with a fair positive RQ3 budget result.
+
+## Final expanded freeze (2026-08-15)
+
+The pending statement above describes the pre-execution snapshot. It is superseded for final evaluation by the following immutable additions:
+
+| Key | Workflow run | Archive | Result |
+|---|---:|---|---|
+| `matrixone-v2-fair-identity` | `31898523617` | `raw/matrixone-v2-final.zip` | pinned OCI manifest `c920128b...`; 10-candidate fingerprint `1FA61958...`; 3/10 violations; generic/guided budget-1 `0.30/0.6667` |
+| `dolt-expanded-fair-budget` | `31898137698` | `raw/dolt-expanded-final.zip` | 2.2.3: 6/10 sequence-class violations; 2.3.0: 10/10 including four controls; fingerprint `51C8F528...` |
+| `slatedb-expanded-fair-observer` | `31898389670` | `raw/slatedb-expanded-final.zip` | buggy: 3/3 dependency violations; fixed: 0/8; fingerprint `F4A32481...` |
+| `external-unseeded-replay` | source runs above | `raw/external-unseeded-replay-final.zip` | 160 deterministic replays over 46 complete candidate observations, 32 fixed seeds, budget 4; replay flag is explicit |
+
+The new archives are validated by the same fail-closed command. The MatrixOne image's resolved content ID (`7161e9d...`) is kept alongside the pinned OCI manifest digest (`c920128b...`) so the distinction between manifest identity and local image ID is auditable.
+
+The external unseeded artifact is not presented as 160 live backend reruns. It is a preregistered uniform replay over complete per-candidate observations that were executed in the three external workflows; no outcome class or control was removed after observation.
+
+## Upstream confirmation of the Dolt mechanism
+
+The targeted upstream search found Dolt issue [#11387](https://github.com/dolthub/dolt/issues/11387), currently open. Its maintainer-authored reproducer performs `DOLT_PULL` and then an auto-increment insert; the documented actual result is a duplicate key because global auto-increment state is not updated after the pull. This independently confirms the continuation-authority mechanism seen in the Dolt expanded campaign. The snapshot is preserved in [`dolt-upstream-issue-11387-20260815.json`](../../artifacts/external-frozen/dolt-upstream-issue-11387-20260815.json). It does not establish a universal failure probability or claim that the issue is fixed.

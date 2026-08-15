@@ -35,6 +35,22 @@ Only four research gaps materially matter now:
 
 Everything else is either complete, optional strengthening, or paper-writing work.
 
+## Final campaign closure addendum
+
+The previously open paper-evidence gates are closed for the imported external evaluation:
+
+| Gate | Final state | Frozen source |
+|---|---|---|
+| MatrixOne v2 fair search | Done | `matrixone-v2-fair-identity`, run `31898523617` |
+| Dolt expanded fair search | Done with version caveat | `dolt-expanded-fair-budget`, run `31898137698` |
+| Third family fair search | Done as paired observer/dependency study | `slatedb-expanded-fair-observer`, run `31898389670` |
+| External unseeded ledger | Done as deterministic replay over complete external observations | `external-unseeded-replay.json` |
+| False-positive/reduction/final tables | Done | `BRANCHCHECK_FALSE_POSITIVE_FINAL.md`, `BRANCHCHECK_EXTERNAL_TRACE_REDUCTION.md`, `BRANCHCHECK_FINAL_FIGURES.md` |
+
+Fresh WSL2/Docker reruns from final `main` and upstream maintainer confirmation remain explicitly optional strengthening; neither is claimed by the imported bundle.
+
+The upstream search gate has since produced an independent mechanism match: Dolt issue #11387 documents the `DOLT_PULL` plus auto-increment duplicate-key reproducer. The issue remains open, so only mechanism confirmation is promoted; fix status and universal rates remain open.
+
 ## Work that must NOT be expanded now
 
 - No new generic fuzzer architecture.

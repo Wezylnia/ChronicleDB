@@ -93,3 +93,17 @@ The authoritative imported bundle is `artifacts/external-frozen/manifest.json`; 
 2. external unseeded campaign across at least three obligation families;
 3. a fair-search result for dependency/lifecycle/recovery beyond allocator + identity;
 4. upstream/independent confirmation status for the Dolt current regression candidate.
+
+## Final external addendum (2026-08-15)
+
+The pending rows above were executed and imported after the original local scaffold was written. The authoritative additions are in [`external-frozen/manifest.json`](../../artifacts/external-frozen/manifest.json) and its fail-closed [`validation.json`](../../artifacts/external-frozen/validation.json).
+
+| Frozen campaign | Grammar | Result | Scientific use |
+|---|---|---|---|
+| MatrixOne v2 | 10 recipes; 3 identity-relevant; fingerprint `1FA61958...` | 3 violations; generic/guided budget-1 `0.30/0.6667`; B0/B2/B4 controls retained | fair identity search with generic-overlap caveat |
+| Dolt expanded 2.2.3 | 10 recipes; 6 sequence-relevant; fingerprint `51C8F528...` | 6/10 violations, all inside sequence class; budget-1 `0.60/1.00` | fair positive search evidence |
+| Dolt expanded 2.3.0 | same grammar | 10/10 violations, including 4 controls; class containment false | false-positive/version-model robustness evidence, not clean headline |
+| SlateDB expanded buggy/fixed | 8 observers; 3 dependency-relevant; fingerprint `F4A32481...` | buggy 3/3 dependency violations; fixed 0 | third-family paired fair search |
+| External unseeded replay | 5 versions × 32 seeds; budget 4 | 160 complete replays; all seven outcome classes represented in schema; no filtering | external protocol/classification evidence, explicitly replay not live rerun |
+
+The previous “pending” wording is retained as historical provenance of the scaffold; the addendum is the final result used by the paper.

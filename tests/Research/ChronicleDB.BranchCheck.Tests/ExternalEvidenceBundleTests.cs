@@ -90,6 +90,23 @@ public sealed class ExternalEvidenceBundleTests
     }
 
     [Fact]
+    public void DoltUpstreamMechanismSnapshotPreservesOpenIssueProvenance()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+        string statusPath = Path.Combine(
+            repositoryRoot,
+            "artifacts",
+            "external-frozen",
+            "dolt-upstream-issue-11387-20260815.json");
+
+        using JsonDocument document = JsonDocument.Parse(File.ReadAllText(statusPath));
+        Assert.Equal("dolthub/dolt", document.RootElement.GetProperty("repository").GetString());
+        Assert.Equal(11387, document.RootElement.GetProperty("issue").GetInt32());
+        Assert.Equal("open", document.RootElement.GetProperty("state").GetString());
+        Assert.Contains("auto_increment", document.RootElement.GetProperty("relevance").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DigestMismatchFailsClosedBeforeSemanticValidation()
     {
         string repositoryRoot = FindRepositoryRoot();

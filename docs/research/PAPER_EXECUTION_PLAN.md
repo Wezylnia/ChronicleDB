@@ -33,7 +33,7 @@ Generic testing may detect a terminal failure once the correct continuation is s
 - BranchCheck does not claim generic fuzzers cannot detect branch failures.
 - BranchCheck does not claim every branch bug requires a BranchCheck-specific oracle.
 - BranchCheck does not claim every generated continuation is complete.
-- The current Dolt regression candidate is not called novel without independent upstream confirmation.
+- The current Dolt mechanism is supported by upstream issue #11387, but its open state is not called a fix or a universal defect claim.
 - Small candidate-space results are not presented as universal speedups.
 - ChronicleDB is a controlled laboratory, not the primary external novelty evidence.
 
@@ -126,6 +126,18 @@ A consolidated Done/Partial/Open A–O matrix is frozen in `BRANCHCHECK_PLAN_COM
 Five GitHub Actions artifacts from the final BranchCheck research branch are now stored under `artifacts/external-frozen/raw/` with a manifest and a fail-closed `external-evidence` validator. The bundle covers MatrixOne, SlateDB, and Dolt and validates archive digests plus the exact paper-facing semantic polarity. This closes the evidence-preservation gap but does not replace a fresh final-`main` local rerun. See `BRANCHCHECK_EXTERNAL_EVIDENCE_FREEZE.md`.
 
 The remaining high-value work is now narrow: execute the preregistered MatrixOne v2 fair budget, enlarge Dolt fairly, run an external unseeded campaign across at least three latent-state families, and obtain upstream/independent confirmation of the Dolt current regression candidate. Framework expansion without one of those goals remains frozen.
+
+## Final evidence update (2026-08-15)
+
+The three execution campaigns and the reduction/false-positive passes are now complete in the immutable bundle:
+
+- MatrixOne v2: 10 frozen recipes, fingerprint `1FA61958...`, 3 violations, budget-1 generic/guided `0.30/0.6667`.
+- Dolt expanded: 10 frozen recipes, fingerprint `51C8F528...`; 2.2.3 has 6 sequence-class violations, while 2.3.0 exposes four control-class false positives and is not a clean headline result.
+- SlateDB expanded: 8 frozen observers, fingerprint `F4A32481...`; buggy 3/3 dependency failures, fixed 0.
+- External unseeded classification: 46 complete observations replayed under 32 fixed seeds and budget 4 (160 runs), with every run and outcome class retained. The artifact explicitly declares `ReplayFromFrozenCandidateObservations=true` and `LiveBackendReruns=false`.
+- Trace reduction, false-positive ledger, final tables, and figure data are committed under `docs/research/`.
+
+The mechanism has independent upstream confirmation in Dolt issue #11387. The remaining strengthening item is an upstream fix or a fresh independent current-main rerun; the open issue is not silently converted into a universal defect or probability claim.
 
 ## Stop conditions
 

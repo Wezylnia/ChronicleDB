@@ -211,6 +211,9 @@ public static class ExternalEvidenceBundleValidator
             case "ExternalUnseededReplay":
                 ValidateExternalUnseededReplay(archive, findings);
                 break;
+            case "DoltRobustness":
+                ValidateDoltRobustness(archive, findings);
+                break;
             default:
                 throw new InvalidDataException($"Unknown external evidence kind '{artifact.Kind}'.");
         }
@@ -499,6 +502,67 @@ public static class ExternalEvidenceBundleValidator
         findings.Add("external-unseeded-limit=deterministic-replay-over-frozen-observations;not-160-live-reruns");
     }
 
+    private static void ValidateDoltRobustness(ZipArchive archive, List<string> findings)
+    {
+        int[] expectedDelays = [0, 1, 5, 10, 50, 100, 500];
+        string[] expectedTargets =
+        [
+            "dolt-223",
+            "dolt-230",
+            "dolt-main-unpatched",
+            "dolt-main-background",
+            "dolt-main-without-cancel",
+        ];
+        JsonDocument[] summaries = archive.Entries
+            .Where(entry => entry.FullName.EndsWith("summary.json", StringComparison.Ordinal))
+            .Select(entry => JsonDocument.Parse(new StreamReader(entry.Open()).ReadToEnd()))
+            .ToArray();
+        try
+        {
+            if (summaries.Length != expectedDelays.Length * expectedTargets.Length)
+            {
+                throw new InvalidDataException($"Dolt robustness archive expected 35 summaries but found {summaries.Length}.");
+            }
+
+            HashSet<(string Target, int Delay)> cells = [];
+            foreach (JsonDocument document in summaries)
+            {
+                JsonElement summary = document.RootElement;
+                string target = RequireString(summary, "target");
+                int delay = RequireInt32(summary, "delay_ms");
+                if (!expectedTargets.Contains(target, StringComparer.Ordinal)
+                    || !expectedDelays.Contains(delay)
+                    || !cells.Add((target, delay)))
+                {
+                    throw new InvalidDataException($"Dolt robustness contains an unexpected or duplicate cell {target}/{delay}.");
+                }
+
+                RequireInt32(summary, 100, "runs");
+                int reports = RequireInt32(summary, "report_runs");
+                int harnessFailures = RequireInt32(summary, "harness_failures");
+                if (reports + harnessFailures != 100)
+                {
+                    throw new InvalidDataException($"Dolt robustness cell {target}/{delay} loses outcomes.");
+                }
+                _ = RequireProperty(summary, "outcomes");
+                _ = RequireProperty(summary, "relations");
+                _ = RequireProperty(summary, "generated_ids");
+                _ = RequireProperty(summary, "server_health");
+                _ = RequireProperty(summary, "elapsed_ms");
+            }
+
+            findings.Add("dolt-robustness=35-cells;3500-repetitions;7-delays;5-targets");
+            findings.Add("dolt-robustness-preservation=outcomes;relations;ids;server-health;timing;harness-failures");
+        }
+        finally
+        {
+            foreach (JsonDocument summary in summaries)
+            {
+                summary.Dispose();
+            }
+        }
+    }
+
     private static string ResolveArchivePath(string baseDirectory, string relativeArchive)
     {
         string absoluteBase = Path.GetFullPath(baseDirectory) + Path.DirectorySeparatorChar;
@@ -669,6 +733,17 @@ public static class ExternalEvidenceBundleValidator
             throw new InvalidDataException(
                 $"JSON property '{string.Join('.', propertyPath)}' expected {expected} but found {actual}.");
         }
+    }
+
+    private static int RequireInt32(JsonElement element, string propertyName)
+    {
+        JsonElement property = RequireProperty(element, propertyName);
+        if (!property.TryGetInt32(out int value))
+        {
+            throw new InvalidDataException($"JSON property '{propertyName}' is not an Int32.");
+        }
+
+        return value;
     }
 
     private static void RequireDouble(JsonElement element, double expected, params string[] propertyPath)

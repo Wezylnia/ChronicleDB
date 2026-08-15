@@ -39,6 +39,18 @@ This checklist is the gate for promoting a result into paper evidence. It now di
 - [ ] A fair-search experiment for a third non-identity/non-allocator family, preferably dependency, lifecycle, or recovery.
 - [ ] Upstream/independent confirmation or fix status captured for the Dolt dynamic-clone regression candidate.
 
+## Final expanded-campaign status (2026-08-15)
+
+The three rows above were open in the pre-execution checklist and are now closed by imported artifacts:
+
+- [x] MatrixOne v2 10-candidate run completed with pinned OCI manifest and fingerprint validation.
+- [x] Dolt expanded 10-candidate grammar completed on 2.2.3 and 2.3.0; the 2.3.0 control conflict is retained as a false-positive/version-model result.
+- [x] SlateDB expanded 8-candidate observer grammar completed on buggy and fixed versions.
+- [x] External unseeded classification ledger completed across five external versions, 32 frozen seeds, and budget 4. It is explicitly a replay over frozen per-candidate observations, not 160 fresh backend reruns.
+- [x] External trace-reduction and false-positive tables are committed.
+
+The fresh-final-main rerun and upstream maintainer confirmation remain optional strengthening gates, not silently implied by the imported evidence.
+
 ## Imported evidence gate
 
 Run:
