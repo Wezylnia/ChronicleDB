@@ -165,7 +165,13 @@ public static class DoltSqlServerHistoryImportAdapter
         => recipe switch
         {
             DoltHistoryImportRecipe.NoOp => string.Empty,
+            DoltHistoryImportRecipe.StatusOnly => "SELECT COUNT(*) AS status_probe FROM dolt_status;",
+            DoltHistoryImportRecipe.BranchList => "SELECT COUNT(*) AS branch_probe FROM dolt_branches;",
+            DoltHistoryImportRecipe.LogLocal => "SELECT COUNT(*) AS log_probe FROM dolt_log;",
             DoltHistoryImportRecipe.FetchOnly => "CALL DOLT_FETCH('origin');",
+            DoltHistoryImportRecipe.FetchThenStatus => "CALL DOLT_FETCH('origin'); SELECT COUNT(*) AS status_probe FROM dolt_status;",
+            DoltHistoryImportRecipe.FetchThenBranchList => "CALL DOLT_FETCH('origin'); SELECT COUNT(*) AS branch_probe FROM dolt_branches;",
+            DoltHistoryImportRecipe.FetchThenLog => "CALL DOLT_FETCH('origin'); SELECT COUNT(*) AS log_probe FROM dolt_log;",
             DoltHistoryImportRecipe.Pull => "CALL DOLT_PULL('origin', 'main');",
             DoltHistoryImportRecipe.FetchMerge => "CALL DOLT_FETCH('origin'); CALL DOLT_MERGE('origin/main');",
             DoltHistoryImportRecipe.FetchHardReset => "CALL DOLT_FETCH('origin'); CALL DOLT_RESET('--hard', 'origin/main');",

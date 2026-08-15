@@ -4,9 +4,9 @@ using System.Text.Json.Serialization;
 using ChronicleDB.BranchCheck;
 
 string mode = args.Length == 0 ? "all" : args[0].Trim().ToLowerInvariant();
-if (mode is not ("all" or "synthetic" or "historical" or "local-budget" or "unseeded-local" or "external-evidence" or "matrixone" or "matrixone-identity" or "matrixone-budget" or "slatedb" or "slatedb-budget" or "dolt-budget" or "dolt-clone-smoke"))
+if (mode is not ("all" or "synthetic" or "historical" or "local-budget" or "unseeded-local" or "external-evidence" or "matrixone" or "matrixone-identity" or "matrixone-budget" or "slatedb" or "slatedb-budget" or "dolt-budget" or "dolt-expanded-budget" or "dolt-clone-smoke"))
 {
-    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|local-budget|unseeded-local|external-evidence|matrixone|matrixone-identity|matrixone-budget|slatedb|slatedb-budget|dolt-budget|dolt-clone-smoke]");
+    Console.Error.WriteLine("Usage: ChronicleDB.BranchCheck [all|synthetic|historical|local-budget|unseeded-local|external-evidence|matrixone|matrixone-identity|matrixone-budget|slatedb|slatedb-budget|dolt-budget|dolt-expanded-budget|dolt-clone-smoke]");
     return 2;
 }
 
@@ -75,7 +75,7 @@ if (mode == "matrixone-budget")
     }
 }
 
-if (mode is "dolt-budget" or "dolt-clone-smoke")
+if (mode is "dolt-budget" or "dolt-expanded-budget" or "dolt-clone-smoke")
 {
     try
     {
@@ -94,7 +94,10 @@ if (mode is "dolt-budget" or "dolt-clone-smoke")
             return 0;
         }
 
-        DoltTriggerBudgetReport budgetReport = await DoltTriggerBudgetCampaign.ExecuteAsync(options).ConfigureAwait(false);
+        IReadOnlyList<DoltHistoryImportRecipe> recipes = mode == "dolt-expanded-budget"
+            ? DoltTriggerBudgetCampaign.ExpandedPortableRecipes
+            : DoltTriggerBudgetCampaign.PortableRecipes;
+        DoltTriggerBudgetReport budgetReport = await DoltTriggerBudgetCampaign.ExecuteAsync(options, recipes).ConfigureAwait(false);
         WriteJson(new
         {
             Mode = mode,

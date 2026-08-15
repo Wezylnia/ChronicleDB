@@ -138,6 +138,78 @@ public sealed class TriggerBudgetCampaignTests
         Assert.DoesNotContain(DoltHistoryImportRecipe.FetchHardReset, DoltTriggerBudgetCampaign.PortableRecipes);
     }
 
+    [Fact]
+    public void DoltExpandedCandidateSetIsFrozenAtTenPortableSequences()
+    {
+        Assert.Equal(10, DoltTriggerBudgetCampaign.ExpandedPortableRecipes.Count);
+        Assert.Equal(
+            [
+                DoltHistoryImportRecipe.NoOp,
+                DoltHistoryImportRecipe.StatusOnly,
+                DoltHistoryImportRecipe.BranchList,
+                DoltHistoryImportRecipe.LogLocal,
+                DoltHistoryImportRecipe.FetchOnly,
+                DoltHistoryImportRecipe.FetchThenStatus,
+                DoltHistoryImportRecipe.FetchThenBranchList,
+                DoltHistoryImportRecipe.FetchThenLog,
+                DoltHistoryImportRecipe.FetchMerge,
+                DoltHistoryImportRecipe.Pull,
+            ],
+            DoltTriggerBudgetCampaign.ExpandedPortableRecipes);
+        Assert.Equal(6, DoltTriggerBudgetCampaign.ExpandedPortableRecipes.Count(DoltHistoryImportSemantics.ChangesGlobalSequenceInputs));
+        Assert.DoesNotContain(DoltHistoryImportRecipe.FetchHardReset, DoltTriggerBudgetCampaign.ExpandedPortableRecipes);
+        Assert.Equal(
+            "51C8F5284EF8E58C226F003ACA0D91701FBFEDB6B4086C25ECA8319D0F73E40B",
+            DoltTriggerBudgetCampaign.ExpandedCandidateSetFingerprint);
+    }
+
+    [Fact]
+    public void DoltExpandedPreregistrationMatchesCompiledGrammar()
+    {
+        string root = FindRepositoryRoot();
+        string path = Path.Combine(root, "artifacts", "external-frozen", "dolt-expanded-preregistration.json");
+        using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+        JsonElement top = document.RootElement;
+
+        Assert.Equal("pending-external-execution", top.GetProperty("status").GetString());
+        Assert.Equal(
+            DoltTriggerBudgetCampaign.ExpandedCandidateSetFingerprint,
+            top.GetProperty("candidate_set_fingerprint").GetString());
+        Assert.Equal(10, top.GetProperty("candidate_count").GetInt32());
+        Assert.Equal(6, top.GetProperty("sequence_relevant_count").GetInt32());
+        var candidates = top.GetProperty("candidates").EnumerateArray()
+            .Select(row => (
+                Recipe: row.GetProperty("recipe").GetString() ?? throw new InvalidOperationException("Dolt recipe is null."),
+                Relevant: row.GetProperty("sequence_state_relevant").GetBoolean()))
+            .ToArray();
+        var compiled = DoltTriggerBudgetCampaign.ExpandedPortableRecipes
+            .Select(recipe => (
+                Recipe: recipe.ToString(),
+                Relevant: DoltHistoryImportSemantics.ChangesGlobalSequenceInputs(recipe)))
+            .ToArray();
+
+        Assert.Equal(compiled, candidates);
+    }
+
+    [Fact]
+    public void DoltExpandedSyntheticBudgetUsesClassFairAnalyticCurve()
+    {
+        DoltTriggerBudgetReport report = DoltTriggerBudgetCampaign.EvaluateEvidence(
+            "Dolt expanded synthetic",
+            CreateExpandedDoltEvidence(DoltHistoryImportRecipe.Pull));
+
+        Assert.Equal(10, report.Recipes.Count);
+        Assert.Equal(6, report.SequenceRelevantRecipeCount);
+        Assert.Equal(1, report.ViolationRecipeCount);
+        Assert.True(report.AllViolationsInsideSequenceRelevantClass);
+        Assert.True(report.GuidedHasStrictAdvantageAtAnyBudget);
+        Assert.Equal(0.1, report.BudgetCurve[0].GenericDetectionRate, precision: 10);
+        Assert.Equal(1.0 / 6.0, report.BudgetCurve[0].GuidedDetectionRate, precision: 10);
+        Assert.Equal(0.6, report.BudgetCurve[5].GenericDetectionRate, precision: 10);
+        Assert.Equal(1.0, report.BudgetCurve[5].GuidedDetectionRate, precision: 10);
+        Assert.Equal(1.0, report.BudgetCurve[6].GuidedDetectionRate, precision: 10);
+    }
+
     private static TriggerRecipeEvidence[] CreateMatrixOneEvidence(MatrixOneIdentityMutationRecipe violatingRecipe)
         => Enum.GetValues<MatrixOneIdentityMutationRecipe>()
             .Select(recipe => new TriggerRecipeEvidence(
@@ -151,6 +223,25 @@ public sealed class TriggerBudgetCampaignTests
 
     private static DoltTriggerRecipeEvidence[] CreatePortableDoltEvidence(DoltHistoryImportRecipe violatingRecipe)
         => DoltTriggerBudgetCampaign.PortableRecipes
+            .Select(recipe => new DoltTriggerRecipeEvidence(
+                recipe,
+                DoltHistoryImportSemantics.ChangesGlobalSequenceInputs(recipe),
+                recipe == violatingRecipe ? RelationStatus.Fail : RelationStatus.Pass,
+                recipe == violatingRecipe ? "synthetic continuation divergence" : "synthetic continuation preserved",
+                OutcomeClass.Success,
+                OutcomeClass.Success,
+                recipe == violatingRecipe ? "1" : "2",
+                "2",
+                "row-count=1;max-pk=1;continuation=" + (recipe == violatingRecipe ? "1" : "2"),
+                "row-count=1;max-pk=2;continuation=2",
+                null,
+                recipe == violatingRecipe ? BaselineStatus.Detected : BaselineStatus.Pass,
+                BaselineStatus.Pass,
+                recipe == violatingRecipe))
+            .ToArray();
+
+    private static DoltTriggerRecipeEvidence[] CreateExpandedDoltEvidence(DoltHistoryImportRecipe violatingRecipe)
+        => DoltTriggerBudgetCampaign.ExpandedPortableRecipes
             .Select(recipe => new DoltTriggerRecipeEvidence(
                 recipe,
                 DoltHistoryImportSemantics.ChangesGlobalSequenceInputs(recipe),

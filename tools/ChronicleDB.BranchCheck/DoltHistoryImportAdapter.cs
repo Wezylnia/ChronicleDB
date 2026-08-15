@@ -6,7 +6,13 @@ namespace ChronicleDB.BranchCheck;
 public enum DoltHistoryImportRecipe
 {
     NoOp,
+    StatusOnly,
+    BranchList,
+    LogLocal,
     FetchOnly,
+    FetchThenStatus,
+    FetchThenBranchList,
+    FetchThenLog,
     Pull,
     FetchMerge,
     FetchHardReset,
@@ -35,10 +41,16 @@ public static class DoltHistoryImportSemantics
             or DoltHistoryImportRecipe.FetchHardReset;
 
     // Dolt's sequence tracker merges state across local branch heads and remote refs.
-    // Any recipe that refreshes/imports origin therefore changes the set/state the
-    // global allocator is required to account for, even if current rows stay unchanged.
+    // Only recipes that refresh/import origin change the global allocator inputs;
+    // local observer commands remain controls in the expanded fair grammar.
     public static bool ChangesGlobalSequenceInputs(DoltHistoryImportRecipe recipe)
-        => recipe is not DoltHistoryImportRecipe.NoOp;
+        => recipe is DoltHistoryImportRecipe.FetchOnly
+            or DoltHistoryImportRecipe.FetchThenStatus
+            or DoltHistoryImportRecipe.FetchThenBranchList
+            or DoltHistoryImportRecipe.FetchThenLog
+            or DoltHistoryImportRecipe.Pull
+            or DoltHistoryImportRecipe.FetchMerge
+            or DoltHistoryImportRecipe.FetchHardReset;
 }
 
 public static class DoltHistoryImportAdapter
@@ -199,8 +211,29 @@ public static class DoltHistoryImportAdapter
         {
             case DoltHistoryImportRecipe.NoOp:
                 return;
+            case DoltHistoryImportRecipe.StatusOnly:
+                await RequireAsync(runner, candidate, ["status", "--porcelain"], cancellationToken).ConfigureAwait(false);
+                return;
+            case DoltHistoryImportRecipe.BranchList:
+                await RequireAsync(runner, candidate, ["branch", "--all"], cancellationToken).ConfigureAwait(false);
+                return;
+            case DoltHistoryImportRecipe.LogLocal:
+                await RequireAsync(runner, candidate, ["log", "--oneline", "--all", "-n", "2"], cancellationToken).ConfigureAwait(false);
+                return;
             case DoltHistoryImportRecipe.FetchOnly:
                 await RequireAsync(runner, candidate, ["fetch", "origin"], cancellationToken).ConfigureAwait(false);
+                return;
+            case DoltHistoryImportRecipe.FetchThenStatus:
+                await RequireAsync(runner, candidate, ["fetch", "origin"], cancellationToken).ConfigureAwait(false);
+                await RequireAsync(runner, candidate, ["status", "--porcelain"], cancellationToken).ConfigureAwait(false);
+                return;
+            case DoltHistoryImportRecipe.FetchThenBranchList:
+                await RequireAsync(runner, candidate, ["fetch", "origin"], cancellationToken).ConfigureAwait(false);
+                await RequireAsync(runner, candidate, ["branch", "--all"], cancellationToken).ConfigureAwait(false);
+                return;
+            case DoltHistoryImportRecipe.FetchThenLog:
+                await RequireAsync(runner, candidate, ["fetch", "origin"], cancellationToken).ConfigureAwait(false);
+                await RequireAsync(runner, candidate, ["log", "--oneline", "--all", "-n", "2"], cancellationToken).ConfigureAwait(false);
                 return;
             case DoltHistoryImportRecipe.Pull:
                 await RequireAsync(runner, candidate, ["pull", "origin", "main"], cancellationToken).ConfigureAwait(false);
