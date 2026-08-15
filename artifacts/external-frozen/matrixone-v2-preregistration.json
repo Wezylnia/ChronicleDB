@@ -4,7 +4,7 @@
   "status": "pending-external-execution",
   "backend": {
     "system": "MatrixOne",
-    "image": "matrixorigin/matrixone@sha256:7161e9d672fc55c5330af2acaf3afe29d2d2dfe9273a1748bca4c77f8dac8bf8",
+    "image": "matrixorigin/matrixone@sha256:c920128b7e02622f27ddc12db32f8968d030c8eb3fd05bcccac47ca7d5b1c2b8",
     "observed_version_label_from_prior_artifact": "8.0.30-MatrixOne-v4.1.4"
   },
   "candidate_set_fingerprint": "1FA61958C7E97E5EC5BBC8F32D03D99BAAD902F5C360465A7594B8F053B52040",

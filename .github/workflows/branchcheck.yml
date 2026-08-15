@@ -51,7 +51,7 @@ jobs:
           sudo apt-get install -y mariadb-client
       - name: Start MatrixOne
         run: |
-          docker run -d --name matrixone -p 6001:6001 matrixorigin/matrixone@sha256:7161e9d672fc55c5330af2acaf3afe29d2d2dfe9273a1748bca4c77f8dac8bf8
+          docker run -d --name matrixone -p 6001:6001 matrixorigin/matrixone@sha256:c920128b7e02622f27ddc12db32f8968d030c8eb3fd05bcccac47ca7d5b1c2b8
           docker inspect --format='image={{.Image}}' matrixone
           echo "BRANCHCHECK_MATRIXONE_IMAGE=$(docker inspect --format='{{.Image}}' matrixone)" >> "$GITHUB_ENV"
       - name: Wait for MatrixOne
