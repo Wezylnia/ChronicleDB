@@ -2,7 +2,7 @@
 
 ## Status
 
-This document defines assembly ownership, dependency direction, and the runtime composition model for ChronicleDB v1.0. Semantic behavior is defined in `project-definition.md` and the architecture-topic documents under `docs/architecture`. Persistent-format changes and other costly decisions require an ADR.
+This document defines assembly ownership, dependency direction, and the runtime composition model for ChronicleDB v1.0. Semantic behavior is defined in the architecture-topic documents under `docs/architecture`. Local internal planning and decision records, when available under `private-docs/`, provide additional history; persistent-format changes and other costly decisions require an ADR.
 
 ## Architectural model
 

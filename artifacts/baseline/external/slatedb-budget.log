@@ -1,8 +1,0 @@
-dotnet : BRANCHCHECK_SLATEDB_PROBE is required for slatedb-budget mode.
-At line:2 char:391
-+ ...  + " ==="); dotnet run -c Release --no-build --project $project -- $m ...
-+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (BRANCHCHECK_SLA...db-budget mode.:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
-
-exit_code=3

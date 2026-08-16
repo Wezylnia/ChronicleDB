@@ -42,15 +42,11 @@
   <Folder Name="/tests/Recovery/">
     <Project Path="tests/Recovery/ChronicleDB.RecoveryTests/ChronicleDB.RecoveryTests.csproj" />
   </Folder>
-  <Folder Name="/tests/Research/">
-    <Project Path="tests/Research/ChronicleDB.BranchCheck.Tests/ChronicleDB.BranchCheck.Tests.csproj" />
-  </Folder>
   <Folder Name="/tests/Unit/">
     <Project Path="tests/Unit/ChronicleDB.UnitTests/ChronicleDB.UnitTests.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/ChronicleDB.CrashHarness/ChronicleDB.CrashHarness.csproj" />
-    <Project Path="tools/ChronicleDB.BranchCheck/ChronicleDB.BranchCheck.csproj" />
     <Project Path="tools/ChronicleDB.Inspector/ChronicleDB.Inspector.csproj" />
     <Project Path="tools/ChronicleDB.WorkloadRunner/ChronicleDB.WorkloadRunner.csproj" />
   </Folder>

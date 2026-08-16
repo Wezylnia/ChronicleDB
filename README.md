@@ -1,72 +1,65 @@
 # ChronicleDB
 
-ChronicleDB is an experimental embedded key-value storage engine for .NET 10. It stores binary keys and values, provides WAL-backed transactions with Snapshot Isolation, retains historical MVCC state for persistent snapshots and time-travel reads, and can create independently writable branches from retained history without copying the complete logical database.
+ChronicleDB is an embedded, persistent key-value storage engine for .NET 10. It stores binary keys and values and provides durable transactions, MVCC snapshots, writable copy-on-write branches, WAL recovery, retention-aware garbage collection, and compaction.
 
-The v1.0 line is the semantic baseline for later performance research. Correctness, crash recovery, history retention, and branch isolation are intentionally prioritized over latch-free execution or peak throughput.
+## What it provides
 
-## What v1.0 provides
-
-- page-based persistent storage with explicit versioned binary formats and CRC32C corruption detection;
+- page-based persistent storage with versioned binary formats and CRC32C corruption detection;
 - atomic multi-key transactions backed by a write-ahead log;
-- immutable committed MVCC versions and Snapshot Isolation with first-committer-wins write conflicts;
-- persistent named snapshots and commit-sequence historical reads;
-- explicit history domains with per-history commit-sequence namespaces;
-- metadata-oriented branch creation from a fixed parent history boundary;
+- immutable committed MVCC versions with Snapshot Isolation and first-committer-wins conflicts;
+- persistent named snapshots and historical reads;
+- independently writable branches rooted in retained history;
 - branch-local WAL, recovery, snapshots, historical reads, tombstones, and bounded nested branching;
-- generalized history roots for snapshots and branch bases;
 - retention-aware version garbage collection;
-- retained-history checkpoints that allow WAL rotation without losing reconstructable history;
+- retained-history checkpoints and WAL rotation;
 - copy-and-publish physical compaction with bounded maintenance budgets;
-- deterministic differential workloads, fault injection, process-level crash testing, topology diagnostics, and machine-readable benchmarks.
+- replaceable version-index boundaries and fault-injection coverage.
 
-Snapshot Isolation is **not** serializable. Branch merge/rebase, cross-history transactions, replication, distributed operation, SQL, native-memory hot paths, epoch-based reclamation, and the planned latch-free index are outside v1.0.
+Snapshot Isolation is **not** serializable. SQL, networking, replication, branch merge/rebase, cross-history transactions, distributed operation, native-memory hot paths, and latch-free indexes are outside the current product scope.
 
-## Core durability rule
+## Durability
 
-An acknowledged durable commit has a recoverable WAL decision before it becomes an acknowledged success. Physical publication and logical transaction visibility are distinct concepts: recovery may redo derived physical state, but it must never invent a commit or lose an acknowledged one.
+An acknowledged durable commit has a recoverable WAL decision before it is reported as successful. Recovery may redo derived physical state, but it must never invent a commit or lose an acknowledged one.
 
-For retained history, the recovery authority is the latest validated history checkpoint plus the authoritative WAL generation that follows it. Checksums detect corruption; they do not provide cryptographic authenticity. See [Security](docs/SECURITY.md).
+Checksums detect corruption; they do not provide cryptographic authenticity. See [Security](docs/SECURITY.md) for the integrity limits and operational responsibilities.
 
 ## Repository guide
 
-- [Project definition](project-definition.md) — product scope, semantic contract, invariants, and v1.5 transition boundary.
 - [Architecture](ARCHITECTURE.md) — assembly ownership and dependency rules.
-- [Architecture decisions](docs/adr/README.md) — durable design decisions and compatibility history.
 - [Storage format](docs/architecture/STORAGE_FORMAT.md) and [WAL format](docs/architecture/WAL_FORMAT.md) — persistent byte contracts.
 - [Transactions](docs/architecture/TRANSACTIONS.md), [MVCC](docs/architecture/MVCC.md), and [Isolation](docs/architecture/ISOLATION.md) — transactional semantics.
-- [Recovery](docs/architecture/RECOVERY.md) — Main and branch recovery authority.
+- [Recovery](docs/architecture/RECOVERY.md) — main and branch recovery authority.
 - [Snapshots](docs/architecture/SNAPSHOTS.md), [History roots](docs/architecture/HISTORY_ROOTS.md), and [Retention](docs/architecture/RETENTION.md) — historical-state lifecycle.
 - [Branching](docs/architecture/BRANCHING.md), [Branch storage](docs/architecture/BRANCH_STORAGE.md), and [Branch recovery](docs/architecture/BRANCH_RECOVERY.md) — writable historical branches.
 - [Version GC](docs/architecture/VERSION_GC.md) and [Compaction](docs/architecture/COMPACTION.md) — maintenance and reclamation.
-- [Security](docs/SECURITY.md) — threat model, integrity limits, and operational responsibilities.
-- [Testing](docs/TESTING.md), [Benchmarking](docs/BENCHMARKING.md), and [Research evaluation](docs/RESEARCH_EVALUATION.md) — release evidence and experiment discipline.
+- [Security](docs/SECURITY.md), [Testing](docs/TESTING.md), and [Benchmarking](docs/BENCHMARKING.md) — operational guidance and validation.
 
-## Build and validate
+## Build and test
 
 The repository pins its SDK in `global.json`.
 
 ```powershell
-dotnet restore ChronicleDB.slnx
+dotnet restore ChronicleDB.slnx --ignore-failed-sources
 dotnet build ChronicleDB.slnx -c Release --no-restore
 dotnet test ChronicleDB.slnx -c Release --no-build
 ```
 
-Run deterministic multi-history validation:
+Run the deterministic workload runner:
 
 ```powershell
 dotnet run -c Release --project tools/ChronicleDB.WorkloadRunner -- 42 10000 8
 ```
 
-Run process-level crash injection:
+Run the process-level crash harness:
 
 ```powershell
 dotnet run -c Release --project tools/ChronicleDB.CrashHarness -- run 100
 ```
 
-Collect a machine-readable benchmark report:
+Generate a local benchmark report:
 
 ```powershell
 dotnet run -c Release --project benchmarks/ChronicleDB.Benchmarks -- 1000 8 .artifacts/benchmarks/v10.json 42
 ```
 
-Benchmark output is evidence about a particular build and workload, not a claim of superiority over mature database systems. Historical v0.5 comparisons must be run from the actual v0.5 revision rather than simulated inside the v1.0 binary.
+Benchmark output describes one build and workload; it is not a claim of superiority over mature database systems.

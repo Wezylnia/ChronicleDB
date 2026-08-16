@@ -1,6 +1,6 @@
 # Benchmarking Methodology
 
-ChronicleDB benchmarks are reproducible research instrumentation, not a claim that the project outperforms mature database engines. Correctness and durability gates take precedence over benchmark results.
+ChronicleDB benchmarks are reproducible engineering measurements, not a claim that the project outperforms mature database engines. Correctness and durability gates take precedence over benchmark results.
 
 ## Runner
 
@@ -24,7 +24,7 @@ The report records:
 - allocated bytes and Gen0/Gen1/Gen2 collection deltas;
 - scenario-specific WAL, history, root, branch, GC, compaction, recovery, and storage metrics.
 
-Each scenario is invoked once for warm-up and then once for measurement. GC is explicitly collected between those invocations. Publishable experiments should run multiple independent processes and preserve every raw JSON file rather than treating one short invocation as evidence.
+Each scenario is invoked once for warm-up and then once for measurement. GC is explicitly collected between those invocations. Reliable comparisons should run multiple independent processes and preserve every raw JSON file rather than treating one short invocation as evidence.
 
 ## v1.0 scenario matrix
 
@@ -53,6 +53,4 @@ Branch creation must be described as **metadata-oriented / shared-state / withou
 
 GC results must report both effectiveness and interference. Compaction results must include bytes rewritten as well as bytes reclaimed. Recovery timing is meaningful only when the reopened Main, branches, ancestry, and persistent snapshots are also validated.
 
-The commit coordinator and conventional managed synchronization are the intentional v1.0 semantic baseline. v1.5 optimizations should be compared against this release with unchanged logical semantics and equivalent durability.
-
-See [RESEARCH_EVALUATION.md](RESEARCH_EVALUATION.md) for research questions and the metadata required for publication-quality experiments.
+The commit coordinator and conventional managed synchronization are the intentional v1.0 semantic baseline. Future optimizations should be compared against this release with unchanged logical semantics and equivalent durability.

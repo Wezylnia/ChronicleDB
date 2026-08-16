@@ -2,7 +2,7 @@
 
 These rules apply to the entire repository.
 
-1. Read `project-definition.md`, `ARCHITECTURE.md`, the relevant ADRs, and the affected architecture-topic documents before changing engine behavior.
+1. Read `ARCHITECTURE.md` and the affected architecture-topic documents before changing engine behavior. When available locally, also consult the internal scope and ADR records under `private-docs/`.
 2. Preserve the project-reference DAG enforced by `ChronicleDB.ArchitectureTests`; do not resolve dependency cycles by moving unrelated code into `ChronicleDB.Core`.
 3. Place code in the assembly that owns the invariant. Avoid catch-all `Common`, `Utils`, service-locator, generic repository, or generic service layers.
 4. Only the `ChronicleDB` composition root selects concrete replaceable implementations. Engine semantics depend on stable abstractions, not the managed baseline index or future optimized index types.
